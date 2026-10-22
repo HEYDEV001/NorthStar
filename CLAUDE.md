@@ -138,11 +138,16 @@ Run the formatter and the relevant tests before every commit. Update this sectio
 1. For any task larger than a small fix, plan first: read the spec section, list the files you will touch and
    the tests you will add, and wait for approval.
 2. Work in small steps: one endpoint, one screen, one integration, one migration at a time.
-3. Run format and tests before each commit. Do not commit with failing tests.
-4. Keep pull requests focused on one change. Describe what changed, which spec section it implements and
-   which edge-case IDs it covers.
-5. Payments, auth, tenant isolation and webhook code always get a human review. Say so in the PR.
-6. If something in the spec is missing or ambiguous, ask. Do not invent business rules, prices, tax rules or
+3. Run format and tests when a step is done. Never hand over a step with failing tests.
+4. **Never run `git commit`, `git push`, `git merge`, `git rebase` or `git reset`, and never open pull requests.**
+   The developer commits and pushes. When a step is done, stop and give:
+   - a short summary of what changed and which files,
+   - which spec section it implements and which edge-case IDs it covers,
+   - a suggested commit message (one line, imperative, under 72 characters, plus an optional body).
+   Read-only git commands (`git status`, `git diff`, `git log`) are fine.
+5. Keep each step focused on one change so it fits one commit.
+6. Payments, auth, tenant isolation and webhook code always get a human review. Say so in the summary.
+7. If something in the spec is missing or ambiguous, ask. Do not invent business rules, prices, tax rules or
    message wording.
 
 ## Conventions
