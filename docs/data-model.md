@@ -353,7 +353,7 @@ These are proposed defaults to confirm with legal and tax advisers; a nightly jo
 ## 15. Open questions
 
 - [ ] Can a contact have more than one open lead at a time (e.g. two separate shoots)? The model currently allows one.
-- [ ] Should staff log in with phone OTP as well as email?
+- [x] Should staff log in with phone OTP as well as email? No: email only for MVP (decided 2 Nov 2026).
 - [ ] Retention periods in section 14: confirm with legal and CA
 - [ ] Store message bodies encrypted at the column level, or rely on database encryption at rest?
 - [ ] Multiple workflows per tenant (e.g. separate flows for two service lines) in MVP, or one?
