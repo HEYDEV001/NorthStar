@@ -50,7 +50,7 @@ cd frontend && npm run test                # Vitest
 cd frontend && npm run dev                 # local app on :5173
 
 # database
-cd backend && ./mvnw flyway:migrate        # against the DB in .env.local
+cd backend && ./mvnw initialize flyway:migrate   # against the DB in .env.local (initialize loads it)
 
 # end to end (staging)
 cd frontend && npm run e2e                 # Playwright

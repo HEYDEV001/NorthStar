@@ -8,6 +8,7 @@ The schema runs on Supabase Postgres (Mumbai), managed by Flyway migrations in `
 
 | Topic | Rule |
 | --- | --- |
+| Schema | All Northstar tables, and Flyway's `flyway_schema_history`, live in the `northstar` schema. It is not listed in Supabase's Data API schemas, and `anon` and `authenticated` have no access to it, so no table is reachable with the publishable key. Integration secrets use a separate private schema (section 9) |
 | Primary keys | `id uuid primary key default gen_random_uuid()` |
 | Tenant scope | Every business-owned table has `tenant_id uuid not null references tenants(id)`, including join and history tables |
 | Timestamps | `created_at timestamptz not null default now()`, `updated_at timestamptz` (trigger-maintained); stored in UTC, shown in the tenant timezone |

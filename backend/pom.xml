@@ -20,6 +20,7 @@
     <java.version>21</java.version>
     <spotless.version>3.10.4</spotless.version>
     <palantir-java-format.version>2.103.0</palantir-java-format.version>
+    <properties-maven-plugin.version>1.3.1</properties-maven-plugin.version>
   </properties>
 
   <dependencies>
@@ -63,6 +64,17 @@
     <dependency>
       <groupId>org.springframework.boot</groupId>
       <artifactId>spring-boot-starter-actuator-test</artifactId>
+      <scope>test</scope>
+    </dependency>
+    <!-- Flyway is test-only: tests migrate the container; the running app (app_user) never migrates. -->
+    <dependency>
+      <groupId>org.springframework.boot</groupId>
+      <artifactId>spring-boot-starter-flyway</artifactId>
+      <scope>test</scope>
+    </dependency>
+    <dependency>
+      <groupId>org.flywaydb</groupId>
+      <artifactId>flyway-database-postgresql</artifactId>
       <scope>test</scope>
     </dependency>
     <dependency>
@@ -109,6 +121,61 @@
             </configuration>
           </execution>
         </executions>
+      </plugin>
+
+      <!-- Loads FLYWAY_* from the repo-root .env.local (absent in CI). Runs in the initialize phase, hence
+           ./mvnw initialize flyway:migrate. -->
+      <plugin>
+        <groupId>org.codehaus.mojo</groupId>
+        <artifactId>properties-maven-plugin</artifactId>
+        <version>${properties-maven-plugin.version}</version>
+        <executions>
+          <execution>
+            <id>read-env-local</id>
+            <goals>
+              <goal>read-project-properties</goal>
+            </goals>
+            <phase>initialize</phase>
+            <configuration>
+              <files>
+                <file>${project.basedir}/../.env.local</file>
+              </files>
+              <quiet>true</quiet>
+            </configuration>
+          </execution>
+        </executions>
+      </plugin>
+
+      <!-- Migrates a real database from ../db/migrations into the northstar schema. -->
+      <plugin>
+        <groupId>org.flywaydb</groupId>
+        <artifactId>flyway-maven-plugin</artifactId>
+        <version>${flyway.version}</version>
+        <configuration>
+          <url>${FLYWAY_URL}</url>
+          <user>${FLYWAY_USER}</user>
+          <password>${FLYWAY_PASSWORD}</password>
+          <locations>
+            <location>filesystem:${project.basedir}/../db/migrations</location>
+          </locations>
+          <schemas>
+            <schema>northstar</schema>
+          </schemas>
+          <createSchemas>true</createSchemas>
+          <cleanDisabled>true</cleanDisabled>
+        </configuration>
+        <dependencies>
+          <dependency>
+            <groupId>org.flywaydb</groupId>
+            <artifactId>flyway-database-postgresql</artifactId>
+            <version>${flyway.version}</version>
+          </dependency>
+          <dependency>
+            <groupId>org.postgresql</groupId>
+            <artifactId>postgresql</artifactId>
+            <version>${postgresql.version}</version>
+          </dependency>
+        </dependencies>
       </plugin>
 
       <!-- ./mvnw spotless:apply formats; verify fails on unformatted code. -->
