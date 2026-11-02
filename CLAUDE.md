@@ -39,12 +39,14 @@ module's repositories or tables.
 ## Commands
 
 ```
-# backend
+# backend: JDK 21 required (the build refuses others); on macOS:
+export JAVA_HOME=$(/usr/libexec/java_home -v 21)
 cd backend && ./mvnw spotless:apply        # format
-cd backend && ./mvnw verify                # unit + integration tests (Testcontainers, needs Docker)
-cd backend && ./mvnw spring-boot:run       # local API on :8080
+cd backend && ./mvnw verify                # format check + unit + integration tests (Testcontainers, needs Docker)
+cd backend && ./mvnw spring-boot:run       # local API on :8080 against .env.local (DB down until app_user exists, Phase 1)
+cd backend && ./mvnw spring-boot:test-run  # local API on :8080 against a throwaway Supabase Postgres container
 
-# frontend
+# frontend (not scaffolded yet)
 cd frontend && npm run lint
 cd frontend && npm run test                # Vitest
 cd frontend && npm run dev                 # local app on :5173
