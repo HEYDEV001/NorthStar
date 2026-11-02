@@ -1,0 +1,189 @@
+package com.northstar;
+
+import java.util.ArrayList;
+import java.util.List;
+import java.util.Map;
+import java.util.Set;
+import java.util.TreeSet;
+import org.springframework.jdbc.core.simple.JdbcClient;
+
+/**
+ * The RLS release gate (data-model.md section 12): every rule a Northstar table, view or function must meet before it
+ * can merge. {@link #violations} lists each broken rule as "schema.object: problem"; an empty list means the gate
+ * passes.
+ *
+ * <p>Update the declarations in {@link #NORTHSTAR} in the same pull request as the migration that needs them.
+ */
+record RlsReleaseGate(
+        List<String> schemas,
+        Set<String> platformTables,
+        Set<String> insertOnlyTables,
+        Map<String, Set<String>> lifecycleTables,
+        Set<String> securityDefinerFunctions) {
+
+    static final RlsReleaseGate NORTHSTAR = new RlsReleaseGate(
+            // Schemas the gate scans. Add ingest and secrets here if Phase 2 adopts them.
+            List.of("northstar"),
+            // Platform-wide tables with no tenant_id. tenants, user_profiles, plans and JobRunr's tables join when
+            // created.
+            Set.of("northstar.flyway_schema_history"),
+            // app_user may insert and read, never update or delete.
+            Set.of(
+                    "northstar.timeline_events",
+                    "northstar.audit_log",
+                    "northstar.lead_score_history",
+                    "northstar.credit_notes"),
+            // app_user may never delete or update the whole row; only the listed status and processing columns are
+            // updatable. Each list is filled in by the migration that creates the table.
+            Map.of(
+                    "northstar.webhook_events", Set.of(),
+                    "northstar.payments", Set.of(),
+                    "northstar.invoices", Set.of(),
+                    "northstar.refunds", Set.of()),
+            // SECURITY DEFINER functions, as "schema.name(argument types)".
+            Set.of());
+
+    /** The tenant_isolation expression exactly as Postgres stores it for the policy in data-model.md section 12. */
+    static final String TENANT_ISOLATION_EXPRESSION =
+            "(tenant_id = (current_setting('app.tenant_id'::text, true))::uuid)";
+
+    List<String> violations(JdbcClient jdbc) {
+        Set<String> violations = new TreeSet<>();
+        checkTenantTables(jdbc, violations);
+        checkTablesWithoutTenantId(jdbc, violations);
+        checkViews(jdbc, violations);
+        checkInsertOnlyTables(jdbc, violations);
+        checkLifecycleTables(jdbc, violations);
+        checkSecurityDefinerFunctions(jdbc, violations);
+        return new ArrayList<>(violations);
+    }
+
+    private void checkTenantTables(JdbcClient jdbc, Set<String> violations) {
+        jdbc.sql("""
+                        select n.nspname || '.' || c.relname as name, c.relrowsecurity, c.relforcerowsecurity,
+                               a.attnotnull, a.atttypid = 'uuid'::regtype as is_uuid
+                        from pg_class c
+                        join pg_namespace n on n.oid = c.relnamespace
+                        join pg_attribute a on a.attrelid = c.oid and a.attname = 'tenant_id' and not a.attisdropped
+                        where n.nspname = any(string_to_array(:schemas, ',')) and c.relkind in ('r', 'p')""")
+                .param("schemas", String.join(",", schemas))
+                .query((rs, row) -> {
+                    String table = rs.getString("name");
+                    if (!rs.getBoolean("is_uuid")) violations.add(table + ": tenant_id is not uuid");
+                    if (!rs.getBoolean("attnotnull")) violations.add(table + ": tenant_id is nullable");
+                    if (!rs.getBoolean("relrowsecurity")) violations.add(table + ": RLS not enabled");
+                    if (!rs.getBoolean("relforcerowsecurity")) violations.add(table + ": RLS not forced");
+                    return table;
+                })
+                .list()
+                .forEach(table -> checkPolicies(jdbc, table, violations));
+    }
+
+    private static void checkPolicies(JdbcClient jdbc, String table, Set<String> violations) {
+        boolean tenantIsolationFound = false;
+        for (Map<String, Object> policy :
+                jdbc.sql("""
+                        select policyname, permissive, cmd, roles::text as roles, qual, with_check
+                        from pg_policies
+                        where schemaname || '.' || tablename = :table""").param("table", table).query().listOfRows()) {
+            if ("tenant_isolation".equals(policy.get("policyname"))) {
+                tenantIsolationFound = true;
+                boolean exact = "PERMISSIVE".equals(policy.get("permissive"))
+                        && "ALL".equals(policy.get("cmd"))
+                        && "{app_user}".equals(policy.get("roles"))
+                        && TENANT_ISOLATION_EXPRESSION.equals(policy.get("qual"))
+                        && TENANT_ISOLATION_EXPRESSION.equals(policy.get("with_check"));
+                if (!exact) violations.add(table + ": tenant_isolation policy differs from data-model.md section 12");
+            } else if ("PERMISSIVE".equals(policy.get("permissive"))) {
+                violations.add(table + ": policy " + policy.get("policyname") + " is permissive, must be restrictive");
+            }
+        }
+        if (!tenantIsolationFound) violations.add(table + ": tenant_isolation policy missing");
+    }
+
+    private void checkTablesWithoutTenantId(JdbcClient jdbc, Set<String> violations) {
+        jdbc.sql("""
+                        select n.nspname || '.' || c.relname
+                        from pg_class c
+                        join pg_namespace n on n.oid = c.relnamespace
+                        where n.nspname = any(string_to_array(:schemas, ',')) and c.relkind in ('r', 'p')
+                          and not exists (select from pg_attribute a
+                                          where a.attrelid = c.oid and a.attname = 'tenant_id' and not a.attisdropped)""").param("schemas", String.join(",", schemas)).query(String.class).list().stream()
+                .filter(table -> !platformTables.contains(table))
+                .forEach(table -> violations.add(table + ": no tenant_id and not declared platform-wide"));
+    }
+
+    private void checkViews(JdbcClient jdbc, Set<String> violations) {
+        jdbc.sql("""
+                        select n.nspname || '.' || c.relname as name, c.relkind = 'm' as materialized,
+                               coalesce('security_invoker=true' = any(c.reloptions), false) as invoker
+                        from pg_class c
+                        join pg_namespace n on n.oid = c.relnamespace
+                        where n.nspname = any(string_to_array(:schemas, ',')) and c.relkind in ('v', 'm')""")
+                .param("schemas", String.join(",", schemas))
+                .query((rs, row) -> {
+                    String view = rs.getString("name");
+                    if (rs.getBoolean("materialized")) {
+                        violations.add(view + ": materialized view bypasses RLS");
+                    } else if (!rs.getBoolean("invoker")) {
+                        violations.add(view + ": view without security_invoker bypasses RLS");
+                    }
+                    return view;
+                })
+                .list();
+    }
+
+    private void checkInsertOnlyTables(JdbcClient jdbc, Set<String> violations) {
+        for (String table : insertOnlyTables) {
+            for (String privilege : appUserPrivileges(jdbc, table)) {
+                violations.add(table + ": insert-only but app_user has " + privilege);
+            }
+        }
+    }
+
+    private void checkLifecycleTables(JdbcClient jdbc, Set<String> violations) {
+        lifecycleTables.forEach((table, declaredColumns) -> {
+            if (!exists(jdbc, table)) return;
+            for (String privilege : appUserPrivileges(jdbc, table)) {
+                if (!privilege.equals("UPDATE on a column")) {
+                    violations.add(table + ": lifecycle table but app_user has " + privilege);
+                }
+            }
+            jdbc.sql("""
+                            select attname from pg_attribute
+                            where attrelid = cast(:table as regclass) and attnum > 0 and not attisdropped
+                              and has_column_privilege('app_user', attrelid, attname, 'UPDATE')""").param("table", table).query(String.class).list().stream()
+                    .filter(column -> !declaredColumns.contains(column))
+                    .forEach(column -> violations.add(table + ": column " + column + " is updatable but not declared"));
+        });
+    }
+
+    /** app_user's write privileges beyond insert: table-level UPDATE, DELETE, TRUNCATE, and column-level UPDATE. */
+    private static List<String> appUserPrivileges(JdbcClient jdbc, String table) {
+        if (!exists(jdbc, table)) return List.of();
+        return jdbc.sql("""
+                        select p from unnest(array['UPDATE', 'DELETE', 'TRUNCATE']) p
+                        where has_table_privilege('app_user', cast(:table as regclass), p)
+                        union all
+                        select 'UPDATE on a column'
+                        where not has_table_privilege('app_user', cast(:table as regclass), 'UPDATE')
+                          and has_any_column_privilege('app_user', cast(:table as regclass), 'UPDATE')""").param("table", table).query(String.class).list();
+    }
+
+    private void checkSecurityDefinerFunctions(JdbcClient jdbc, Set<String> violations) {
+        jdbc.sql("""
+                        select n.nspname || '.' || p.proname || '(' || pg_get_function_identity_arguments(p.oid) || ')'
+                        from pg_proc p
+                        join pg_namespace n on n.oid = p.pronamespace
+                        where n.nspname = any(string_to_array(:schemas, ',')) and p.prosecdef""").param("schemas", String.join(",", schemas)).query(String.class).list().stream()
+                .filter(function -> !securityDefinerFunctions.contains(function))
+                .forEach(function -> violations.add(function + ": SECURITY DEFINER function not on the allowlist"));
+    }
+
+    private static boolean exists(JdbcClient jdbc, String table) {
+        return jdbc.sql("select to_regclass(:table) is not null")
+                .param("table", table)
+                .query(Boolean.class)
+                .single();
+    }
+}

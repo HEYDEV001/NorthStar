@@ -192,6 +192,8 @@ JobRunr creates its own `jobrunr_*` tables in a separate schema; they hold no te
 
 Quotes are versioned, payments form a ledger keyed by Razorpay IDs, and invoices are numbered per financial year and never deleted.
 
+`payments`, `invoices` and `refunds` are lifecycle tables (section 12): only their declared status and processing columns can be updated. Phase 5 adds a trigger on each that allows only forward status transitions, so a status can never move back.
+
 | Table | Columns (type) | Constraints / notes |
 | --- | --- | --- |
 | `catalogue_items` | id, tenant\_id, name, description, unit\_price\_paise, hsn\_sac (text), tax\_rate (numeric(5,2)), is\_active, created\_at, updated\_at, deleted\_at | Changing a price never changes sent quotes |
@@ -303,7 +305,16 @@ create policy tenant_isolation on leads
 
 **Release gates**
 
-- A CI test lists every table with a `tenant_id` column and fails if RLS or the policy is missing.
+- A CI test (the RLS release gate) scans a declared list of Northstar schemas (`northstar`, plus any schema a later phase adopts) and fails the build if:
+  - a table with `tenant_id` has it nullable or not `uuid`, has RLS not enabled or not forced, or lacks the `tenant_isolation` policy exactly as written above;
+  - any other policy on a tenant table is permissive (extra policies, such as the staff policy, must be restrictive, because permissive policies combine with OR);
+  - a table without `tenant_id` is not declared platform-wide (for example `tenants`, `user_profiles`, `plans`, JobRunr's tables);
+  - a view lacks `security_invoker`, or a materialized view exists (both would read with the owner's rights);
+  - a `SECURITY DEFINER` function is not on the declared allowlist;
+  - an append-only table gives `app_user` more than the rules below allow.
+- Append-only tables come in two tiers:
+  - **Insert-only** (`timeline_events`, `audit_log`, `lead_score_history`, `credit_notes`): `app_user` has no update, delete or truncate.
+  - **Lifecycle** (`webhook_events`, `payments`, `invoices`, `refunds`): no delete or truncate, and no table-level update. The table's migration revokes table-level update first, then grants column-level update on a declared list of status and processing columns only; the gate fails if any other column is updatable. Amounts, numbers, lines and parties never change.
 - A cross-tenant test creates two tenants and asserts zero rows leak through API, jobs, exports and webhooks.
 - No missing `app.tenant_id` ever returns rows: `current_setting(..., true)` returns null, so the policy matches nothing.
 

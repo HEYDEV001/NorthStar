@@ -9,7 +9,7 @@ Northstar records, calculates and documents money for each business; it never ho
 1. **Every accepted price is tied to one quote version.** Prices on a sent quote never change.
 2. **Every rupee is a ledger entry.** Amount due is calculated, never typed.
 3. **Paid means Razorpay says paid.** No screenshot, message, AI output or manual tick marks a payment paid (a staff-recorded cash payment is a separate, audited entry type, if enabled).
-4. **Financial documents are never deleted.** Corrections happen through new versions, cancellations and credit notes.
+4. **Financial documents are never deleted.** Corrections happen through new versions, cancellations and credit notes. In the database, the app can update only the status and processing columns of payments, invoices and refunds, and a trigger on each (added in Phase 5) allows only forward status transitions (`data-model.md` sections 7 and 12).
 5. **Money is integers.** All amounts in paise; tax computed per line and rounded once, by a fixed rule.
 6. **Commitments need permission.** Discounts above limit, refunds and cancellations after payment always need a human.
 

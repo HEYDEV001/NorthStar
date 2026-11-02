@@ -11,6 +11,19 @@ Flyway owns the schema. The Supabase CLI's own migrations are turned off (`supab
   (`data-model.md` section 12). The CI check fails if one is missing.
 - Follow `data-model.md` for keys, timestamps, money, enums and the indexes in section 13.
 
+## Before a migration merges
+
+The RLS release gate (`backend/src/test/java/com/northstar/RlsReleaseGate.java`, `data-model.md` section 12) runs in
+every build. Update its declarations in the same pull request:
+
+- A table without `tenant_id`: add it to the platform-wide list.
+- An insert-only table: revoke update from `app_user` in the migration.
+- A lifecycle table: revoke table-level update from `app_user`, grant update on the status and processing columns
+  only, and list exactly those columns in the gate.
+- A `SECURITY DEFINER` function: add it to the allowlist, with a reason in the migration.
+- A new schema: add it to the gate's schema list.
+- Views use `with (security_invoker = true)`. No materialized views.
+
 ## Who runs them
 
 Every environment runs migrations as `migrator`, the owner of `northstar`, so every table gets the same owner and

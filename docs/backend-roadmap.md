@@ -65,10 +65,11 @@ Phase 10 (pilot) needs the frontend and is planned after it.
 **Specs:** `data-model.md` §1, §3, §6 (leads only), §10 (audit), §12, §13; `build-document.md` §3, §15, §17; `integration-specs.md` §1, §6 (email).
 **Modules:** `tenancy`, `admin` (role only), `workflow` (actions core), `integrations` (adapter pattern, email).
 
-- [ ] 1.1 Database roles: `migrator`, `app_user` (no BYPASSRLS), `app_admin`; grants and default privileges. Passwords set outside migrations.
-- [ ] 1.2 RLS release-gate test: every table with `tenant_id` has RLS enabled, forced and the `tenant_isolation` policy
-  - Append-only tables (`timeline_events`, `audit_log`, `webhook_events`, `lead_score_history`, issued financial records) have update and delete revoked from `app_user`; the release-gate test checks it.
+- [x] 1.1 Database roles: `migrator`, `app_user` (no BYPASSRLS), `app_admin`; grants and default privileges. Passwords set outside migrations.
+- [x] 1.2 RLS release-gate test: every table with `tenant_id` has RLS enabled, forced and the `tenant_isolation` policy (rules in `data-model.md` §12)
+  - Append-only tables in two tiers: insert-only (`timeline_events`, `audit_log`, `lead_score_history`, `credit_notes`) and lifecycle (`webhook_events`, `payments`, `invoices`, `refunds`: table-level update revoked, column-level update on declared columns only). The gate checks both.
 - [ ] 1.3 Tenancy schema: `tenants`, `user_profiles`, `memberships` (one active membership per user, D4), `invites`, `staff_skills`, `staff_leave`, `audit_log`
+  - `tenants` and `user_profiles` go on the gate's platform-wide list; `audit_log` is insert-only (update revoked).
 - [ ] 1.4 Tenant context: `set_config('app.tenant_id' | 'app.user_id' | 'app.role', …, true)` at the start of every transaction; the app's connection switches to `app_user`
   - The app connects through Supabase's transaction pooler, so its JDBC URL needs `prepareThreshold=0`. Flyway uses a direct or session-pooler connection.
 - [ ] 1.5 Supabase token verification with Spring Security, membership lookup, deactivated user rejected on the next request (P13)
@@ -77,10 +78,11 @@ Phase 10 (pilot) needs the frontend and is planned after it.
 - [ ] 1.8 Members: list, change role, deactivate; at least one active admin always (P14); audit entries
 - [ ] 1.9 Invites: create, revoke, accept; single-use, expiry (P12)
 - [ ] 1.10 Job and action core: JobRunr (own schema), worker sets tenant context from the job, `actions` table with idempotency key and statuses, retryable / permanent / auth classification, retry table; no tenant context → fails loudly (P10)
-  - JobRunr's tables are created by a Flyway migration as `migrator`, with JobRunr's own table creation turned off. `app_user` gets full DML including delete on JobRunr's tables only.
+  - JobRunr's tables are created by a Flyway migration as `migrator`, with JobRunr's own table creation turned off. `app_user` gets full DML including delete on JobRunr's tables only. JobRunr's tables go on the gate's platform-wide list.
 - [ ] 1.11 Fake-adapter test kit: duplicates, delays, timeouts, 429, auth failures
 - [ ] 1.12 Email adapter (Resend) behind the integrations interface; invite email sent as an action
 - [ ] 1.13 Minimal lead tables: `contacts`, `workflows`, `workflow_versions`, `leads`, with the staff policy on `leads` (P11)
+  - The staff policy is restrictive; the gate fails on a second permissive policy.
 - [ ] 1.14 Cross-tenant suite P9, P10, P11 runs on every PR
 - [ ] 1.15 Staging deploy pipeline (needs DigitalOcean and the Supabase staging project from Step 0; may slip without blocking Phase 2)
   - Run `db/bootstrap/roles.sql` on the staging project and verify it there first: hosted `postgres` is not a full superuser.
@@ -95,6 +97,7 @@ Phase 10 (pilot) needs the frontend and is planned after it.
 **Modules:** `integrations`, `contacts`, `crm`.
 
 - [ ] 2.1 Integration schema: `integrations`, `integration_credentials` (encrypted, decrypted only in the worker), `whatsapp_accounts`, `webhook_events`
+  - `webhook_events` is a lifecycle table; declare its updatable columns in the gate. Its nullable `tenant_id` fails the gate as specified, so settle that open question here. Any new schema (`ingest`, `secrets`) joins the gate's schema list.
 - [ ] 2.2 `POST /webhooks/whatsapp`: verify signature (P15) → store → dedupe (P1) → resolve tenant by phone number ID (P16) → queue → 200
 - [ ] 2.3 Conversation schema: `contact_sources`, `conversations`, `messages`, `message_templates`
 - [ ] 2.4 Inbound job: normalise to an `events` row; upsert contact by normalised phone; join the open lead's conversation (W1); lead created in one transaction (P3)
@@ -171,6 +174,7 @@ Phase 10 (pilot) needs the frontend and is planned after it.
 - [ ] 5.2 Tax maths: per line, half-up to the paisa, CGST/SGST split, IGST for another state (W24); unit tests include the §9 worked example
 - [ ] 5.3 Quotes: versions, send, accept, request changes, supersede (W11, W12, W14), validity expiry (W15), discount limit with admin approval (W13)
 - [ ] 5.4 Ledger: `payments`; amount due derived from the accepted version and the ledger; partial payments (W19)
+  - `payments`, `invoices` and `refunds` are lifecycle tables: declare their updatable columns in the gate, and add a trigger on each that allows only forward status transitions.
 - [ ] 5.5 Razorpay: payment link action; webhook verify → store → dedupe → one ledger entry per payment ID (W18); link expiry (W16); late payment after release (W17); reconciliation every 15 min (W20); failed payments (W21)
 - [ ] 5.6 Storage: private buckets, `tenant_id/` paths, short-lived signed URLs, upload type and size checks (P23)
 - [ ] 5.7 Invoice templates: `.docx` upload, missing mapped fields block the template (W23); PDF via poi-tl and Gotenberg as an action
