@@ -51,8 +51,9 @@ cd frontend && npm run lint
 cd frontend && npm run test                # Vitest
 cd frontend && npm run dev                 # local app on :5173
 
-# database
-cd backend && ./mvnw initialize flyway:migrate   # against the DB in .env.local (initialize loads it)
+# database (roles first, once per environment and after `supabase db reset`: db/bootstrap/README.md)
+docker exec -i supabase_db_NorthStar psql -U postgres -d postgres -v ON_ERROR_STOP=1 < db/bootstrap/roles.sql
+cd backend && ./mvnw initialize flyway:migrate   # as migrator, against the DB in .env.local (initialize loads it)
 
 # end to end (staging)
 cd frontend && npm run e2e                 # Playwright

@@ -67,19 +67,24 @@ Phase 10 (pilot) needs the frontend and is planned after it.
 
 - [ ] 1.1 Database roles: `migrator`, `app_user` (no BYPASSRLS), `app_admin`; grants and default privileges. Passwords set outside migrations.
 - [ ] 1.2 RLS release-gate test: every table with `tenant_id` has RLS enabled, forced and the `tenant_isolation` policy
+  - Append-only tables (`timeline_events`, `audit_log`, `webhook_events`, `lead_score_history`, issued financial records) have update and delete revoked from `app_user`; the release-gate test checks it.
 - [ ] 1.3 Tenancy schema: `tenants`, `user_profiles`, `memberships` (one active membership per user, D4), `invites`, `staff_skills`, `staff_leave`, `audit_log`
-- [ ] 1.4 Tenant context: `set_config('app.tenant_id' | 'app.user_id' | 'app.role', …, true)` at the start of every transaction
+- [ ] 1.4 Tenant context: `set_config('app.tenant_id' | 'app.user_id' | 'app.role', …, true)` at the start of every transaction; the app's connection switches to `app_user`
+  - The app connects through Supabase's transaction pooler, so its JDBC URL needs `prepareThreshold=0`. Flyway uses a direct or session-pooler connection.
 - [ ] 1.5 Supabase token verification with Spring Security, membership lookup, deactivated user rejected on the next request (P13)
 - [ ] 1.6 API conventions: `/api/v1`, `{code, message, details}` errors, other tenant's record → 404 (P9)
 - [ ] 1.7 Create business and first admin; `GET /api/v1/me`
 - [ ] 1.8 Members: list, change role, deactivate; at least one active admin always (P14); audit entries
 - [ ] 1.9 Invites: create, revoke, accept; single-use, expiry (P12)
 - [ ] 1.10 Job and action core: JobRunr (own schema), worker sets tenant context from the job, `actions` table with idempotency key and statuses, retryable / permanent / auth classification, retry table; no tenant context → fails loudly (P10)
+  - JobRunr's tables are created by a Flyway migration as `migrator`, with JobRunr's own table creation turned off. `app_user` gets full DML including delete on JobRunr's tables only.
 - [ ] 1.11 Fake-adapter test kit: duplicates, delays, timeouts, 429, auth failures
 - [ ] 1.12 Email adapter (Resend) behind the integrations interface; invite email sent as an action
 - [ ] 1.13 Minimal lead tables: `contacts`, `workflows`, `workflow_versions`, `leads`, with the staff policy on `leads` (P11)
 - [ ] 1.14 Cross-tenant suite P9, P10, P11 runs on every PR
 - [ ] 1.15 Staging deploy pipeline (needs DigitalOcean and the Supabase staging project from Step 0; may slip without blocking Phase 2)
+  - Run `db/bootstrap/roles.sql` on the staging project and verify it there first: hosted `postgres` is not a full superuser.
+  - Flyway uses a direct or session-pooler connection; the app uses the transaction pooler with `prepareThreshold=0`.
 
 **Decided:** D4 (one active membership per user), D6 (email login only).
 **New dependencies:** Spring Security OAuth2 resource server, JobRunr.
