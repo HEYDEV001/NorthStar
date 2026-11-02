@@ -1,0 +1,27 @@
+# Secrets: real values never enter the repo. .env.example (names only) is tracked.
+.env
+.env.*
+!.env.example
+
+# Claude Code personal overrides (project .claude/settings.json is tracked)
+.claude/settings.local.json
+
+# OS and editors
+.DS_Store
+.idea/
+*.iml
+.vscode/*
+!.vscode/extensions.json
+
+# Backend (Maven)
+target/
+
+# Frontend (Node / Vite / Playwright)
+node_modules/
+dist/
+coverage/
+playwright-report/
+test-results/
+
+# Logs
+*.log
