@@ -13,16 +13,22 @@ Flyway owns the schema. The Supabase CLI's own migrations are turned off (`supab
 
 ## Who runs them
 
-| Where | How | Role |
-| --- | --- | --- |
-| Tests | Flyway applies this folder to the Testcontainers database before each test context | `postgres` |
-| Local Supabase | `cd backend && ./mvnw initialize flyway:migrate` | `FLYWAY_USER` from `.env.local` |
-| Staging, production | Deploy pipeline (Phase 1) | `migrator` |
+Every environment runs migrations as `migrator`, the owner of `northstar`, so every table gets the same owner and
+the same default privileges. The roles must exist first: run `db/bootstrap/roles.sql` once per environment
+(`db/bootstrap/README.md`).
+
+| Where | How |
+| --- | --- |
+| Tests | Test setup runs the bootstrap script, then Flyway applies this folder as `migrator` before each test context |
+| Local Supabase | `cd backend && ./mvnw initialize flyway:migrate`, with `FLYWAY_USER=migrator` in `.env.local` |
+| Staging, production | Deploy pipeline (Phase 1), over a direct or session-pooler connection |
 
 The running app never migrates: Flyway is not on its runtime classpath, and it connects as `app_user`.
 
-Until Phase 1 creates the `migrator` role, `FLYWAY_USER` is `postgres` locally. `FLYWAY_URL` is a JDBC URL:
-`jdbc:postgresql://127.0.0.1:54322/postgres`.
+`FLYWAY_URL` is a JDBC URL: `jdbc:postgresql://127.0.0.1:54322/postgres` locally.
 
-`supabase db reset` wipes the local database, including `northstar`; run the migrate command again afterwards.
-`flyway:clean` is disabled.
+`supabase db reset` wipes the local database, including `northstar`. Afterwards, run the bootstrap script and set
+the passwords again, then run the migrate command. `flyway:clean` is disabled.
+
+New tables give `app_user` select, insert and update, and `app_admin` select, automatically. A migration grants
+delete only where the spec allows hard deletes; financial records and append-only tables never get it.

@@ -46,6 +46,7 @@ class NorthstarSchemaTests {
     @Test
     @Transactional
     void tablesCreatedLaterAreNotGrantedToBrowserRoles() {
+        jdbc.sql("set local role migrator").update();
         jdbc.sql("create table northstar.privilege_probe (id int)").update();
 
         Boolean anyAccess = jdbc.sql("select has_table_privilege('anon', 'northstar.privilege_probe', 'SELECT')"

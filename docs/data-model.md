@@ -273,6 +273,13 @@ The React app never queries tables directly; Spring Boot connects as a restricte
 | `migrator` | Flyway only | Yes |
 | Supabase `service_role` key | Never in the app runtime; kept for emergencies | Yes |
 
+**Role setup and privileges**
+
+- The three roles are created once per environment by `db/bootstrap/roles.sql`, run as `postgres`, because Flyway must log in as `migrator` and roles belong to the whole database server. Logins and passwords are set per environment with psql's `\password`; no password is stored in the repo.
+- `migrator` owns the `northstar` schema and every object in it, and every Flyway migration runs as `migrator` in every environment, tests included.
+- Default privileges on new tables: `app_user` gets select, insert and update; `app_admin` gets select. Delete is never a default: a table that allows hard deletes grants it to `app_user` in its own migration, and financial records and append-only tables never do. JobRunr's tables are the one exception, with full DML for `app_user`.
+- Neither app role can read or change `flyway_schema_history`.
+
 **Per-transaction context** (set by a Spring interceptor from the verified Supabase token and membership lookup; workers set it from the job's tenant\_id):
 
 ```sql

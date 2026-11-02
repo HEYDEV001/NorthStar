@@ -1,5 +1,11 @@
 package com.northstar;
 
+import java.sql.Connection;
+import java.sql.DriverManager;
+import java.sql.SQLException;
+import java.util.UUID;
+import org.flywaydb.core.Flyway;
+import org.springframework.boot.flyway.autoconfigure.FlywayMigrationStrategy;
 import org.springframework.boot.test.context.TestConfiguration;
 import org.springframework.boot.testcontainers.service.connection.ServiceConnection;
 import org.springframework.context.annotation.Bean;
@@ -24,9 +30,29 @@ public class TestcontainersConfiguration {
         return new SupabasePostgresContainer();
     }
 
+    /** Sets up the roles as postgres, then migrates as migrator, the same order every environment follows. */
+    @Bean
+    FlywayMigrationStrategy migrateAsMigrator(PostgreSQLContainer postgres) {
+        return flyway -> {
+            String migratorPassword = UUID.randomUUID().toString();
+            try (Connection admin = DriverManager.getConnection(
+                    postgres.getJdbcUrl(), postgres.getUsername(), postgres.getPassword())) {
+                DatabaseBootstrap.applyRoles(admin);
+                DatabaseBootstrap.enableLogin(admin, "migrator", migratorPassword);
+            } catch (SQLException e) {
+                throw new IllegalStateException("Database bootstrap failed", e);
+            }
+            Flyway.configure()
+                    .configuration(flyway.getConfiguration())
+                    .dataSource(postgres.getJdbcUrl(), "migrator", migratorPassword)
+                    .load()
+                    .migrate();
+        };
+    }
+
     /**
      * The image initialises as supabase_admin and loads its config from /etc/postgresql; tests then connect as the
-     * non-superuser postgres role, the same role migrations get on hosted Supabase.
+     * non-superuser postgres role, the same admin role operators get on hosted Supabase.
      */
     static class SupabasePostgresContainer extends PostgreSQLContainer {
 
