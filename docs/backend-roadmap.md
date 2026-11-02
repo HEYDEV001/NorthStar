@@ -52,8 +52,8 @@ Phase 10 (pilot) needs the frontend and is planned after it.
 **Specs:** `CLAUDE.md`, `build-document.md` §13, §19.
 
 - [x] 0.1 Repo hygiene: `.gitignore`, `.env.example`, `.editorconfig`, Claude Code deny rules, spec file names
-- [ ] 0.2 Backend skeleton: Spring Boot 4.1 on Java 21, module packages, Actuator health, Spotless, Testcontainers on `supabase/postgres`
-- [ ] 0.3 Database wiring: `db/migrations/` README, Flyway Maven plugin as `migrator`, Flyway applied to the test container, Supabase CLI migrations off, `site_url` → `:5173`
+- [x] 0.2 Backend skeleton: Spring Boot 4.1 on Java 21, module packages, Actuator health, Spotless, Testcontainers on `supabase/postgres`
+- [x] 0.3 Database wiring: `db/migrations/` README, Flyway Maven plugin as `migrator`, Flyway applied to the test container, Supabase CLI migrations off, `site_url` → `:5173`
 - [ ] 0.4 CI: GitHub Actions `backend` job (JDK 21, `./mvnw verify`); make it a required check in the `protect-main` ruleset
 - [ ] 0.5 Check every backend command in `CLAUDE.md` and fix the Commands section
 
