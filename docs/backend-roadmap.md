@@ -18,15 +18,16 @@ Tick a step when it is merged to `main`.
 
 Payments, auth, tenant isolation and webhook steps always get a human review before merge.
 
-## Decisions to confirm before Phase 1
+## Decisions (confirmed 2 Nov 2026)
 
-| # | Decision | Recommendation | Why |
+| # | Decision | Outcome | Why |
 | --- | --- | --- | --- |
 | D1 | Order of phases 5 and 6 | Build 6 (Scheduling) before 5 (Commercial), keeping the numbers | W16, W17 and W20 (Phase 5) release, re-check and extend slot holds, which Phase 6 builds. The build document lets 4–7 overlap. |
 | D2 | Where the job and action core lives | Phase 1, not Phase 3 | P10 (Phase 1) needs jobs to fail loudly without tenant context, and Phase 2 sends WhatsApp messages as `actions` rows. Phase 3 then adds the engine, timers and approval mode on top. |
 | D3 | When tables are created | In the phase that first uses them, plus the minimal lead tables in Phase 1 | Smaller migrations that are easier to review. P11 (Phase 1) needs `leads` to prove staff isolation. |
-| D4 | User who belongs to more than one business | Decide in Phase 1: one membership per user for MVP, or a tenant claim in the Supabase token | `CLAUDE.md` forbids taking the tenant from a header, body or query parameter, so the token or the membership lookup must decide. |
-| D5 | Backend-first order | Add a note to `build-document.md` section 19 in the same PR as this file | `CLAUDE.md`: spec changes go into `docs/` first. |
+| D4 | User who belongs to more than one business | One business per user for MVP. `memberships` can still hold several rows per user, but a partial unique index allows only one active membership per user. A tenant claim in the Supabase token can be added later without a migration. | `CLAUDE.md` forbids taking the tenant from a header, body or query parameter, so the membership lookup decides. The `data-model.md` change ships with step 1.3. |
+| D5 | Backend-first order | Noted in `build-document.md` section 19 | `CLAUDE.md`: spec changes go into `docs/` first. |
+| D6 | Staff login | Email only for MVP | Closes the phone OTP question in `data-model.md` section 15. |
 
 ## Phase overview
 
@@ -66,7 +67,7 @@ Phase 10 (pilot) needs the frontend and is planned after it.
 
 - [ ] 1.1 Database roles: `migrator`, `app_user` (no BYPASSRLS), `app_admin`; grants and default privileges. Passwords set outside migrations.
 - [ ] 1.2 RLS release-gate test: every table with `tenant_id` has RLS enabled, forced and the `tenant_isolation` policy
-- [ ] 1.3 Tenancy schema: `tenants`, `user_profiles`, `memberships`, `invites`, `staff_skills`, `staff_leave`, `audit_log`
+- [ ] 1.3 Tenancy schema: `tenants`, `user_profiles`, `memberships` (one active membership per user, D4), `invites`, `staff_skills`, `staff_leave`, `audit_log`
 - [ ] 1.4 Tenant context: `set_config('app.tenant_id' | 'app.user_id' | 'app.role', …, true)` at the start of every transaction
 - [ ] 1.5 Supabase token verification with Spring Security, membership lookup, deactivated user rejected on the next request (P13)
 - [ ] 1.6 API conventions: `/api/v1`, `{code, message, details}` errors, other tenant's record → 404 (P9)
@@ -80,8 +81,8 @@ Phase 10 (pilot) needs the frontend and is planned after it.
 - [ ] 1.14 Cross-tenant suite P9, P10, P11 runs on every PR
 - [ ] 1.15 Staging deploy pipeline (needs DigitalOcean and the Supabase staging project from Step 0; may slip without blocking Phase 2)
 
-**Needs answers:** D4; staff login by phone OTP as well as email (`data-model.md` §15).
-**New dependencies:** Spring Security OAuth2 resource server, JobRunr, Flyway (tests).
+**Decided:** D4 (one active membership per user), D6 (email login only).
+**New dependencies:** Spring Security OAuth2 resource server, JobRunr.
 
 ## Phase 2 — WhatsApp and conversations
 

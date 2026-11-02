@@ -466,6 +466,8 @@ Converted at ₹96.5 per USD; planning estimates to confirm on provider pricing 
 
 The build runs in ten phases, each closed by a gate that must pass before the next starts; external approvals (Meta, Google) start in week 1 because they usually set the real timeline.
 
+**Build order (decided 2 Nov 2026):** the backend is built first, through phases 1–9, following `backend-roadmap.md`; the frontend parts of each phase follow afterwards, with gates proven through the API until then. Phase numbers and edge-case phases stay as below, with two changes: Scheduling (6) is built before Commercial (5), and the job and action core (JobRunr, action log, retries) moves from Phase 3 to Phase 1.
+
 **Step 0, week 1, in parallel**
 
 - [ ] Meta: business verification, Meta app, Tech Provider application, WhatsApp / ads / Conversions API permissions
