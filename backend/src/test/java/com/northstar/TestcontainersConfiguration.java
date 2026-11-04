@@ -30,24 +30,37 @@ public class TestcontainersConfiguration {
         return new SupabasePostgresContainer();
     }
 
+    /** Throwaway passwords for this test run's migrator and app_user logins. */
+    record TestLogins(String migratorPassword, String appUserPassword) {}
+
+    @Bean
+    TestLogins testLogins() {
+        return new TestLogins(UUID.randomUUID().toString(), UUID.randomUUID().toString());
+    }
+
     /** Sets up the roles as postgres, then migrates as migrator, the same order every environment follows. */
     @Bean
-    FlywayMigrationStrategy migrateAsMigrator(PostgreSQLContainer postgres) {
+    FlywayMigrationStrategy migrateAsMigrator(PostgreSQLContainer postgres, TestLogins logins) {
         return flyway -> {
-            String migratorPassword = UUID.randomUUID().toString();
             try (Connection admin = DriverManager.getConnection(
                     postgres.getJdbcUrl(), postgres.getUsername(), postgres.getPassword())) {
                 DatabaseBootstrap.applyRoles(admin);
-                DatabaseBootstrap.enableLogin(admin, "migrator", migratorPassword);
+                DatabaseBootstrap.enableLogin(admin, "migrator", logins.migratorPassword());
+                DatabaseBootstrap.enableLogin(admin, "app_user", logins.appUserPassword());
             } catch (SQLException e) {
                 throw new IllegalStateException("Database bootstrap failed", e);
             }
             Flyway.configure()
                     .configuration(flyway.getConfiguration())
-                    .dataSource(postgres.getJdbcUrl(), "migrator", migratorPassword)
+                    .dataSource(postgres.getJdbcUrl(), "migrator", logins.migratorPassword())
                     .load()
                     .migrate();
         };
+    }
+
+    @Bean
+    AppUserDatabase appUserDatabase(PostgreSQLContainer postgres, TestLogins logins) {
+        return new AppUserDatabase(postgres, logins.appUserPassword());
     }
 
     /**

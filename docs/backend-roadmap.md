@@ -68,15 +68,17 @@ Phase 10 (pilot) needs the frontend and is planned after it.
 - [x] 1.1 Database roles: `migrator`, `app_user` (no BYPASSRLS), `app_admin`; grants and default privileges. Passwords set outside migrations.
 - [x] 1.2 RLS release-gate test: every table with `tenant_id` has RLS enabled, forced and the `tenant_isolation` policy (rules in `data-model.md` §12)
   - Append-only tables in two tiers: insert-only (`timeline_events`, `audit_log`, `lead_score_history`, `credit_notes`) and lifecycle (`webhook_events`, `payments`, `invoices`, `refunds`: table-level update revoked, column-level update on declared columns only). The gate checks both.
-- [ ] 1.3 Tenancy schema: `tenants`, `user_profiles`, `memberships` (one active membership per user, D4), `invites`, `staff_skills`, `staff_leave`, `audit_log`
-  - `tenants` and `user_profiles` go on the gate's platform-wide list; `audit_log` is insert-only (update revoked).
+- [x] 1.3 Tenancy schema: `tenants`, `user_profiles`, `memberships` (one active membership per user, D4), `invites`, `staff_skills`, `staff_leave`, `audit_log`
+  - `tenants` and `user_profiles` go on the gate's platform-wide list with their exact policies; `audit_log` is insert-only (update revoked). Composite tenant foreign keys from here on, enforced by the gate.
 - [ ] 1.4 Tenant context: `set_config('app.tenant_id' | 'app.user_id' | 'app.role', …, true)` at the start of every transaction; the app's connection switches to `app_user`
   - The app connects through Supabase's transaction pooler, so its JDBC URL needs `prepareThreshold=0`. Flyway uses a direct or session-pooler connection.
 - [ ] 1.5 Supabase token verification with Spring Security, membership lookup, deactivated user rejected on the next request (P13)
 - [ ] 1.6 API conventions: `/api/v1`, `{code, message, details}` errors, other tenant's record → 404 (P9)
 - [ ] 1.7 Create business and first admin; `GET /api/v1/me`
+  - Creating a business sets `app.tenant_id` to the new tenant's ID (and `app.role` to `admin`), then inserts the tenant and the first admin membership in one transaction.
 - [ ] 1.8 Members: list, change role, deactivate; at least one active admin always (P14); audit entries
 - [ ] 1.9 Invites: create, revoke, accept; single-use, expiry (P12)
+  - Acceptance runs before the user has tenant context, so it uses one allowlisted `SECURITY DEFINER` function that looks up only by token hash and returns the minimum needed; the endpoint calling it is rate-limited.
 - [ ] 1.10 Job and action core: JobRunr (own schema), worker sets tenant context from the job, `actions` table with idempotency key and statuses, retryable / permanent / auth classification, retry table; no tenant context → fails loudly (P10)
   - JobRunr's tables are created by a Flyway migration as `migrator`, with JobRunr's own table creation turned off. `app_user` gets full DML including delete on JobRunr's tables only. JobRunr's tables go on the gate's platform-wide list.
 - [ ] 1.11 Fake-adapter test kit: duplicates, delays, timeouts, 429, auth failures

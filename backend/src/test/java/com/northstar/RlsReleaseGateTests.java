@@ -2,7 +2,7 @@ package com.northstar;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
-import java.util.HashSet;
+import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
@@ -151,7 +151,8 @@ class RlsReleaseGateTests {
             sql("create table " + PROBE + " (id int)");
             assertThat(RlsReleaseGate.NORTHSTAR.violations(jdbc))
                     .containsExactly(PROBE + ": no tenant_id and not declared platform-wide");
-            assertThat(gateWith(Set.of(PROBE), Set.of(), Map.of(), Set.of())).isEmpty();
+            assertThat(gateWith(Map.of(PROBE, Set.of()), Set.of(), Map.of(), Set.of()))
+                    .isEmpty();
         }
 
         @Test
@@ -179,7 +180,7 @@ class RlsReleaseGateTests {
             sql("create function northstar.gate_fn(x int) returns int language sql security definer as 'select x'");
             assertThat(RlsReleaseGate.NORTHSTAR.violations(jdbc))
                     .containsExactly("northstar.gate_fn(x integer): SECURITY DEFINER function not on the allowlist");
-            assertThat(gateWith(Set.of(), Set.of(), Map.of(), Set.of("northstar.gate_fn(x integer)")))
+            assertThat(gateWith(Map.of(), Set.of(), Map.of(), Set.of("northstar.gate_fn(x integer)")))
                     .isEmpty();
         }
 
@@ -195,9 +196,110 @@ class RlsReleaseGateTests {
             sql("create schema gate_other");
             sql("create table gate_other.t (id int)");
             assertThat(RlsReleaseGate.NORTHSTAR.violations(jdbc)).isEmpty();
-            assertThat(new RlsReleaseGate(List.of("northstar", "gate_other"), Set.of(), Set.of(), Map.of(), Set.of())
+            assertThat(new RlsReleaseGate(List.of("northstar", "gate_other"), Map.of(), Set.of(), Map.of(), Set.of())
                             .violations(jdbc))
                     .contains("gate_other.t: no tenant_id and not declared platform-wide");
+        }
+    }
+
+    @Nested
+    @Transactional
+    class PlatformTables {
+
+        private static final String SELF_ONLY = "(id = (current_setting('app.tenant_id'::text, true))::uuid)";
+
+        @BeforeEach
+        void createProbeAsMigrator() {
+            sql("set local role migrator");
+            sql("create table " + PROBE + " (id uuid primary key)");
+            sql("alter table " + PROBE + " enable row level security");
+            sql("alter table " + PROBE + " force row level security");
+            sql("create policy probe_select on " + PROBE
+                    + " for select to app_user using (id = current_setting('app.tenant_id', true)::uuid)");
+        }
+
+        @Test
+        void policiesMatchingTheDeclarationPass() {
+            assertThat(gateDeclaring(RlsReleaseGate.policy("probe_select", "SELECT", SELF_ONLY, null)))
+                    .isEmpty();
+        }
+
+        @Test
+        void changedPolicyFails() {
+            sql("drop policy probe_select on " + PROBE);
+            sql("create policy probe_select on " + PROBE + " for select to app_user using (true)");
+            assertThat(gateDeclaring(RlsReleaseGate.policy("probe_select", "SELECT", SELF_ONLY, null)))
+                    .containsExactly(
+                            PROBE + ": declared policy missing: probe_select PERMISSIVE SELECT to {app_user} using "
+                                    + SELF_ONLY + " check -",
+                            PROBE + ": undeclared or changed policy: probe_select PERMISSIVE SELECT to {app_user}"
+                                    + " using true check -");
+        }
+
+        @Test
+        void extraPolicyFails() {
+            sql("create policy probe_insert on " + PROBE + " for insert to app_user with check (true)");
+            assertThat(gateDeclaring(RlsReleaseGate.policy("probe_select", "SELECT", SELF_ONLY, null)))
+                    .containsExactly(PROBE + ": undeclared or changed policy: probe_insert PERMISSIVE INSERT to"
+                            + " {app_user} using - check true");
+        }
+
+        @Test
+        void rlsNotForcedFails() {
+            sql("alter table " + PROBE + " no force row level security");
+            assertThat(gateDeclaring(RlsReleaseGate.policy("probe_select", "SELECT", SELF_ONLY, null)))
+                    .containsExactly(PROBE + ": RLS not forced");
+        }
+
+        private List<String> gateDeclaring(String policy) {
+            return gateWith(Map.of(PROBE, Set.of(policy)), Set.of(), Map.of(), Set.of());
+        }
+    }
+
+    @Nested
+    @Transactional
+    class TenantForeignKeys {
+
+        @BeforeEach
+        void createParentAsMigrator() {
+            sql("set local role migrator");
+            createTenantTable(
+                    "northstar.gate_parent", "id uuid primary key, tenant_id uuid not null, unique (tenant_id, id)");
+        }
+
+        @Test
+        void compositeForeignKeyPasses() {
+            createTenantTable(
+                    PROBE,
+                    "id int, tenant_id uuid not null, parent_id uuid,"
+                            + " foreign key (tenant_id, parent_id) references northstar.gate_parent (tenant_id, id)");
+            assertThat(RlsReleaseGate.NORTHSTAR.violations(jdbc)).isEmpty();
+        }
+
+        @Test
+        void foreignKeyWithoutTenantIdFails() {
+            createTenantTable(
+                    PROBE,
+                    "id int, tenant_id uuid not null,"
+                            + " parent_id uuid constraint probe_parent_fk references northstar.gate_parent (id)");
+            assertThat(RlsReleaseGate.NORTHSTAR.violations(jdbc))
+                    .containsExactly(PROBE + ": foreign key probe_parent_fk to northstar.gate_parent does not include"
+                            + " tenant_id");
+        }
+
+        @Test
+        void foreignKeyToAPlatformTableNeedsNoTenantId() {
+            createTenantTable(PROBE, "id int, tenant_id uuid not null references northstar.tenants (id)");
+            assertThat(RlsReleaseGate.NORTHSTAR.violations(jdbc)).isEmpty();
+        }
+
+        private void createTenantTable(String table, String columns) {
+            sql("create table " + table + " (" + columns + ")");
+            sql("alter table " + table + " enable row level security");
+            sql("alter table " + table + " force row level security");
+            sql("create policy tenant_isolation on " + table + " for all to app_user"
+                    + " using (tenant_id = current_setting('app.tenant_id', true)::uuid)"
+                    + " with check (tenant_id = current_setting('app.tenant_id', true)::uuid)");
         }
     }
 
@@ -271,21 +373,21 @@ class RlsReleaseGateTests {
         }
 
         private List<String> insertOnlyGate() {
-            return gateWith(Set.of(PROBE), Set.of(PROBE), Map.of(), Set.of());
+            return gateWith(Map.of(PROBE, Set.of()), Set.of(PROBE), Map.of(), Set.of());
         }
 
         private List<String> lifecycleGate() {
-            return gateWith(Set.of(PROBE), Set.of(), Map.of(PROBE, Set.of("status")), Set.of());
+            return gateWith(Map.of(PROBE, Set.of()), Set.of(), Map.of(PROBE, Set.of("status")), Set.of());
         }
     }
 
     private List<String> gateWith(
-            Set<String> platformTables,
+            Map<String, Set<String>> platformTables,
             Set<String> insertOnlyTables,
             Map<String, Set<String>> lifecycleTables,
             Set<String> securityDefinerFunctions) {
-        Set<String> allPlatformTables = new HashSet<>(RlsReleaseGate.NORTHSTAR.platformTables());
-        allPlatformTables.addAll(platformTables);
+        Map<String, Set<String>> allPlatformTables = new HashMap<>(RlsReleaseGate.NORTHSTAR.platformTables());
+        allPlatformTables.putAll(platformTables);
         return new RlsReleaseGate(
                         RlsReleaseGate.NORTHSTAR.schemas(),
                         allPlatformTables,

@@ -9,6 +9,10 @@ Flyway owns the schema. The Supabase CLI's own migrations are turned off (`supab
 - Every table goes in the `northstar` schema (`data-model.md` section 1).
 - A table with `tenant_id` gets RLS enabled, forced, and the `tenant_isolation` policy in the same file
   (`data-model.md` section 12). The CI check fails if one is missing.
+- A tenant table references another tenant table by `(tenant_id, x_id)` → parent `(tenant_id, id)`, and every
+  parent has `unique (tenant_id, id)` (`data-model.md` section 1). Foreign keys to `tenants` and `user_profiles` are
+  plain.
+- Trigger and helper functions are normal invoker functions, never `SECURITY DEFINER` unless allowlisted in the gate.
 - Follow `data-model.md` for keys, timestamps, money, enums and the indexes in section 13.
 
 ## Before a migration merges

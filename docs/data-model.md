@@ -11,6 +11,7 @@ The schema runs on Supabase Postgres (Mumbai), managed by Flyway migrations in `
 | Schema | All Northstar tables, and Flyway's `flyway_schema_history`, live in the `northstar` schema. It is not listed in Supabase's Data API schemas, and `anon` and `authenticated` have no access to it, so no table is reachable with the publishable key. Integration secrets use a separate private schema (section 9) |
 | Primary keys | `id uuid primary key default gen_random_uuid()` |
 | Tenant scope | Every business-owned table has `tenant_id uuid not null references tenants(id)`, including join and history tables |
+| Tenant foreign keys | A row in a tenant table references another tenant table by `(tenant_id, x_id)` → parent `(tenant_id, id)`, so it can never point at another tenant's row; every parent has `unique (tenant_id, id)`. Foreign keys to platform-wide tables (`tenants`, `user_profiles`) are plain. The RLS release gate (section 12) fails on any other foreign key between tenant tables |
 | Timestamps | `created_at timestamptz not null default now()`, `updated_at timestamptz` (trigger-maintained); stored in UTC, shown in the tenant timezone |
 | Money | `bigint` in paise (₹1 = 100) with `currency char(3) default 'INR'`; never floats |
 | Tax rates | `numeric(5,2)` percent (e.g. 18.00) |
@@ -140,12 +141,12 @@ A tenant is one client business; users come from Supabase Auth and get access to
 
 | Table | Columns (type) | Constraints / notes |
 | --- | --- | --- |
-| `tenants` | id, name, slug (text), industry (text), timezone (text, default 'Asia/Kolkata'), locale (text), brand\_tone (text), legal\_name (text), gstin (text), state\_code (char(2)), billing\_address (jsonb), approval\_mode (bool, default true), quiet\_hours (jsonb), status (text), plan\_id (uuid), activated\_at, created\_at, updated\_at | slug unique; status in ('onboarding','active','paused','suspended','closed'); not active until paid or trial override |
-| `user_profiles` | id (= auth.users.id), full\_name, phone, avatar\_path, is\_platform\_admin (bool), created\_at, deleted\_at | One row per Supabase Auth user; is\_platform\_admin only settable by Northstar |
-| `memberships` | id, tenant\_id, user\_id, role (text), status (text), whatsapp\_phone (text), created\_at, updated\_at | unique (tenant\_id, user\_id); role in ('admin','staff'); status in ('invited','active','deactivated') |
-| `invites` | id, tenant\_id, email (citext), role, token\_hash (text), invited\_by, expires\_at, accepted\_at, revoked\_at | Token stored hashed; expires 7 days after creation |
-| `staff_skills` | id, tenant\_id, membership\_id, skill (text) | unique (membership\_id, skill); used by assignment rules |
-| `staff_leave` | id, tenant\_id, membership\_id, starts\_on (date), ends\_on (date), reason (text), created\_by | ends\_on ≥ starts\_on; overlapping appointments flagged on insert |
+| `tenants` | id, name, slug (text), industry (text), timezone (text, default 'Asia/Kolkata'), locale (text), brand\_tone (text), legal\_name (text), gstin (text), state\_code (char(2)), billing\_address (jsonb), approval\_mode (bool, default true), quiet\_hours (jsonb), status (text), plan\_id (uuid), activated\_at, created\_at, updated\_at | slug unique; status in ('onboarding','active','paused','suspended','closed'), default 'onboarding'; not active until paid or trial override. Platform-wide with RLS: `app_user` sees and inserts only `id = app.tenant_id`, and updates it only when `app.role = 'admin'`. `app_user` can write only the settings columns (name, industry, timezone, locale, brand\_tone, legal\_name, gstin, state\_code, billing\_address, approval\_mode, quiet\_hours); never status, plan\_id, activated\_at or slug. plan\_id gets its foreign key when `plans` exists (Phase 8) |
+| `user_profiles` | id (= auth.users.id), full\_name, phone, avatar\_path, is\_platform\_admin (bool), created\_at, deleted\_at | One row per Supabase Auth user; is\_platform\_admin only settable by Northstar (no insert or update privilege for `app_user`). Platform-wide with RLS: `app_user` reads its own profile and those of current-tenant members, and inserts or updates only its own. No foreign key to `auth.users` (`migrator` cannot reference it on Supabase); the service creates profiles only from the verified token's user ID |
+| `memberships` | id, tenant\_id, user\_id, role (text), status (text), whatsapp\_phone (text), created\_at, updated\_at | unique (tenant\_id, user\_id); unique (tenant\_id, id); one active membership per user: unique (user\_id) where status = 'active' (D4; invited and deactivated rows don't count, and accepting an invite fails if the user is already active elsewhere); role in ('admin','staff'); status in ('invited','active','deactivated'); no delete |
+| `invites` | id, tenant\_id, email (text), role, token\_hash (text), invited\_by (membership), created\_at, expires\_at, accepted\_at, revoked\_at | Only the token's hash is stored, unique across tenants; expires 7 days after creation; one pending invite per tenant and email: unique (tenant\_id, lower(email)) where accepted\_at and revoked\_at are null (plain text + lower(), since citext is not installed by default on Supabase); never both accepted and revoked |
+| `staff_skills` | id, tenant\_id, membership\_id, skill (text), created\_at | unique (tenant\_id, membership\_id, skill); used by assignment rules; hard delete allowed |
+| `staff_leave` | id, tenant\_id, membership\_id, starts\_on (date), ends\_on (date), reason (text), created\_by (membership), created\_at, cancelled\_at, cancelled\_by (membership) | ends\_on ≥ starts\_on; cancelled\_at and cancelled\_by set together; never deleted (cancel instead); overlapping appointments flagged on insert |
 
 ## 4. Contacts, conversations and messages
 
@@ -193,6 +194,8 @@ JobRunr creates its own `jobrunr_*` tables in a separate schema; they hold no te
 Quotes are versioned, payments form a ledger keyed by Razorpay IDs, and invoices are numbered per financial year and never deleted.
 
 `payments`, `invoices` and `refunds` are lifecycle tables (section 12): only their declared status and processing columns can be updated. Phase 5 adds a trigger on each that allows only forward status transitions, so a status can never move back.
+
+Invoices, receipt vouchers and credit notes store a snapshot of the supplier's legal name, GSTIN, state code and address at the moment of issue, because those `tenants` columns stay editable (Phase 5).
 
 | Table | Columns (type) | Constraints / notes |
 | --- | --- | --- |
@@ -338,6 +341,9 @@ Every index starts with `tenant_id`; the unique constraints below are what make 
 | `meta_events (tenant_id, lead_id, event_name)` unique | Duplicate conversion events |
 | Exclusion on `appointments` / `slot_holds` per staff time range | Double-booking a staff member |
 | Partial unique: one open lead per contact (`leads (tenant_id, contact_id) where closed_at is null and deleted_at is null`) | Two active leads for one person |
+| Partial unique: one active membership per user (`memberships (user_id) where status = 'active'`; the one index not led by `tenant_id`, because it spans tenants by design) | A user active in two businesses (D4) |
+| Partial unique: one pending invite per email (`invites (tenant_id, lower(email)) where accepted_at is null and revoked_at is null`) | Duplicate pending invites |
+| `invites (token_hash)` unique | Two invites sharing a token |
 
 **Query indexes**
 

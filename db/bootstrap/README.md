@@ -49,6 +49,14 @@ select nspowner::regrole from pg_namespace where nspname = 'northstar';
 Expected: `migrator` and `app_admin` bypass RLS, `app_user` does not, none can create roles or databases, and
 `migrator` owns `northstar`.
 
+Also confirm two findings from the local image, which Phase 1 relies on:
+
+- `migrator` cannot create a foreign key to `auth.users` (`permission denied for schema auth`), so `user_profiles` has
+  none and the service enforces it.
+- `citext` is available but not installed, so `invites.email` is plain text with a `lower(email)` index.
+
+If staging behaves differently, stop and update `data-model.md` section 3 before production.
+
 1. Connect with `psql` as `postgres` on a direct or session-pooler connection (not the transaction pooler).
 2. Run `roles.sql`, then turn on login and set passwords with `\password` as above. Use generated passwords and keep
    them only in the environment's secret store.
