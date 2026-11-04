@@ -16,7 +16,7 @@ import org.springframework.jdbc.core.simple.JdbcClient;
  */
 record RlsReleaseGate(
         List<String> schemas,
-        Set<String> platformTables,
+        Map<String, Set<String>> platformTables,
         Set<String> insertOnlyTables,
         Map<String, Set<String>> lifecycleTables,
         Set<String> securityDefinerFunctions) {
@@ -24,9 +24,50 @@ record RlsReleaseGate(
     static final RlsReleaseGate NORTHSTAR = new RlsReleaseGate(
             // Schemas the gate scans. Add ingest and secrets here if Phase 2 adopts them.
             List.of("northstar"),
-            // Platform-wide tables with no tenant_id. tenants, user_profiles, plans and JobRunr's tables join when
-            // created.
-            Set.of("northstar.flyway_schema_history"),
+            // Platform-wide tables with no tenant_id, each with its exact RLS policies (see policy(...) for the
+            // format). An empty set means no policies: the app roles have no access. plans and JobRunr's tables join
+            // when created.
+            Map.of(
+                    "northstar.flyway_schema_history", Set.of(),
+                    "northstar.tenants",
+                            Set.of(
+                                    policy(
+                                            "tenant_select",
+                                            "SELECT",
+                                            "(id = (current_setting('app.tenant_id'::text, true))::uuid)",
+                                            null),
+                                    policy(
+                                            "tenant_insert",
+                                            "INSERT",
+                                            null,
+                                            "(id = (current_setting('app.tenant_id'::text, true))::uuid)"),
+                                    policy(
+                                            "tenant_update",
+                                            "UPDATE",
+                                            "((id = (current_setting('app.tenant_id'::text, true))::uuid)"
+                                                    + " AND (current_setting('app.role'::text, true) = 'admin'::text))",
+                                            "((id = (current_setting('app.tenant_id'::text, true))::uuid)"
+                                                    + " AND (current_setting('app.role'::text, true) = 'admin'::text))")),
+                    "northstar.user_profiles",
+                            Set.of(
+                                    policy(
+                                            "profile_select",
+                                            "SELECT",
+                                            "((id = (current_setting('app.user_id'::text, true))::uuid) OR (EXISTS ("
+                                                    + " SELECT FROM northstar.memberships m WHERE ((m.user_id ="
+                                                    + " user_profiles.id) AND (m.tenant_id ="
+                                                    + " (current_setting('app.tenant_id'::text, true))::uuid)))))",
+                                            null),
+                                    policy(
+                                            "profile_insert",
+                                            "INSERT",
+                                            null,
+                                            "(id = (current_setting('app.user_id'::text, true))::uuid)"),
+                                    policy(
+                                            "profile_update",
+                                            "UPDATE",
+                                            "(id = (current_setting('app.user_id'::text, true))::uuid)",
+                                            "(id = (current_setting('app.user_id'::text, true))::uuid)"))),
             // app_user may insert and read, never update or delete.
             Set.of(
                     "northstar.timeline_events",
@@ -47,10 +88,20 @@ record RlsReleaseGate(
     static final String TENANT_ISOLATION_EXPRESSION =
             "(tenant_id = (current_setting('app.tenant_id'::text, true))::uuid)";
 
+    /**
+     * A permissive app_user policy as the gate compares it: name, command, and the using and with check expressions
+     * exactly as Postgres stores them (null when absent), with whitespace collapsed.
+     */
+    static String policy(String name, String command, String using, String withCheck) {
+        return normalize(name + " PERMISSIVE " + command + " to {app_user} using " + (using == null ? "-" : using)
+                + " check " + (withCheck == null ? "-" : withCheck));
+    }
+
     List<String> violations(JdbcClient jdbc) {
         Set<String> violations = new TreeSet<>();
         checkTenantTables(jdbc, violations);
         checkTablesWithoutTenantId(jdbc, violations);
+        checkTenantForeignKeys(jdbc, violations);
         checkViews(jdbc, violations);
         checkInsertOnlyTables(jdbc, violations);
         checkLifecycleTables(jdbc, violations);
@@ -76,16 +127,12 @@ record RlsReleaseGate(
                     return table;
                 })
                 .list()
-                .forEach(table -> checkPolicies(jdbc, table, violations));
+                .forEach(table -> checkTenantPolicies(jdbc, table, violations));
     }
 
-    private static void checkPolicies(JdbcClient jdbc, String table, Set<String> violations) {
+    private static void checkTenantPolicies(JdbcClient jdbc, String table, Set<String> violations) {
         boolean tenantIsolationFound = false;
-        for (Map<String, Object> policy :
-                jdbc.sql("""
-                        select policyname, permissive, cmd, roles::text as roles, qual, with_check
-                        from pg_policies
-                        where schemaname || '.' || tablename = :table""").param("table", table).query().listOfRows()) {
+        for (Map<String, Object> policy : policies(jdbc, table)) {
             if ("tenant_isolation".equals(policy.get("policyname"))) {
                 tenantIsolationFound = true;
                 boolean exact = "PERMISSIVE".equals(policy.get("permissive"))
@@ -102,15 +149,72 @@ record RlsReleaseGate(
     }
 
     private void checkTablesWithoutTenantId(JdbcClient jdbc, Set<String> violations) {
-        jdbc.sql("""
-                        select n.nspname || '.' || c.relname
+        jdbc
+                .sql("""
+                        select n.nspname || '.' || c.relname as name, c.relrowsecurity, c.relforcerowsecurity
                         from pg_class c
                         join pg_namespace n on n.oid = c.relnamespace
                         where n.nspname = any(string_to_array(:schemas, ',')) and c.relkind in ('r', 'p')
                           and not exists (select from pg_attribute a
-                                          where a.attrelid = c.oid and a.attname = 'tenant_id' and not a.attisdropped)""").param("schemas", String.join(",", schemas)).query(String.class).list().stream()
-                .filter(table -> !platformTables.contains(table))
-                .forEach(table -> violations.add(table + ": no tenant_id and not declared platform-wide"));
+                                          where a.attrelid = c.oid and a.attname = 'tenant_id' and not a.attisdropped)""")
+                .param("schemas", String.join(",", schemas))
+                .query((rs, row) -> {
+                    String table = rs.getString("name");
+                    Set<String> declaredPolicies = platformTables.get(table);
+                    if (declaredPolicies == null) {
+                        violations.add(table + ": no tenant_id and not declared platform-wide");
+                    } else if (!declaredPolicies.isEmpty()) {
+                        if (!rs.getBoolean("relrowsecurity")) violations.add(table + ": RLS not enabled");
+                        if (!rs.getBoolean("relforcerowsecurity")) violations.add(table + ": RLS not forced");
+                    }
+                    return table;
+                })
+                .list()
+                .stream()
+                .filter(platformTables::containsKey)
+                .forEach(table -> checkPlatformPolicies(jdbc, table, violations));
+    }
+
+    private void checkPlatformPolicies(JdbcClient jdbc, String table, Set<String> violations) {
+        Set<String> declared = platformTables.get(table);
+        Set<String> actual = new TreeSet<>();
+        for (Map<String, Object> policy : policies(jdbc, table)) {
+            actual.add(normalize(policy.get("policyname") + " " + policy.get("permissive") + " " + policy.get("cmd")
+                    + " to " + policy.get("roles") + " using " + valueOrDash(policy.get("qual")) + " check "
+                    + valueOrDash(policy.get("with_check"))));
+        }
+        for (String policy : actual) {
+            if (!declared.contains(policy)) violations.add(table + ": undeclared or changed policy: " + policy);
+        }
+        for (String policy : declared) {
+            if (!actual.contains(policy)) violations.add(table + ": declared policy missing: " + policy);
+        }
+    }
+
+    /** A foreign key between two tables that both carry tenant_id must pair tenant_id with tenant_id. */
+    private void checkTenantForeignKeys(JdbcClient jdbc, Set<String> violations) {
+        jdbc.sql("""
+                        select n.nspname || '.' || c.relname || ': foreign key ' || con.conname || ' to '
+                               || pn.nspname || '.' || pc.relname || ' does not include tenant_id'
+                        from pg_constraint con
+                        join pg_class c on c.oid = con.conrelid
+                        join pg_namespace n on n.oid = c.relnamespace
+                        join pg_class pc on pc.oid = con.confrelid
+                        join pg_namespace pn on pn.oid = pc.relnamespace
+                        where con.contype = 'f' and n.nspname = any(string_to_array(:schemas, ','))
+                          and exists (select from pg_attribute
+                                      where attrelid = con.conrelid and attname = 'tenant_id' and not attisdropped)
+                          and exists (select from pg_attribute
+                                      where attrelid = con.confrelid and attname = 'tenant_id' and not attisdropped)
+                          and not exists (
+                                select from unnest(con.conkey, con.confkey) as k(child_attnum, parent_attnum)
+                                join pg_attribute ca on ca.attrelid = con.conrelid and ca.attnum = k.child_attnum
+                                join pg_attribute pa on pa.attrelid = con.confrelid and pa.attnum = k.parent_attnum
+                                where ca.attname = 'tenant_id' and pa.attname = 'tenant_id')""")
+                .param("schemas", String.join(",", schemas))
+                .query(String.class)
+                .list()
+                .forEach(violations::add);
     }
 
     private void checkViews(JdbcClient jdbc, Set<String> violations) {
@@ -180,10 +284,25 @@ record RlsReleaseGate(
                 .forEach(function -> violations.add(function + ": SECURITY DEFINER function not on the allowlist"));
     }
 
+    private static List<Map<String, Object>> policies(JdbcClient jdbc, String table) {
+        return jdbc.sql("""
+                        select policyname, permissive, cmd, roles::text as roles, qual, with_check
+                        from pg_policies
+                        where schemaname || '.' || tablename = :table""").param("table", table).query().listOfRows();
+    }
+
     private static boolean exists(JdbcClient jdbc, String table) {
         return jdbc.sql("select to_regclass(:table) is not null")
                 .param("table", table)
                 .query(Boolean.class)
                 .single();
+    }
+
+    private static String valueOrDash(Object value) {
+        return value == null ? "-" : value.toString();
+    }
+
+    private static String normalize(String text) {
+        return text.replaceAll("\\s+", " ").trim();
     }
 }

@@ -98,6 +98,8 @@ Each payment request and each payment received is its own ledger row; the amount
 
 The product flow says "invoice after payment", but under GST an advance for a service not yet delivered is usually documented with a receipt voucher, and the tax invoice follows the service; the CA must confirm which documents each business issues and when.
 
+**Supplier snapshot.** Every invoice, receipt voucher and credit note stores the supplier's legal name, GSTIN, state code and address as they were at issue (Phase 5). The business can edit those settings later, and an issued document must never change with them.
+
 **Proposed document set (pending CA review)**
 
 | Moment | Document | Notes |
