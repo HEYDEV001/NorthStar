@@ -77,8 +77,10 @@ Phase 10 (pilot) needs the frontend and is planned after it.
 - [ ] 1.7 Create business and first admin; `GET /api/v1/me`
   - Creating a business sets `app.tenant_id` to the new tenant's ID (and `app.role` to `admin`), then inserts the tenant and the first admin membership in one transaction.
 - [ ] 1.8 Members: list, change role, deactivate; at least one active admin always (P14); audit entries
+  - Member and invite writes are admin-only in the database (restrictive policies); the endpoints also check the role and return a clear error instead of a silent no-op.
 - [ ] 1.9 Invites: create, revoke, accept; single-use, expiry (P12)
   - Acceptance runs before the user has tenant context, so it uses one allowlisted `SECURITY DEFINER` function that looks up only by token hash and returns the minimum needed; the endpoint calling it is rate-limited.
+  - That function bypasses RLS, so it must itself check that the token is unexpired, unrevoked and unused; that the logged-in user's email matches the invite; that the user has no other active membership; and that the membership is created only in the invite's tenant.
 - [ ] 1.10 Job and action core: JobRunr (own schema), worker sets tenant context from the job, `actions` table with idempotency key and statuses, retryable / permanent / auth classification, retry table; no tenant context → fails loudly (P10)
   - JobRunr's tables are created by a Flyway migration as `migrator`, with JobRunr's own table creation turned off. `app_user` gets full DML including delete on JobRunr's tables only. JobRunr's tables go on the gate's platform-wide list.
 - [ ] 1.11 Fake-adapter test kit: duplicates, delays, timeouts, 429, auth failures

@@ -119,10 +119,51 @@ class RlsReleaseGateTests {
         }
 
         @Test
-        void extraRestrictivePolicyPasses() {
+        void declaredRestrictivePolicyPasses() {
             createTenantProbe();
             sql("create policy staff_view on " + PROBE + " as restrictive for select to app_user using (id > 0)");
-            assertThat(gate()).isEmpty();
+            assertThat(gateDeclaring(STAFF_VIEW)).isEmpty();
+        }
+
+        @Test
+        void undeclaredRestrictivePolicyFails() {
+            createTenantProbe();
+            sql("create policy staff_view on " + PROBE + " as restrictive for select to app_user using (id > 0)");
+            assertThat(gate()).containsExactly(PROBE + ": undeclared or changed policy: " + STAFF_VIEW);
+        }
+
+        @Test
+        void changedRestrictivePolicyFails() {
+            createTenantProbe();
+            sql("create policy staff_view on " + PROBE + " as restrictive for select to app_user using (id > 1)");
+            assertThat(gateDeclaring(STAFF_VIEW))
+                    .containsExactly(
+                            PROBE + ": declared policy missing: " + STAFF_VIEW,
+                            PROBE + ": undeclared or changed policy: " + STAFF_VIEW.replace("(id > 0)", "(id > 1)"));
+        }
+
+        @Test
+        void declaredRestrictivePolicyThatIsMissingFails() {
+            createTenantProbe();
+            assertThat(gateDeclaring(STAFF_VIEW)).containsExactly(PROBE + ": declared policy missing: " + STAFF_VIEW);
+        }
+
+        private static final String STAFF_VIEW =
+                RlsReleaseGate.restrictivePolicy("staff_view", "SELECT", "(id > 0)", null);
+
+        private List<String> gateDeclaring(String policy) {
+            Map<String, Set<String>> tenantTablePolicies =
+                    new HashMap<>(RlsReleaseGate.NORTHSTAR.tenantTablePolicies());
+            tenantTablePolicies.put(PROBE, Set.of(policy));
+            RlsReleaseGate northstar = RlsReleaseGate.NORTHSTAR;
+            return new RlsReleaseGate(
+                            northstar.schemas(),
+                            northstar.platformTables(),
+                            tenantTablePolicies,
+                            northstar.insertOnlyTables(),
+                            northstar.lifecycleTables(),
+                            northstar.securityDefinerFunctions())
+                    .violations(jdbc);
         }
 
         private void createTenantProbe() {
@@ -196,7 +237,13 @@ class RlsReleaseGateTests {
             sql("create schema gate_other");
             sql("create table gate_other.t (id int)");
             assertThat(RlsReleaseGate.NORTHSTAR.violations(jdbc)).isEmpty();
-            assertThat(new RlsReleaseGate(List.of("northstar", "gate_other"), Map.of(), Set.of(), Map.of(), Set.of())
+            assertThat(new RlsReleaseGate(
+                                    List.of("northstar", "gate_other"),
+                                    Map.of(),
+                                    Map.of(),
+                                    Set.of(),
+                                    Map.of(),
+                                    Set.of())
                             .violations(jdbc))
                     .contains("gate_other.t: no tenant_id and not declared platform-wide");
         }
@@ -391,6 +438,7 @@ class RlsReleaseGateTests {
         return new RlsReleaseGate(
                         RlsReleaseGate.NORTHSTAR.schemas(),
                         allPlatformTables,
+                        RlsReleaseGate.NORTHSTAR.tenantTablePolicies(),
                         insertOnlyTables,
                         lifecycleTables,
                         securityDefinerFunctions)
