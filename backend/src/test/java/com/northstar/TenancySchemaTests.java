@@ -509,6 +509,153 @@ class TenancySchemaTests {
         }
     }
 
+    /** Only admins write memberships and invites; staff keep read access (restrictive policies, data-model.md §3). */
+    @Nested
+    class AdminOnlyMemberWrites {
+
+        @Test
+        void staffCannotChangeTheirOwnRole() {
+            UUID tenant = tenant();
+            UUID staffUser = user();
+            UUID own = membership(tenant, staffUser, "staff", "active");
+
+            int updated = app.as(tenant, staffUser, "staff", jdbc -> setMembership(jdbc, own, "role", "admin"));
+
+            assertThat(updated).isZero();
+            assertThat(membershipColumn(own, "role")).isEqualTo("staff");
+        }
+
+        @Test
+        void staffCannotDeactivateAMember() {
+            UUID tenant = tenant();
+            UUID colleague = membership(tenant, user(), "staff", "active");
+
+            int updated =
+                    app.as(tenant, user(), "staff", jdbc -> setMembership(jdbc, colleague, "status", "deactivated"));
+
+            assertThat(updated).isZero();
+            assertThat(membershipColumn(colleague, "status")).isEqualTo("active");
+        }
+
+        @Test
+        void staffCannotCreateAnInvite() {
+            UUID tenant = tenant();
+            UUID staffMember = membership(tenant, user(), "staff", "active");
+
+            assertFails(
+                    INSUFFICIENT_PRIVILEGE,
+                    () -> app.run(tenant, user(), "staff", jdbc -> insertInvite(jdbc, tenant, staffMember)));
+        }
+
+        @Test
+        void staffCannotRevokeAnInvite() {
+            UUID tenant = tenant();
+            UUID invite = invite(tenant, membership(tenant, user(), "admin", "active"));
+
+            int updated = app.as(tenant, user(), "staff", jdbc -> revokeInvite(jdbc, invite));
+
+            assertThat(updated).isZero();
+            assertThat(inviteRevokedAt(invite)).isNull();
+        }
+
+        @Test
+        void staffCanStillReadMembersAndInvites() {
+            UUID tenant = tenant();
+            UUID admin = membership(tenant, user(), "admin", "active");
+            membership(tenant, user(), "staff", "active");
+            invite(tenant, admin);
+
+            int members = app.as(
+                    tenant,
+                    user(),
+                    "staff",
+                    jdbc -> jdbc.sql("select count(*) from northstar.memberships")
+                            .query(Integer.class)
+                            .single());
+            int invites = app.as(
+                    tenant,
+                    user(),
+                    "staff",
+                    jdbc -> jdbc.sql("select count(*) from northstar.invites")
+                            .query(Integer.class)
+                            .single());
+
+            assertThat(members).isEqualTo(2);
+            assertThat(invites).isOne();
+        }
+
+        @Test
+        void adminCanChangeRolesDeactivateAndManageInvites() {
+            UUID tenant = tenant();
+            UUID admin = membership(tenant, user(), "admin", "active");
+            UUID colleague = membership(tenant, user(), "staff", "active");
+
+            int promoted = app.as(tenant, user(), "admin", jdbc -> setMembership(jdbc, colleague, "role", "admin"));
+            int deactivated =
+                    app.as(tenant, user(), "admin", jdbc -> setMembership(jdbc, colleague, "status", "deactivated"));
+            UUID invite = app.as(tenant, user(), "admin", jdbc -> insertInvite(jdbc, tenant, admin));
+            int revoked = app.as(tenant, user(), "admin", jdbc -> revokeInvite(jdbc, invite));
+
+            assertThat(promoted).isOne();
+            assertThat(deactivated).isOne();
+            assertThat(revoked).isOne();
+            assertThat(inviteRevokedAt(invite)).isNotNull();
+        }
+
+        private int setMembership(JdbcClient jdbc, UUID membership, String column, String value) {
+            return jdbc.sql("update northstar.memberships set " + column + " = :value where id = :id")
+                    .param("value", value)
+                    .param("id", membership)
+                    .update();
+        }
+
+        private UUID insertInvite(JdbcClient jdbc, UUID tenant, UUID invitedBy) {
+            return jdbc.sql("""
+                            insert into northstar.invites (tenant_id, email, role, token_hash, invited_by)
+                            values (:tenant, :email, 'staff', :hash, :invitedBy) returning id""")
+                    .param("tenant", tenant)
+                    .param("email", UUID.randomUUID() + "@example.com")
+                    .param("hash", "hash-" + UUID.randomUUID())
+                    .param("invitedBy", invitedBy)
+                    .query(UUID.class)
+                    .single();
+        }
+
+        private int revokeInvite(JdbcClient jdbc, UUID invite) {
+            return jdbc.sql("update northstar.invites set revoked_at = now() where id = :id")
+                    .param("id", invite)
+                    .update();
+        }
+
+        private UUID invite(UUID tenant, UUID invitedBy) {
+            return postgres.sql("""
+                            insert into northstar.invites (tenant_id, email, role, token_hash, invited_by)
+                            values (:tenant, :email, 'staff', :hash, :invitedBy) returning id""")
+                    .param("tenant", tenant)
+                    .param("email", UUID.randomUUID() + "@example.com")
+                    .param("hash", "hash-" + UUID.randomUUID())
+                    .param("invitedBy", invitedBy)
+                    .query(UUID.class)
+                    .single();
+        }
+
+        private Object membershipColumn(UUID membership, String column) {
+            return postgres.sql("select " + column + " as value from northstar.memberships where id = :id")
+                    .param("id", membership)
+                    .query()
+                    .singleRow()
+                    .get("value");
+        }
+
+        private Object inviteRevokedAt(UUID invite) {
+            return postgres.sql("select revoked_at as value from northstar.invites where id = :id")
+                    .param("id", invite)
+                    .query()
+                    .singleRow()
+                    .get("value");
+        }
+    }
+
     // Fixtures, written as postgres (bypasses RLS). Random IDs and slugs keep tests independent in the shared database.
 
     private UUID tenant() {

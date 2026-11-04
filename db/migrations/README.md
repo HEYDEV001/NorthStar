@@ -21,6 +21,7 @@ The RLS release gate (`backend/src/test/java/com/northstar/RlsReleaseGate.java`,
 every build. Update its declarations in the same pull request:
 
 - A table without `tenant_id`: add it to the platform-wide list.
+- Any policy on a tenant table besides `tenant_isolation`: make it restrictive and declare its exact text.
 - An insert-only table: revoke update from `app_user` in the migration.
 - A lifecycle table: revoke table-level update from `app_user`, grant update on the status and processing columns
   only, and list exactly those columns in the gate.

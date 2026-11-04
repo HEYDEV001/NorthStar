@@ -17,6 +17,7 @@ import org.springframework.jdbc.core.simple.JdbcClient;
 record RlsReleaseGate(
         List<String> schemas,
         Map<String, Set<String>> platformTables,
+        Map<String, Set<String>> tenantTablePolicies,
         Set<String> insertOnlyTables,
         Map<String, Set<String>> lifecycleTables,
         Set<String> securityDefinerFunctions) {
@@ -68,6 +69,10 @@ record RlsReleaseGate(
                                             "UPDATE",
                                             "(id = (current_setting('app.user_id'::text, true))::uuid)",
                                             "(id = (current_setting('app.user_id'::text, true))::uuid)"))),
+            // Policies on tenant tables besides tenant_isolation. Each must be restrictive and match exactly.
+            Map.of(
+                    "northstar.memberships", adminOnlyWrites("memberships"),
+                    "northstar.invites", adminOnlyWrites("invites")),
             // app_user may insert and read, never update or delete.
             Set.of(
                     "northstar.timeline_events",
@@ -93,8 +98,21 @@ record RlsReleaseGate(
      * exactly as Postgres stores them (null when absent), with whitespace collapsed.
      */
     static String policy(String name, String command, String using, String withCheck) {
-        return normalize(name + " PERMISSIVE " + command + " to {app_user} using " + (using == null ? "-" : using)
-                + " check " + (withCheck == null ? "-" : withCheck));
+        return describe(name, "PERMISSIVE", command, "{app_user}", using, withCheck);
+    }
+
+    /** A restrictive app_user policy, in the same format as {@link #policy}. */
+    static String restrictivePolicy(String name, String command, String using, String withCheck) {
+        return describe(name, "RESTRICTIVE", command, "{app_user}", using, withCheck);
+    }
+
+    /** The restrictive policies that limit insert, update and delete to app.role = 'admin'. */
+    private static Set<String> adminOnlyWrites(String table) {
+        String admin = "(current_setting('app.role'::text, true) = 'admin'::text)";
+        return Set.of(
+                restrictivePolicy(table + "_admin_insert", "INSERT", null, admin),
+                restrictivePolicy(table + "_admin_update", "UPDATE", admin, admin),
+                restrictivePolicy(table + "_admin_delete", "DELETE", admin, null));
     }
 
     List<String> violations(JdbcClient jdbc) {
@@ -130,7 +148,9 @@ record RlsReleaseGate(
                 .forEach(table -> checkTenantPolicies(jdbc, table, violations));
     }
 
-    private static void checkTenantPolicies(JdbcClient jdbc, String table, Set<String> violations) {
+    private void checkTenantPolicies(JdbcClient jdbc, String table, Set<String> violations) {
+        Set<String> declared = tenantTablePolicies.getOrDefault(table, Set.of());
+        Set<String> found = new TreeSet<>();
         boolean tenantIsolationFound = false;
         for (Map<String, Object> policy : policies(jdbc, table)) {
             if ("tenant_isolation".equals(policy.get("policyname"))) {
@@ -143,9 +163,16 @@ record RlsReleaseGate(
                 if (!exact) violations.add(table + ": tenant_isolation policy differs from data-model.md section 12");
             } else if ("PERMISSIVE".equals(policy.get("permissive"))) {
                 violations.add(table + ": policy " + policy.get("policyname") + " is permissive, must be restrictive");
+            } else {
+                String actual = describe(policy);
+                found.add(actual);
+                if (!declared.contains(actual)) violations.add(table + ": undeclared or changed policy: " + actual);
             }
         }
         if (!tenantIsolationFound) violations.add(table + ": tenant_isolation policy missing");
+        for (String policy : declared) {
+            if (!found.contains(policy)) violations.add(table + ": declared policy missing: " + policy);
+        }
     }
 
     private void checkTablesWithoutTenantId(JdbcClient jdbc, Set<String> violations) {
@@ -179,9 +206,7 @@ record RlsReleaseGate(
         Set<String> declared = platformTables.get(table);
         Set<String> actual = new TreeSet<>();
         for (Map<String, Object> policy : policies(jdbc, table)) {
-            actual.add(normalize(policy.get("policyname") + " " + policy.get("permissive") + " " + policy.get("cmd")
-                    + " to " + policy.get("roles") + " using " + valueOrDash(policy.get("qual")) + " check "
-                    + valueOrDash(policy.get("with_check"))));
+            actual.add(describe(policy));
         }
         for (String policy : actual) {
             if (!declared.contains(policy)) violations.add(table + ": undeclared or changed policy: " + policy);
@@ -298,8 +323,20 @@ record RlsReleaseGate(
                 .single();
     }
 
-    private static String valueOrDash(Object value) {
-        return value == null ? "-" : value.toString();
+    private static String describe(Map<String, Object> policy) {
+        return describe(
+                (String) policy.get("policyname"),
+                (String) policy.get("permissive"),
+                (String) policy.get("cmd"),
+                (String) policy.get("roles"),
+                (String) policy.get("qual"),
+                (String) policy.get("with_check"));
+    }
+
+    private static String describe(
+            String name, String mode, String command, String roles, String using, String withCheck) {
+        return normalize(name + " " + mode + " " + command + " to " + roles + " using " + (using == null ? "-" : using)
+                + " check " + (withCheck == null ? "-" : withCheck));
     }
 
     private static String normalize(String text) {
