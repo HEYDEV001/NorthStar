@@ -6,6 +6,7 @@ import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
+import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Nested;
 import org.junit.jupiter.api.Test;
@@ -13,11 +14,10 @@ import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.test.context.SpringBootTest;
 import org.springframework.context.annotation.Import;
 import org.springframework.jdbc.core.simple.JdbcClient;
-import org.springframework.transaction.annotation.Transactional;
 
 /**
  * The release gate on the real schema, plus one deliberately broken probe per rule to prove the gate catches it.
- * Probes are created as migrator inside a transaction that is rolled back after each test.
+ * Probes are created as migrator inside an admin transaction that is rolled back after each test.
  */
 @SpringBootTest
 @Import(TestcontainersConfiguration.class)
@@ -29,10 +29,23 @@ class RlsReleaseGateTests {
               using (tenant_id = current_setting('app.tenant_id', true)::uuid)
               with check (tenant_id = current_setting('app.tenant_id', true)::uuid)""";
 
+    private final PostgresAdmin postgres;
     private final JdbcClient jdbc;
+    private PostgresAdmin.RollbackOnly probeTransaction;
 
-    RlsReleaseGateTests(@Autowired JdbcClient jdbc) {
-        this.jdbc = jdbc;
+    RlsReleaseGateTests(@Autowired PostgresAdmin postgres) {
+        this.postgres = postgres;
+        this.jdbc = postgres.jdbc();
+    }
+
+    @BeforeEach
+    void openProbeTransaction() {
+        probeTransaction = postgres.beginRollbackOnly();
+    }
+
+    @AfterEach
+    void rollBackProbes() {
+        probeTransaction.close();
     }
 
     @Test
@@ -41,7 +54,6 @@ class RlsReleaseGateTests {
     }
 
     @Nested
-    @Transactional
     class TenantTables {
 
         @BeforeEach
@@ -179,7 +191,6 @@ class RlsReleaseGateTests {
     }
 
     @Nested
-    @Transactional
     class OtherObjects {
 
         @BeforeEach
@@ -250,7 +261,6 @@ class RlsReleaseGateTests {
     }
 
     @Nested
-    @Transactional
     class PlatformTables {
 
         private static final String SELF_ONLY = "(id = (current_setting('app.tenant_id'::text, true))::uuid)";
@@ -304,7 +314,6 @@ class RlsReleaseGateTests {
     }
 
     @Nested
-    @Transactional
     class TenantForeignKeys {
 
         @BeforeEach
@@ -351,7 +360,6 @@ class RlsReleaseGateTests {
     }
 
     @Nested
-    @Transactional
     class AppendOnlyTables {
 
         @BeforeEach

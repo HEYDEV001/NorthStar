@@ -31,8 +31,8 @@ class TenancySchemaTests {
     private final JdbcClient postgres;
     private final AppUserDatabase app;
 
-    TenancySchemaTests(@Autowired JdbcClient postgres, @Autowired AppUserDatabase app) {
-        this.postgres = postgres;
+    TenancySchemaTests(@Autowired PostgresAdmin postgres, @Autowired AppUserDatabase app) {
+        this.postgres = postgres.jdbc();
         this.app = app;
     }
 

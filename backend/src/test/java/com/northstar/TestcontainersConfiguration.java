@@ -63,6 +63,11 @@ public class TestcontainersConfiguration {
         return new AppUserDatabase(postgres, logins.appUserPassword());
     }
 
+    @Bean
+    PostgresAdmin postgresAdmin(PostgreSQLContainer postgres) {
+        return new PostgresAdmin(postgres);
+    }
+
     /**
      * The image initialises as supabase_admin and loads its config from /etc/postgresql; tests then connect as the
      * non-superuser postgres role, the same admin role operators get on hosted Supabase.
