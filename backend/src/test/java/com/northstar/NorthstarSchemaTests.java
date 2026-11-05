@@ -7,17 +7,18 @@ import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.test.context.SpringBootTest;
 import org.springframework.context.annotation.Import;
 import org.springframework.jdbc.core.simple.JdbcClient;
-import org.springframework.transaction.annotation.Transactional;
 
 /** Guards data-model.md section 1: every table lives in northstar, which the browser-facing roles cannot reach. */
 @SpringBootTest
 @Import(TestcontainersConfiguration.class)
 class NorthstarSchemaTests {
 
+    private final PostgresAdmin postgres;
     private final JdbcClient jdbc;
 
-    NorthstarSchemaTests(@Autowired JdbcClient jdbc) {
-        this.jdbc = jdbc;
+    NorthstarSchemaTests(@Autowired PostgresAdmin postgres) {
+        this.postgres = postgres;
+        this.jdbc = postgres.jdbc();
     }
 
     @Test
@@ -44,15 +45,15 @@ class NorthstarSchemaTests {
     }
 
     @Test
-    @Transactional
     void tablesCreatedLaterAreNotGrantedToBrowserRoles() {
-        jdbc.sql("set local role migrator").update();
-        jdbc.sql("create table northstar.privilege_probe (id int)").update();
-
-        Boolean anyAccess = jdbc.sql("select has_table_privilege('anon', 'northstar.privilege_probe', 'SELECT')"
-                        + " or has_table_privilege('authenticated', 'northstar.privilege_probe', 'SELECT')")
-                .query(Boolean.class)
-                .single();
+        Boolean anyAccess = postgres.rolledBack(probe -> {
+            probe.sql("set local role migrator").update();
+            probe.sql("create table northstar.privilege_probe (id int)").update();
+            return probe.sql("select has_table_privilege('anon', 'northstar.privilege_probe', 'SELECT')"
+                            + " or has_table_privilege('authenticated', 'northstar.privilege_probe', 'SELECT')")
+                    .query(Boolean.class)
+                    .single();
+        });
         assertThat(anyAccess).isFalse();
     }
 }

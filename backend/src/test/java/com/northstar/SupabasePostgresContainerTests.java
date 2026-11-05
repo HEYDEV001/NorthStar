@@ -15,8 +15,8 @@ class SupabasePostgresContainerTests {
 
     private final JdbcClient jdbc;
 
-    SupabasePostgresContainerTests(@Autowired JdbcClient jdbc) {
-        this.jdbc = jdbc;
+    SupabasePostgresContainerTests(@Autowired PostgresAdmin postgres) {
+        this.jdbc = postgres.jdbc();
     }
 
     @Test
