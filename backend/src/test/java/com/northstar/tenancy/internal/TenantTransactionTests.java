@@ -22,9 +22,11 @@ import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 import java.util.concurrent.Future;
 import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicReference;
 import javax.sql.DataSource;
 import org.junit.jupiter.api.Test;
 import org.postgresql.PGConnection;
+import org.postgresql.jdbc.PgConnection;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.test.context.SpringBootTest;
 import org.springframework.context.annotation.Import;
@@ -253,6 +255,43 @@ class TenantTransactionTests {
                 }));
 
         assertThat(connection).isEqualTo("app_user,0");
+    }
+
+    @Test
+    void unwrapToTheDriverConnectionOutsideATenantTransactionIsRefused() throws SQLException {
+        try (Connection guarded = dataSource.getConnection()) {
+            assertThatThrownBy(() -> guarded.unwrap(PgConnection.class))
+                    .isInstanceOf(MissingTenantContextException.class);
+            assertThatThrownBy(() -> guarded.unwrap(PGConnection.class))
+                    .isInstanceOf(MissingTenantContextException.class);
+            assertThatThrownBy(() -> guarded.isWrapperFor(PgConnection.class))
+                    .isInstanceOf(MissingTenantContextException.class);
+
+            assertThat(guarded.unwrap(Connection.class)).isSameAs(guarded);
+            assertThat(guarded.isWrapperFor(Connection.class)).isTrue();
+        }
+    }
+
+    @Test
+    void unwrapIsRefusedAgainOnceTheTenantTransactionEnds() {
+        AtomicReference<Connection> used = new AtomicReference<>();
+        TenantContext context = new TenantContext(tenant(), user(), Role.STAFF);
+
+        PgConnection inside = TenantScope.call(
+                context,
+                () -> transactions.execute(status -> {
+                    Connection connection = DataSourceUtils.getConnection(dataSource);
+                    used.set(connection);
+                    try {
+                        return connection.unwrap(PgConnection.class);
+                    } catch (SQLException e) {
+                        throw new IllegalStateException(e);
+                    }
+                }));
+
+        assertThat(inside).isNotNull();
+        assertThatThrownBy(() -> used.get().unwrap(PgConnection.class))
+                .isInstanceOf(MissingTenantContextException.class);
     }
 
     private String currentContext() {

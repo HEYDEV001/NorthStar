@@ -23,6 +23,10 @@ import org.springframework.jdbc.datasource.DelegatingDataSource;
  * {@link #closeStartupWindow()} runs, statements are allowed on the thread that created this datasource only. The
  * window closes after every singleton exists and before the web server accepts requests.
  *
+ * <p>unwrap and isWrapperFor follow the same rule as statements: they answer for the guarded connection itself, but
+ * reaching the driver or pool connection underneath, which would bypass the guard, is refused outside a tenant
+ * transaction.
+ *
  * <p>This guards only the app_user datasource. The app_admin datasource (Phase 8) is a separate bean with its own rules.
  */
 public final class TenantGuardDataSource extends DelegatingDataSource {
@@ -83,12 +87,7 @@ public final class TenantGuardDataSource extends DelegatingDataSource {
                     begin((TenantContext) args[0]);
                     return null;
                 }
-                case "createStatement", "prepareStatement", "prepareCall" -> {
-                    if (!tenantTransaction && !isStartupThreadInWindow()) {
-                        throw new MissingTenantContextException(
-                                "Statement refused: no tenant transaction on this connection");
-                    }
-                }
+                case "createStatement", "prepareStatement", "prepareCall" -> requireTenantTransaction("Statement");
                 case "commit", "close" -> tenantTransaction = false;
                 case "rollback" -> {
                     if (args == null) tenantTransaction = false; // rollback to a savepoint stays in the transaction
@@ -98,9 +97,11 @@ public final class TenantGuardDataSource extends DelegatingDataSource {
                 }
                 case "unwrap" -> {
                     if (((Class<?>) args[0]).isInstance(proxy)) return proxy;
+                    requireTenantTransaction("Unwrap to the underlying connection");
                 }
                 case "isWrapperFor" -> {
                     if (((Class<?>) args[0]).isInstance(proxy)) return true;
+                    requireTenantTransaction("Unwrap check on the underlying connection");
                 }
                 case "equals" -> {
                     return proxy == args[0];
@@ -117,6 +118,12 @@ public final class TenantGuardDataSource extends DelegatingDataSource {
                 return method.invoke(target, args);
             } catch (InvocationTargetException e) {
                 throw e.getTargetException();
+            }
+        }
+
+        private void requireTenantTransaction(String what) {
+            if (!tenantTransaction && !isStartupThreadInWindow()) {
+                throw new MissingTenantContextException(what + " refused: no tenant transaction on this connection");
             }
         }
 

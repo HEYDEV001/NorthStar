@@ -161,7 +161,8 @@ Run the formatter and the relevant tests before every commit. Update this sectio
   insert-only tables are `@Immutable`; tenant entities use `@TenantId`. Row locks, `on conflict` and other native SQL
   use bind parameters only, and native queries keep an explicit `tenant_id` filter. `open-in-view` and Hibernate's
   caches stay off. All database work runs inside `TenantScope` and a transaction; anything else throws
-  `MissingTenantContextException`, which is never caught and swallowed.
+  `MissingTenantContextException`, which is never caught and swallowed. No database access in constructors,
+  `@PostConstruct` methods or startup listeners; startup work runs as a job inside `TenantScope`.
 - API: REST under `/api/v1`, JSON, ISO-8601 UTC timestamps, amounts in paise as integers, errors as
   `{ "code", "message", "details" }`.
 - Frontend: TypeScript strict, Zod schemas for every form and API response, server state through one query
