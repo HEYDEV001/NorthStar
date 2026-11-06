@@ -10,7 +10,10 @@ import com.northstar.tenancy.Role;
 import com.northstar.tenancy.TenantContext;
 import com.northstar.tenancy.TenantScope;
 import com.zaxxer.hikari.HikariDataSource;
+import java.sql.CallableStatement;
 import java.sql.Connection;
+import java.sql.DatabaseMetaData;
+import java.sql.PreparedStatement;
 import java.sql.ResultSet;
 import java.sql.SQLException;
 import java.sql.Statement;
@@ -27,6 +30,7 @@ import javax.sql.DataSource;
 import org.junit.jupiter.api.Test;
 import org.postgresql.PGConnection;
 import org.postgresql.jdbc.PgConnection;
+import org.postgresql.jdbc.PgDatabaseMetaData;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.test.context.SpringBootTest;
 import org.springframework.context.annotation.Import;
@@ -292,6 +296,86 @@ class TenantTransactionTests {
         assertThat(inside).isNotNull();
         assertThatThrownBy(() -> used.get().unwrap(PgConnection.class))
                 .isInstanceOf(MissingTenantContextException.class);
+    }
+
+    @Test
+    void metadataLeadsBackOnlyToTheGuardedConnection() throws SQLException {
+        try (Connection guarded = dataSource.getConnection()) {
+            DatabaseMetaData metadata = guarded.getMetaData();
+
+            assertThat(metadata.getDatabaseProductName()).isEqualTo("PostgreSQL");
+            assertThat(metadata.getConnection()).isSameAs(guarded);
+            assertThatThrownBy(() -> metadata.getConnection().createStatement())
+                    .isInstanceOf(MissingTenantContextException.class);
+            assertThatThrownBy(() -> metadata.unwrap(PgDatabaseMetaData.class))
+                    .isInstanceOf(MissingTenantContextException.class);
+
+            try (ResultSet tables = metadata.getTables(null, "northstar", "tenants", null)) {
+                assertThat(tables.next()).isTrue();
+                Statement behindTables = tables.getStatement();
+                assertThat(behindTables).isNotNull();
+                assertThat(behindTables.getConnection()).isSameAs(guarded);
+            }
+        }
+    }
+
+    @Test
+    void statementKeptPastCommitCannotReachAnUsableConnection() {
+        AtomicReference<Statement> kept = new AtomicReference<>();
+        TenantContext context = new TenantContext(tenant(), user(), Role.STAFF);
+
+        TenantScope.run(
+                context,
+                () -> transactions.execute(status -> sql(() -> {
+                    Statement statement =
+                            DataSourceUtils.getConnection(dataSource).createStatement();
+                    statement.executeQuery("select 1").close();
+                    kept.set(statement);
+                })));
+
+        assertThatThrownBy(() -> kept.get().getConnection().createStatement())
+                .isInstanceOf(MissingTenantContextException.class);
+    }
+
+    @Test
+    void resultSetsAndStatementsLeadBackToTheSameGuardedObjects() {
+        TenantContext context = new TenantContext(tenant(), user(), Role.STAFF);
+
+        TenantScope.run(
+                context,
+                () -> transactions.execute(status -> sql(() -> {
+                    Connection connection = DataSourceUtils.getConnection(dataSource);
+                    try (Statement statement = connection.createStatement();
+                            ResultSet result = statement.executeQuery("select 1")) {
+                        assertThat(result.getStatement()).isSameAs(statement);
+                        assertThat(result.getStatement().getConnection()).isSameAs(connection);
+                    }
+                    try (PreparedStatement prepared = connection.prepareStatement("select ?::int")) {
+                        prepared.setInt(1, 1);
+                        try (ResultSet result = prepared.executeQuery()) {
+                            assertThat(result.getStatement()).isSameAs(prepared);
+                        }
+                        assertThat(prepared.getConnection()).isSameAs(connection);
+                    }
+                    try (CallableStatement callable = connection.prepareCall("select 1")) {
+                        assertThat(callable.getConnection()).isSameAs(connection);
+                    }
+                })));
+    }
+
+    /** JDBC work inside a transaction callback, with checked exceptions rethrown unchecked. */
+    private static Object sql(JdbcWork work) {
+        try {
+            work.run();
+            return null;
+        } catch (SQLException e) {
+            throw new IllegalStateException(e);
+        }
+    }
+
+    @FunctionalInterface
+    private interface JdbcWork {
+        void run() throws SQLException;
     }
 
     private String currentContext() {
