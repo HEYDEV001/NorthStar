@@ -28,6 +28,7 @@ Payments, auth, tenant isolation and webhook steps always get a human review bef
 | D4 | User who belongs to more than one business | One business per user for MVP. `memberships` can still hold several rows per user, but a partial unique index allows only one active membership per user. A tenant claim in the Supabase token can be added later without a migration. | `CLAUDE.md` forbids taking the tenant from a header, body or query parameter, so the membership lookup decides. The `data-model.md` change ships with step 1.3. |
 | D5 | Backend-first order | Noted in `build-document.md` section 19 | `CLAUDE.md`: spec changes go into `docs/` first. |
 | D6 | Staff login | Email only for MVP | Closes the phone OTP question in `data-model.md` section 15. |
+| D7 | Persistence | Spring Data JPA + Hibernate over the Flyway-owned schema: `ddl-auto=validate`; columns `app_user` may not write are `insertable = false, updatable = false`; foreign keys as plain IDs, no associations; insert-only tables `@Immutable`; row locks, `on conflict` and the tenant context stay native SQL with bind parameters; `open-in-view` off; second-level and query caches off | Familiar repositories and `@Version` locking, without letting Hibernate own the schema or write columns the database forbids. |
 
 ## Phase overview
 
@@ -70,14 +71,18 @@ Phase 10 (pilot) needs the frontend and is planned after it.
   - Append-only tables in two tiers: insert-only (`timeline_events`, `audit_log`, `lead_score_history`, `credit_notes`) and lifecycle (`webhook_events`, `payments`, `invoices`, `refunds`: table-level update revoked, column-level update on declared columns only). The gate checks both.
 - [x] 1.3 Tenancy schema: `tenants`, `user_profiles`, `memberships` (one active membership per user, D4), `invites`, `staff_skills`, `staff_leave`, `audit_log`
   - `tenants` and `user_profiles` go on the gate's platform-wide list with their exact policies; `audit_log` is insert-only (update revoked). Composite tenant foreign keys from here on, enforced by the gate.
-- [ ] 1.4 Tenant context: `set_config('app.tenant_id' | 'app.user_id' | 'app.role', …, true)` at the start of every transaction; the app's connection switches to `app_user`
+- [x] 1.4 Tenant context: `set_config('app.tenant_id' | 'app.user_id' | 'app.role', …, true)` at the start of every transaction; the app's connection switches to `app_user`
   - The app connects through Supabase's transaction pooler, so its JDBC URL needs `prepareThreshold=0`. Flyway uses a direct or session-pooler connection.
+  - Built as: `TenantScope` (thread-local, not inherited, always cleared), a tenant-aware JPA transaction manager that sets the context on the transaction's own connection at begin, a connection guard that refuses statements outside a tenant transaction, `@TenantId` from the same context, and a repository advice that requires a context before any repository call.
+  - Hibernate's schema validation needs one statement at startup (sequence metadata), so the guard allows statements on the startup thread only, until every singleton exists and before the web server starts; Spring Data's startup sessions get a placeholder tenant that matches nothing. Tests prove both are closed afterwards.
 - [ ] 1.5 Supabase token verification with Spring Security, membership lookup, deactivated user rejected on the next request (P13)
+  - The membership lookup runs before the tenant is known: a narrow user-only context calls one allowlisted `SECURITY DEFINER` function that takes no tenant argument, uses only `app.user_id`, and returns only that user's active membership.
 - [ ] 1.6 API conventions: `/api/v1`, `{code, message, details}` errors, other tenant's record → 404 (P9)
 - [ ] 1.7 Create business and first admin; `GET /api/v1/me`
   - Creating a business sets `app.tenant_id` to the new tenant's ID (and `app.role` to `admin`), then inserts the tenant and the first admin membership in one transaction.
 - [ ] 1.8 Members: list, change role, deactivate; at least one active admin always (P14); audit entries
   - Member and invite writes are admin-only in the database (restrictive policies); the endpoints also check the role and return a clear error instead of a silent no-op.
+  - Column-level update grants: `memberships` only `role`, `status`, `whatsapp_phone`; `invites` only `revoked_at`. The entities map every other column as `updatable = false`.
 - [ ] 1.9 Invites: create, revoke, accept; single-use, expiry (P12)
   - Acceptance runs before the user has tenant context, so it uses one allowlisted `SECURITY DEFINER` function that looks up only by token hash and returns the minimum needed; the endpoint calling it is rate-limited.
   - That function bypasses RLS, so it must itself check that the token is unexpired, unrevoked and unused; that the logged-in user's email matches the invite; that the user has no other active membership; and that the membership is created only in the invite's tenant.
@@ -179,6 +184,7 @@ Phase 10 (pilot) needs the frontend and is planned after it.
 - [ ] 5.3 Quotes: versions, send, accept, request changes, supersede (W11, W12, W14), validity expiry (W15), discount limit with admin approval (W13)
 - [ ] 5.4 Ledger: `payments`; amount due derived from the accepted version and the ledger; partial payments (W19)
   - `payments`, `invoices` and `refunds` are lifecycle tables: declare their updatable columns in the gate, and add a trigger on each that allows only forward status transitions.
+  - Their entities map every column not declared updatable as `updatable = false`.
 - [ ] 5.5 Razorpay: payment link action; webhook verify → store → dedupe → one ledger entry per payment ID (W18); link expiry (W16); late payment after release (W17); reconciliation every 15 min (W20); failed payments (W21)
 - [ ] 5.6 Storage: private buckets, `tenant_id/` paths, short-lived signed URLs, upload type and size checks (P23)
 - [ ] 5.7 Invoice templates: `.docx` upload, missing mapped fields block the template (W23); PDF via poi-tl and Gotenberg as an action
@@ -213,6 +219,7 @@ Phase 10 (pilot) needs the frontend and is planned after it.
 - [ ] 8.1 Overview, CRM and report APIs; integration health API
 - [ ] 8.2 Onboarding readiness API: each step green or pending, with what is blocking it
 - [ ] 8.3 Northstar admin over `app_admin`, every call audited: tenants, failed jobs, webhook errors, usage, pause a business
+  - `app_admin` gets its own datasource bean, separate from the guarded `dataSource`; the tenant guard wraps only `dataSource`, so this needs its own audited access rules, not a bypass of the guard.
 - [ ] 8.4 Plans, subscriptions, usage alerts at 70 / 90 / 100% (P20)
 - [ ] 8.5 Subscription end: grace period, then read-only with automation paused (P8)
 - [ ] 8.6 Retention jobs (`data-model.md` §14)

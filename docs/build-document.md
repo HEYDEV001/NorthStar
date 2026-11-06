@@ -319,6 +319,7 @@ Webhooks come into the API, which stores the event and queues a job; the worker 
 | Backend | Spring Boot (Java 21), modular monolith | APIs, workflow engine, rules, integrations, webhooks |
 | Backend validation | Jakarta Bean Validation | Webhooks, API input, AI output |
 | Database | Supabase PostgreSQL (Mumbai), Flyway migrations | Source of truth |
+| Persistence | Spring Data JPA + Hibernate (D7), schema validated against Flyway, never generated | Entities, repositories, optimistic locking; native SQL for locks and duplicate-safe inserts |
 | Tenant isolation | Spring Security tenant filter + Supabase Row Level Security | Two layers |
 | Auth | Supabase Auth, tokens verified by Spring Security | Login, verification, invites, roles |
 | Storage | Supabase Storage, signed short-lived links | Quotes, invoices, templates, delivery files |
