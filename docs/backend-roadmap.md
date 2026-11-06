@@ -80,6 +80,7 @@ Phase 10 (pilot) needs the frontend and is planned after it.
 - [ ] 1.6 API conventions: `/api/v1`, `{code, message, details}` errors, other tenant's record → 404 (P9)
 - [ ] 1.7 Create business and first admin; `GET /api/v1/me`
   - Creating a business sets `app.tenant_id` to the new tenant's ID (and `app.role` to `admin`), then inserts the tenant and the first admin membership in one transaction.
+  - New migration: check constraint `tenants.id <> '00000000-0000-0000-0000-000000000000'`. The tenant guard's startup placeholder uses the all-zero UUID, so no real tenant may ever have it.
 - [ ] 1.8 Members: list, change role, deactivate; at least one active admin always (P14); audit entries
   - Member and invite writes are admin-only in the database (restrictive policies); the endpoints also check the role and return a clear error instead of a silent no-op.
   - Column-level update grants: `memberships` only `role`, `status`, `whatsapp_phone`; `invites` only `revoked_at`. The entities map every other column as `updatable = false`.
