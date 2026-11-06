@@ -6,8 +6,8 @@ import java.sql.SQLException;
 import java.util.UUID;
 import org.flywaydb.core.Flyway;
 import org.springframework.boot.flyway.autoconfigure.FlywayMigrationStrategy;
+import org.springframework.boot.jdbc.autoconfigure.JdbcConnectionDetails;
 import org.springframework.boot.test.context.TestConfiguration;
-import org.springframework.boot.testcontainers.service.connection.ServiceConnection;
 import org.springframework.context.annotation.Bean;
 import org.testcontainers.postgresql.PostgreSQLContainer;
 import org.testcontainers.utility.DockerImageName;
@@ -25,9 +25,29 @@ public class TestcontainersConfiguration {
             .asCompatibleSubstituteFor("postgres");
 
     @Bean
-    @ServiceConnection
     PostgreSQLContainer postgresContainer() {
         return new SupabasePostgresContainer();
+    }
+
+    /** The app connects as app_user, exactly as in every environment; fixtures use {@link PostgresAdmin}. */
+    @Bean
+    JdbcConnectionDetails appUserConnection(PostgreSQLContainer postgres, TestLogins logins) {
+        return new JdbcConnectionDetails() {
+            @Override
+            public String getJdbcUrl() {
+                return postgres.getJdbcUrl();
+            }
+
+            @Override
+            public String getUsername() {
+                return "app_user";
+            }
+
+            @Override
+            public String getPassword() {
+                return logins.appUserPassword();
+            }
+        };
     }
 
     /** Throwaway passwords for this test run's migrator and app_user logins. */
