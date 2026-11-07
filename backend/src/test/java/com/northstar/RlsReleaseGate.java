@@ -86,8 +86,9 @@ record RlsReleaseGate(
                     "northstar.payments", Set.of(),
                     "northstar.invoices", Set.of(),
                     "northstar.refunds", Set.of()),
-            // SECURITY DEFINER functions, as "schema.name(argument types)".
-            Set.of());
+            // SECURITY DEFINER functions, as "schema.name(argument types)". Each must also pin search_path and be
+            // executable by app_user only.
+            Set.of("northstar.current_membership()"));
 
     /** The tenant_isolation expression exactly as Postgres stores it for the policy in data-model.md section 12. */
     static final String TENANT_ISOLATION_EXPRESSION =
@@ -299,14 +300,38 @@ record RlsReleaseGate(
                           and has_any_column_privilege('app_user', cast(:table as regclass), 'UPDATE')""").param("table", table).query(String.class).list();
     }
 
+    /**
+     * SECURITY DEFINER functions run with their owner's rights (migrator bypasses RLS), so each must be allowlisted,
+     * pin its search_path, and be executable by no browser-facing role.
+     */
     private void checkSecurityDefinerFunctions(JdbcClient jdbc, Set<String> violations) {
         jdbc.sql("""
                         select n.nspname || '.' || p.proname || '(' || pg_get_function_identity_arguments(p.oid) || ')'
+                                   as name,
+                               exists (select from unnest(coalesce(p.proconfig, '{}')) c where c like 'search_path=%')
+                                   as pins_search_path,
+                               has_function_privilege('public', p.oid, 'EXECUTE')
+                                   or has_function_privilege('anon', p.oid, 'EXECUTE')
+                                   or has_function_privilege('authenticated', p.oid, 'EXECUTE') as browser_can_execute
                         from pg_proc p
                         join pg_namespace n on n.oid = p.pronamespace
-                        where n.nspname = any(string_to_array(:schemas, ',')) and p.prosecdef""").param("schemas", String.join(",", schemas)).query(String.class).list().stream()
-                .filter(function -> !securityDefinerFunctions.contains(function))
-                .forEach(function -> violations.add(function + ": SECURITY DEFINER function not on the allowlist"));
+                        where n.nspname = any(string_to_array(:schemas, ',')) and p.prosecdef""")
+                .param("schemas", String.join(",", schemas))
+                .query((rs, row) -> {
+                    String function = rs.getString("name");
+                    if (!securityDefinerFunctions.contains(function)) {
+                        violations.add(function + ": SECURITY DEFINER function not on the allowlist");
+                    }
+                    if (!rs.getBoolean("pins_search_path")) {
+                        violations.add(function + ": SECURITY DEFINER function does not pin search_path");
+                    }
+                    if (rs.getBoolean("browser_can_execute")) {
+                        violations.add(function + ": SECURITY DEFINER function is executable by public, anon or"
+                                + " authenticated");
+                    }
+                    return function;
+                })
+                .list();
     }
 
     private static List<Map<String, Object>> policies(JdbcClient jdbc, String table) {

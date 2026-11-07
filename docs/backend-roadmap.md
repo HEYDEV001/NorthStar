@@ -75,10 +75,13 @@ Phase 10 (pilot) needs the frontend and is planned after it.
   - The app connects through Supabase's transaction pooler, so its JDBC URL needs `prepareThreshold=0`. Flyway uses a direct or session-pooler connection.
   - Built as: `TenantScope` (thread-local, not inherited, always cleared), a tenant-aware JPA transaction manager that sets the context on the transaction's own connection at begin, a connection guard that refuses statements outside a tenant transaction, `@TenantId` from the same context, and a repository advice that requires a context before any repository call.
   - Hibernate's schema validation needs one statement at startup (sequence metadata), so the guard allows statements on the startup thread only, until every singleton exists and before the web server starts; Spring Data's startup sessions get a placeholder tenant that matches nothing. Tests prove both are closed afterwards.
-- [ ] 1.5 Supabase token verification with Spring Security, membership lookup, deactivated user rejected on the next request (P13)
+- [x] 1.5 Supabase token verification with Spring Security, membership lookup, deactivated user rejected on the next request (P13)
   - The membership lookup runs before the tenant is known: a narrow user-only context calls one allowlisted `SECURITY DEFINER` function that takes no tenant argument, uses only `app.user_id`, and returns only that user's active membership.
+  - Built as: JWKS verification with ES256/RS256 only (no HS256), checks on issuer, audience, expiry, `role = authenticated`, `is_anonymous` not true and `sub` a UUID; `northstar.current_membership()` called in the guard's lookup mode on every request (no cache); 401 `unauthorized` / `invalid_token`, 403 `no_active_membership`. The gate now also requires every allowlisted `SECURITY DEFINER` function to pin `search_path` and not be executable by `public`, `anon` or `authenticated`.
+  - P13's second half (flagging a deactivated member's open leads and future appointments for reassignment) comes with deactivation in 1.8 and with leads and appointments in Phases 3 and 6.
 - [ ] 1.6 API conventions: `/api/v1`, `{code, message, details}` errors, other tenant's record → 404 (P9)
 - [ ] 1.7 Create business and first admin; `GET /api/v1/me`
+  - Add the create-business endpoint to `SecurityConfiguration`'s membership-optional list: a signed-in user with no active membership must be able to call it, without a tenant scope.
   - Creating a business sets `app.tenant_id` to the new tenant's ID (and `app.role` to `admin`), then inserts the tenant and the first admin membership in one transaction.
   - New migration: check constraint `tenants.id <> '00000000-0000-0000-0000-000000000000'`. The tenant guard's startup placeholder uses the all-zero UUID, so no real tenant may ever have it.
 - [ ] 1.8 Members: list, change role, deactivate; at least one active admin always (P14); audit entries

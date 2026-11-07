@@ -17,6 +17,7 @@ import java.sql.Wrapper;
 import java.util.IdentityHashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.UUID;
 import javax.sql.DataSource;
 import org.springframework.jdbc.datasource.DelegatingDataSource;
 
@@ -37,12 +38,26 @@ import org.springframework.jdbc.datasource.DelegatingDataSource;
  * same wrapped statement that produced it. Metadata methods themselves stay allowed without a tenant transaction,
  * since Hibernate's startup needs them.
  *
+ * <p>The membership lookup at login runs before any tenant is known. {@link MembershipLookup} puts a connection into
+ * lookup mode: only app.user_id is set, and the exact {@link #MEMBERSHIP_LOOKUP} statement is the only one allowed.
+ *
  * <p>This guards only the app_user datasource. The app_admin datasource (Phase 8) is a separate bean with its own rules.
  */
 public final class TenantGuardDataSource extends DelegatingDataSource {
 
     private static final String SET_CONTEXT = "select set_config('app.tenant_id', ?, true),"
             + " set_config('app.user_id', ?, true), set_config('app.role', ?, true)";
+    private static final String SET_USER = "select set_config('app.user_id', ?, true)";
+
+    /** The one statement allowed in lookup mode, calling the allowlisted SECURITY DEFINER function. */
+    static final String MEMBERSHIP_LOOKUP = "select tenant_id, membership_id, role from northstar.current_membership()";
+
+    /** What the current transaction on a connection may do. */
+    private enum Mode {
+        NONE,
+        TENANT,
+        MEMBERSHIP_LOOKUP
+    }
 
     /** JDBC objects that can lead back to a connection, most specific first. */
     private static final List<Class<?>> WRAPPED_TYPES = List.of(
@@ -92,7 +107,7 @@ public final class TenantGuardDataSource extends DelegatingDataSource {
         private final Connection target;
         private final Map<Object, Object> openStatements = new IdentityHashMap<>();
         private Connection self;
-        private boolean tenantTransaction;
+        private Mode mode = Mode.NONE;
 
         Guard(Connection target) {
             this.target = target;
@@ -105,17 +120,25 @@ public final class TenantGuardDataSource extends DelegatingDataSource {
                     begin((TenantContext) args[0]);
                     return null;
                 }
-                case "createStatement", "prepareStatement", "prepareCall" -> requireTenantTransaction("Statement");
-                case "commit" -> tenantTransaction = false;
+                case "beginMembershipLookup" -> {
+                    beginLookup((UUID) args[0]);
+                    return null;
+                }
+                case "prepareStatement" -> {
+                    boolean theLookup = mode == Mode.MEMBERSHIP_LOOKUP && MEMBERSHIP_LOOKUP.equals(args[0]);
+                    if (!theLookup) requireTenantTransaction("Statement");
+                }
+                case "createStatement", "prepareCall" -> requireTenantTransaction("Statement");
+                case "commit" -> mode = Mode.NONE;
                 case "close" -> {
-                    tenantTransaction = false;
+                    mode = Mode.NONE;
                     openStatements.clear();
                 }
                 case "rollback" -> {
-                    if (args == null) tenantTransaction = false; // rollback to a savepoint stays in the transaction
+                    if (args == null) mode = Mode.NONE; // rollback to a savepoint stays in the transaction
                 }
                 case "setAutoCommit" -> {
-                    if ((Boolean) args[0]) tenantTransaction = false;
+                    if ((Boolean) args[0]) mode = Mode.NONE;
                 }
                 case "unwrap", "isWrapperFor" -> {
                     return unwrapOrCheck(proxy, target, method, args, "the underlying connection");
@@ -135,7 +158,7 @@ public final class TenantGuardDataSource extends DelegatingDataSource {
         }
 
         private void requireTenantTransaction(String what) {
-            if (!tenantTransaction && !isStartupThreadInWindow()) {
+            if (mode != Mode.TENANT && !isStartupThreadInWindow()) {
                 throw new MissingTenantContextException(what + " refused: no tenant transaction on this connection");
             }
         }
@@ -225,7 +248,18 @@ public final class TenantGuardDataSource extends DelegatingDataSource {
                 statement.setString(3, context.role().databaseValue());
                 statement.executeQuery().close();
             }
-            tenantTransaction = true;
+            mode = Mode.TENANT;
+        }
+
+        private void beginLookup(UUID userId) throws SQLException {
+            if (target.getAutoCommit()) {
+                throw new IllegalStateException("A membership lookup can only run inside a transaction");
+            }
+            try (PreparedStatement statement = target.prepareStatement(SET_USER)) {
+                statement.setString(1, userId.toString());
+                statement.executeQuery().close();
+            }
+            mode = Mode.MEMBERSHIP_LOOKUP;
         }
     }
 
