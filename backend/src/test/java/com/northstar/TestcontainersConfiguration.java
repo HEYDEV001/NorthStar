@@ -9,6 +9,7 @@ import org.springframework.boot.flyway.autoconfigure.FlywayMigrationStrategy;
 import org.springframework.boot.jdbc.autoconfigure.JdbcConnectionDetails;
 import org.springframework.boot.test.context.TestConfiguration;
 import org.springframework.context.annotation.Bean;
+import org.springframework.test.context.DynamicPropertyRegistrar;
 import org.testcontainers.postgresql.PostgreSQLContainer;
 import org.testcontainers.utility.DockerImageName;
 
@@ -86,6 +87,20 @@ public class TestcontainersConfiguration {
     @Bean
     PostgresAdmin postgresAdmin(PostgreSQLContainer postgres) {
         return new PostgresAdmin(postgres);
+    }
+
+    /** Signs test access tokens and serves their JWKS; the app verifies them exactly as it verifies Supabase's. */
+    @Bean
+    TestTokens testTokens() throws Exception {
+        return new TestTokens();
+    }
+
+    @Bean
+    DynamicPropertyRegistrar testTokenIssuer(TestTokens tokens) {
+        return registry -> {
+            registry.add("northstar.auth.issuer", tokens::issuer);
+            registry.add("northstar.auth.jwk-set-uri", tokens::jwkSetUri);
+        };
     }
 
     /**

@@ -3,6 +3,7 @@ package com.northstar;
 import static org.assertj.core.api.Assertions.assertThat;
 
 import java.util.HashMap;
+import java.util.HashSet;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
@@ -229,11 +230,46 @@ class RlsReleaseGateTests {
 
         @Test
         void securityDefinerFunctionMustBeAllowlisted() {
-            sql("create function northstar.gate_fn(x int) returns int language sql security definer as 'select x'");
+            createLockedDownDefinerFunction();
             assertThat(RlsReleaseGate.NORTHSTAR.violations(jdbc))
                     .containsExactly("northstar.gate_fn(x integer): SECURITY DEFINER function not on the allowlist");
             assertThat(gateWith(Map.of(), Set.of(), Map.of(), Set.of("northstar.gate_fn(x integer)")))
                     .isEmpty();
+        }
+
+        @Test
+        void securityDefinerFunctionMustPinSearchPath() {
+            createLockedDownDefinerFunction();
+            sql("alter function northstar.gate_fn(int) reset search_path");
+            assertThat(gateWith(Map.of(), Set.of(), Map.of(), Set.of("northstar.gate_fn(x integer)")))
+                    .containsExactly(
+                            "northstar.gate_fn(x integer): SECURITY DEFINER function does not pin search_path");
+        }
+
+        @Test
+        void securityDefinerFunctionMustNotBeExecutableByBrowserRoles() {
+            createLockedDownDefinerFunction();
+            sql("grant execute on function northstar.gate_fn(int) to authenticated");
+            assertThat(gateWith(Map.of(), Set.of(), Map.of(), Set.of("northstar.gate_fn(x integer)")))
+                    .containsExactly("northstar.gate_fn(x integer): SECURITY DEFINER function is executable by public,"
+                            + " anon or authenticated");
+        }
+
+        @Test
+        void securityDefinerFunctionLeftAtDefaultsFailsEveryRule() {
+            sql("create function northstar.gate_fn(x int) returns int language sql security definer as 'select x'");
+            assertThat(RlsReleaseGate.NORTHSTAR.violations(jdbc))
+                    .containsExactly(
+                            "northstar.gate_fn(x integer): SECURITY DEFINER function does not pin search_path",
+                            "northstar.gate_fn(x integer): SECURITY DEFINER function is executable by public, anon or"
+                                    + " authenticated",
+                            "northstar.gate_fn(x integer): SECURITY DEFINER function not on the allowlist");
+        }
+
+        private void createLockedDownDefinerFunction() {
+            sql("create function northstar.gate_fn(x int) returns int language sql security definer"
+                    + " set search_path = pg_catalog, pg_temp as 'select x'");
+            sql("revoke all on function northstar.gate_fn(int) from public, anon, authenticated");
         }
 
         @Test
@@ -443,13 +479,15 @@ class RlsReleaseGateTests {
             Set<String> securityDefinerFunctions) {
         Map<String, Set<String>> allPlatformTables = new HashMap<>(RlsReleaseGate.NORTHSTAR.platformTables());
         allPlatformTables.putAll(platformTables);
+        Set<String> allSecurityDefinerFunctions = new HashSet<>(RlsReleaseGate.NORTHSTAR.securityDefinerFunctions());
+        allSecurityDefinerFunctions.addAll(securityDefinerFunctions);
         return new RlsReleaseGate(
                         RlsReleaseGate.NORTHSTAR.schemas(),
                         allPlatformTables,
                         RlsReleaseGate.NORTHSTAR.tenantTablePolicies(),
                         insertOnlyTables,
                         lifecycleTables,
-                        securityDefinerFunctions)
+                        allSecurityDefinerFunctions)
                 .violations(jdbc);
     }
 
