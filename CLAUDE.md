@@ -35,6 +35,8 @@ Backend modules (package per module under `backend/src/main/java/com/northstar/`
 `tenancy`, `contacts`, `workflow`, `crm`, `ai`, `commercial`, `scheduling`, `integrations`, `reporting`, `admin`.
 Modules talk to each other only through their public service interfaces. No module reaches into another
 module's repositories or tables.
+Shared web infrastructure lives in `com.northstar.api` (error format, API exceptions, request IDs, the `/api/v1`
+prefix). It is not a business module, owns no tables, and depends on no module.
 
 ## Commands
 
@@ -165,6 +167,21 @@ Run the formatter and the relevant tests before every commit. Update this sectio
   `@PostConstruct` methods or startup listeners; startup work runs as a job inside `TenantScope`.
 - API: REST under `/api/v1`, JSON, ISO-8601 UTC timestamps, amounts in paise as integers, errors as
   `{ "code", "message", "details" }`.
+  - Every `@RestController` is served under `/api/v1` automatically; request bodies must be JSON (else 415).
+  - Errors go through `com.northstar.api`: throw `NotFoundException`, `ConflictException` or `ForbiddenException`;
+    never build error bodies by hand or catch exceptions to hide them. Unexpected failures become a logged 500 that
+    says nothing about the cause.
+  - Look records up by ID inside the tenant scope and `orElseThrow(NotFoundException::new)`; a write that affects
+    0 rows is a 404 too. Another tenant's record is then indistinguishable from a missing one (P9). 403 is only for
+    an in-tenant permission, never for another tenant's record.
+  - A 409 never names a constraint, column or value. Where a specific message helps (e.g. a slug already taken),
+    the service checks first and throws its own `ConflictException`.
+  - DTO timestamps are `Instant` (always UTC with `Z`); amounts are `long` paise.
+  - The app's JSON mapper is strict for our API bodies (unknown fields, fractions into integers, nulls into
+    primitives and trailing tokens are 400s). Provider payloads (WhatsApp, Razorpay, Meta, Google) are parsed with a
+    separate lenient mapper, never the app's one.
+  - Every response carries `X-Request-Id`, and every log line carries `request_id`, plus `tenant_id` and `user_id`
+    inside a tenant scope. Error bodies repeat the request ID as `details.requestId`.
 - Frontend: TypeScript strict, Zod schemas for every form and API response, server state through one query
   layer, no secrets or tenant IDs in client-side storage.
 - Times shown to users are converted to the tenant's timezone; times stored are UTC.

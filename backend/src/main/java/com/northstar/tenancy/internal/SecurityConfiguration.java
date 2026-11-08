@@ -1,13 +1,19 @@
 package com.northstar.tenancy.internal;
 
+import com.northstar.api.ApiError;
+import com.northstar.api.ApiErrorMapper;
+import com.northstar.api.ApiErrorWriter;
+import jakarta.servlet.DispatcherType;
 import jakarta.servlet.http.HttpServletRequest;
 import jakarta.servlet.http.HttpServletResponse;
 import java.io.IOException;
 import java.net.URI;
 import java.time.Duration;
+import java.util.Map;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
+import org.springframework.http.HttpStatus;
 import org.springframework.http.client.SimpleClientHttpRequestFactory;
 import org.springframework.security.config.Customizer;
 import org.springframework.security.config.annotation.web.builders.HttpSecurity;
@@ -40,15 +46,19 @@ class SecurityConfiguration {
     private static final RequestMatcher MEMBERSHIP_OPTIONAL = request -> false;
 
     @Bean
-    SecurityFilterChain api(HttpSecurity http, MembershipLookup lookup) throws Exception {
-        AuthenticationEntryPoint unauthorized = SecurityConfiguration::unauthorized;
+    SecurityFilterChain api(HttpSecurity http, MembershipLookup lookup, ApiErrorMapper errors, ApiErrorWriter writer)
+            throws Exception {
+        AuthenticationEntryPoint unauthorized =
+                (request, response, exception) -> unauthorized(request, response, exception, errors, writer);
         http.csrf(csrf -> csrf.disable())
                 .sessionManagement(sessions -> sessions.sessionCreationPolicy(SessionCreationPolicy.STATELESS))
                 .httpBasic(basic -> basic.disable())
                 .formLogin(form -> form.disable())
                 .logout(logout -> logout.disable())
                 .requestCache(cache -> cache.disable())
-                .authorizeHttpRequests(requests -> requests.requestMatchers(PUBLIC_PATHS)
+                .authorizeHttpRequests(requests -> requests.dispatcherTypeMatchers(DispatcherType.ERROR)
+                        .permitAll() // the /error fallback answers in our format; it must never turn into a 401
+                        .requestMatchers(PUBLIC_PATHS)
                         .permitAll()
                         .anyRequest()
                         .authenticated())
@@ -56,7 +66,8 @@ class SecurityConfiguration {
                         resourceServer.jwt(Customizer.withDefaults()).authenticationEntryPoint(unauthorized))
                 .exceptionHandling(exceptions -> exceptions.authenticationEntryPoint(unauthorized))
                 .addFilterAfter(
-                        new TenantContextFilter(lookup, PUBLIC_PATHS, MEMBERSHIP_OPTIONAL), AuthorizationFilter.class);
+                        new TenantContextFilter(lookup, PUBLIC_PATHS, MEMBERSHIP_OPTIONAL, errors, writer),
+                        AuthorizationFilter.class);
         return http.build();
     }
 
@@ -92,15 +103,17 @@ class SecurityConfiguration {
 
     /** 401 in the {code, message, details} format, keeping the standard WWW-Authenticate header. Never logs the token. */
     private static void unauthorized(
-            HttpServletRequest request, HttpServletResponse response, AuthenticationException exception)
+            HttpServletRequest request,
+            HttpServletResponse response,
+            AuthenticationException exception,
+            ApiErrorMapper errors,
+            ApiErrorWriter writer)
             throws IOException {
         new BearerTokenAuthenticationEntryPoint().commence(request, response, exception);
-        boolean badToken = exception instanceof OAuth2AuthenticationException;
-        ApiErrors.write(
-                response,
-                HttpServletResponse.SC_UNAUTHORIZED,
-                badToken ? "invalid_token" : "unauthorized",
-                badToken ? "The access token is invalid or expired" : "Authentication required");
+        ApiError error = exception instanceof OAuth2AuthenticationException
+                ? errors.error("invalid_token", "The access token is invalid or expired", Map.of())
+                : errors.forStatus(HttpStatus.UNAUTHORIZED);
+        writer.write(response, HttpStatus.UNAUTHORIZED, error);
     }
 
     private static void requireAbsoluteUrl(String name, String value) {
