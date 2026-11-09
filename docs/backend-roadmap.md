@@ -93,13 +93,16 @@ Phase 10 (pilot) needs the frontend and is planned after it.
   - Built as: admin-only `GET /members`, `PATCH /members/{id}/role`, `POST /members/{id}/deactivate|reactivate`, and `PUT /me/profile` (name and phone) for members. Staff get 403 `admin_only` whatever the ID; another tenant's ID is the same 404 as a missing one, and every by-ID miss is logged with its record type and UUID (P9). Changes are idempotent and audited with `{"from", "to"}` codes. P14 is enforced in the database by `northstar.keep_an_active_admin()`: a per-tenant advisory lock plus a re-check when an active admin stops being one, refusing REPEATABLE READ; the API answers 409 `last_admin`, and deadlocks or lock timeouts 409 `conflict_retry`. The RLS release gate now pins the column grants of `memberships`, `invites`, `tenants` and `user_profiles` exactly.
   - Later: the second half of P13 (in-flight jobs and AI conversations for a deactivated member) lands in Phases 3 and 6. The onboarding gate stays in Phase 2.
   - Needed before staff WhatsApp notifications are built (step to be placed): an admin endpoint to set a member's `whatsapp_phone`, with masked display.
-- [ ] 1.9 Invites: create, revoke, accept; single-use, expiry (P12)
+- [x] 1.9 Invites: create, revoke, accept; single-use, expiry (P12)
   - Acceptance runs before the user has tenant context, so it uses one allowlisted `SECURITY DEFINER` function that looks up only by token hash and returns the minimum needed; the endpoint calling it is rate-limited.
   - That function bypasses RLS, so it must itself check that the token is unexpired, unrevoked and unused; that the logged-in user's email matches the invite; that the user has no other active membership; and that the membership is created only in the invite's tenant.
+  - Built as: admin-only `POST /invites` (201), `GET /invites` (open invites, `pending` or `expired`), `POST /invites/{id}/revoke` (a second revoke is a 200 no-op; accepted is 409 `invite_already_accepted`) and `POST /invites/{id}/resend` (pending or expired only; 409 on accepted or revoked; locks and revokes the old invite, then inserts the new one in the same transaction). One pending invite per email, ignoring case: 409 `invite_pending` with `details.inviteId`. The raw token (32 random bytes, base64url) exists only in the invite link `NORTHSTAR_APP_URL/invite#token=…`, returned once by create and resend; only its SHA-256 is stored, and it is never listed, logged or audited. Audit entries `invite.created`, `invite.resent`, `invite.revoked`, `invite.accepted` carry IDs and fixed codes only, never the email.
+  - `POST /invites/accept` is membership-optional and calls `northstar.accept_invite` (`data-model.md` section 12) in the guard's acceptance mode. Answers: 404 `invite_not_found`, 403 `invite_email_mismatch`, 410 `invite_used` / `invite_revoked` / `invite_expired`, 409 `already_has_business`; no error body contains the invite's email, the business name or the tenant ID. Rate-limited in memory to 10 attempts per 10 minutes per user (429 `rate_limited`). Supabase email confirmation is on locally and is a `deploy-checklist.md` item for every hosted environment.
 - [ ] 1.10 Job and action core: JobRunr (own schema), worker sets tenant context from the job, `actions` table with idempotency key and statuses, retryable / permanent / auth classification, retry table; no tenant context → fails loudly (P10)
   - JobRunr's tables are created by a Flyway migration as `migrator`, with JobRunr's own table creation turned off. `app_user` gets full DML including delete on JobRunr's tables only. JobRunr's tables go on the gate's platform-wide list.
 - [ ] 1.11 Fake-adapter test kit: duplicates, delays, timeouts, 429, auth failures
 - [ ] 1.12 Email adapter (Resend) behind the integrations interface; invite email sent as an action
+  - The send action issues or rotates the invite token at send time, and the invite API stops returning the link.
 - [ ] 1.13 Minimal lead tables: `contacts`, `workflows`, `workflow_versions`, `leads`, with the staff policy on `leads` (P11)
   - The staff policy is restrictive; the gate fails on a second permissive policy.
 - [ ] 1.14 Cross-tenant suite P9, P10, P11 runs on every PR
@@ -110,6 +113,7 @@ Phase 10 (pilot) needs the frontend and is planned after it.
 **Decided:** D4 (one active membership per user), D6 (email login only).
 **New dependencies:** Spring Security OAuth2 resource server, JobRunr.
 **Before the frontend phase:** CORS for the React app: `http://localhost:5173` locally and each environment's real domain through config, with credentials and the `Authorization` and `X-Request-Id` headers allowed and `X-Request-Id` exposed to the browser.
+**Frontend note (invites):** the invite page reads the token from the URL fragment, then clears it from the address bar with `history.replaceState` before calling `POST /api/v1/invites/accept`.
 
 ## Phase 2 — WhatsApp and conversations
 
@@ -244,6 +248,7 @@ Phase 10 (pilot) needs the frontend and is planned after it.
 - [ ] 9.1 Every P and W case that belongs to the backend has a passing named test
 - [ ] 9.2 Load test against the launch capacity tier
 - [ ] 9.3 Security review: auth, isolation, webhooks, secrets, logs
+  - Replace the in-memory invite-acceptance rate limiter (per API instance) with a shared one.
 - [ ] 9.4 Backup and restore drill; restored data passes the isolation suite (P24)
 - [ ] 9.5 Sentry, alerting, production deploy
 

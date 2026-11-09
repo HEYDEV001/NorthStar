@@ -50,7 +50,8 @@ class SecurityConfiguration {
      */
     private static final RequestMatcher MEMBERSHIP_OPTIONAL = new OrRequestMatcher(
             PathPatternRequestMatcher.withDefaults().matcher(HttpMethod.POST, "/api/v1/businesses"),
-            PathPatternRequestMatcher.withDefaults().matcher(HttpMethod.GET, "/api/v1/me"));
+            PathPatternRequestMatcher.withDefaults().matcher(HttpMethod.GET, "/api/v1/me"),
+            PathPatternRequestMatcher.withDefaults().matcher(HttpMethod.POST, "/api/v1/invites/accept"));
 
     @Bean
     SecurityFilterChain api(HttpSecurity http, MembershipLookup lookup, ApiErrorMapper errors, ApiErrorWriter writer)

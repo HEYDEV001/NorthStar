@@ -12,4 +12,9 @@ public class ConflictException extends ApiException {
     public ConflictException(String code, String message) {
         super(HttpStatus.CONFLICT, code, message, Map.of());
     }
+
+    /** With details the caller can act on, such as the ID of the record it clashed with. Never personal data. */
+    public ConflictException(String code, String message, Map<String, Object> details) {
+        super(HttpStatus.CONFLICT, code, message, details);
+    }
 }
