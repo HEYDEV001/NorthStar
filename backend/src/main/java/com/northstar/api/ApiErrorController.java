@@ -29,7 +29,7 @@ class ApiErrorController implements ErrorController {
     void error(HttpServletRequest request, HttpServletResponse response) throws IOException {
         if (request.getAttribute(RequestDispatcher.ERROR_EXCEPTION) instanceof Throwable failure) {
             ApiErrorMapper.Mapped mapped = errors.map(failure);
-            errors.logIfUnexpected(mapped, failure, request);
+            errors.log(mapped, failure, request);
             writer.write(response, mapped.status(), mapped.error());
             return;
         }

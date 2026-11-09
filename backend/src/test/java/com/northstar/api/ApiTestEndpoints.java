@@ -63,7 +63,7 @@ class ApiTestEndpoints {
 
     @GetMapping("/test/missing")
     void missing() {
-        throw new NotFoundException();
+        throw new NotFoundException("test_record", UUID.fromString("00000000-0000-0000-0000-00000000abcd"));
     }
 
     @GetMapping("/test/slug-taken")
@@ -119,7 +119,10 @@ class ApiTestEndpoints {
 
     @GetMapping("/test/memberships/{id}")
     UUID membershipByJpa(@PathVariable UUID id) {
-        return memberships.findById(id).orElseThrow(NotFoundException::new).getId();
+        return memberships
+                .findById(id)
+                .orElseThrow(() -> new NotFoundException("membership", id))
+                .getId();
     }
 
     @GetMapping("/test/memberships/{id}/native")
@@ -130,7 +133,7 @@ class ApiTestEndpoints {
                         .param("tenant", TenantScope.require().tenantId())
                         .query(UUID.class)
                         .optional()
-                        .orElseThrow(NotFoundException::new));
+                        .orElseThrow(() -> new NotFoundException("membership", id)));
     }
 
     @PatchMapping("/test/memberships/{id}/native")
@@ -141,7 +144,7 @@ class ApiTestEndpoints {
                 .param("id", id)
                 .param("tenant", TenantScope.require().tenantId())
                 .update());
-        if (updated == 0) throw new NotFoundException();
+        if (updated == 0) throw new NotFoundException("membership", id);
     }
 
     private void inTransaction(String sql, UUID second) {

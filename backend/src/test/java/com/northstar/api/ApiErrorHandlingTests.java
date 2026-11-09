@@ -47,7 +47,9 @@ class ApiErrorHandlingTests {
                          "details": {"fields": [
                            {"field": "amountPaise", "rule": "PositiveOrZero"},
                            {"field": "name", "rule": "NotBlank"}]}}""");
-        assertThat(body(result)).doesNotContain("-5");
+        // The random request ID can itself contain "-5", so leave it out before checking the value is not echoed.
+        String requestId = result.getResponse().getHeader(LogContext.REQUEST_ID_HEADER);
+        assertThat(body(result).replace(requestId, "")).doesNotContain("-5");
     }
 
     @Test
@@ -112,6 +114,22 @@ class ApiErrorHandlingTests {
     void notFoundExceptionIs404() {
         assertThat(get("/api/v1/test/missing")).hasStatus(404).bodyJson().isLenientlyEqualTo("""
                         {"code": "not_found", "message": "Not found"}""");
+    }
+
+    @Test
+    void P9_aByIdMissIsLoggedWithItsRecordTypeAndIdOnly(CapturedOutput output) {
+        java.util.UUID requested = java.util.UUID.randomUUID();
+
+        assertThat(get("/api/v1/test/memberships/" + requested)).hasStatus(404);
+        assertThat(get("/api/v1/test/memberships/evil-xyz-not-a-uuid"))
+                .hasStatus(400)
+                .bodyJson()
+                .extractingPath("$.code")
+                .isEqualTo("malformed_request");
+
+        assertThat(output.getAll().lines())
+                .anyMatch(line -> line.contains(" INFO ") && line.endsWith("Not found: membership " + requested));
+        assertThat(output.getAll()).doesNotContain("evil-xyz-not-a-uuid");
     }
 
     @Test

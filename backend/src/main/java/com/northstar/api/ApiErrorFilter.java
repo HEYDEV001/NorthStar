@@ -34,7 +34,7 @@ final class ApiErrorFilter extends OncePerRequestFilter {
                     ? servlet.getRootCause()
                     : failure;
             ApiErrorMapper.Mapped mapped = errors.map(cause);
-            errors.logIfUnexpected(mapped, cause, request);
+            errors.log(mapped, cause, request);
             writer.write(response, mapped.status(), mapped.error());
         }
     }

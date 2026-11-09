@@ -20,6 +20,7 @@ record RlsReleaseGate(
         Map<String, Set<String>> tenantTablePolicies,
         Set<String> insertOnlyTables,
         Map<String, Set<String>> lifecycleTables,
+        Map<String, Set<String>> columnRestrictedUpdates,
         Set<String> securityDefinerFunctions) {
 
     static final RlsReleaseGate NORTHSTAR = new RlsReleaseGate(
@@ -86,6 +87,25 @@ record RlsReleaseGate(
                     "northstar.payments", Set.of(),
                     "northstar.invoices", Set.of(),
                     "northstar.refunds", Set.of()),
+            // Tables app_user may update only in these columns, and never delete from. The declaration must match the
+            // column grants exactly, so a migration that widens one fails the build.
+            Map.of(
+                    "northstar.memberships", Set.of("role", "status", "whatsapp_phone"),
+                    "northstar.invites", Set.of("revoked_at"),
+                    "northstar.tenants",
+                            Set.of(
+                                    "name",
+                                    "industry",
+                                    "timezone",
+                                    "locale",
+                                    "brand_tone",
+                                    "legal_name",
+                                    "gstin",
+                                    "state_code",
+                                    "billing_address",
+                                    "approval_mode",
+                                    "quiet_hours"),
+                    "northstar.user_profiles", Set.of("full_name", "phone", "avatar_path")),
             // SECURITY DEFINER functions, as "schema.name(argument types)". Each must also pin search_path and be
             // executable by app_user only.
             Set.of("northstar.current_membership()", "northstar.slug_is_taken(candidate text)"));
@@ -124,6 +144,7 @@ record RlsReleaseGate(
         checkViews(jdbc, violations);
         checkInsertOnlyTables(jdbc, violations);
         checkLifecycleTables(jdbc, violations);
+        checkColumnRestrictedTables(jdbc, violations);
         checkSecurityDefinerFunctions(jdbc, violations);
         return new ArrayList<>(violations);
     }
@@ -272,20 +293,40 @@ record RlsReleaseGate(
     }
 
     private void checkLifecycleTables(JdbcClient jdbc, Set<String> violations) {
-        lifecycleTables.forEach((table, declaredColumns) -> {
-            if (!exists(jdbc, table)) return;
-            for (String privilege : appUserPrivileges(jdbc, table)) {
-                if (!privilege.equals("UPDATE on a column")) {
-                    violations.add(table + ": lifecycle table but app_user has " + privilege);
-                }
+        lifecycleTables.forEach(
+                (table, declared) -> checkUpdatableColumns(jdbc, table, declared, "lifecycle", false, violations));
+    }
+
+    private void checkColumnRestrictedTables(JdbcClient jdbc, Set<String> violations) {
+        columnRestrictedUpdates.forEach((table, declared) ->
+                checkUpdatableColumns(jdbc, table, declared, "column-restricted", true, violations));
+    }
+
+    /**
+     * No delete, truncate or table-level update for app_user, and no updatable column outside the declaration. With
+     * exact, every declared column must also be updatable, so the declaration and the grants cannot drift apart.
+     */
+    private static void checkUpdatableColumns(
+            JdbcClient jdbc, String table, Set<String> declared, String tier, boolean exact, Set<String> violations) {
+        if (!exists(jdbc, table)) return;
+        for (String privilege : appUserPrivileges(jdbc, table)) {
+            if (!privilege.equals("UPDATE on a column")) {
+                violations.add(table + ": " + tier + " table but app_user has " + privilege);
             }
-            jdbc.sql("""
-                            select attname from pg_attribute
-                            where attrelid = cast(:table as regclass) and attnum > 0 and not attisdropped
-                              and has_column_privilege('app_user', attrelid, attname, 'UPDATE')""").param("table", table).query(String.class).list().stream()
-                    .filter(column -> !declaredColumns.contains(column))
-                    .forEach(column -> violations.add(table + ": column " + column + " is updatable but not declared"));
-        });
+        }
+        List<String> updatable =
+                jdbc.sql("""
+                        select attname from pg_attribute
+                        where attrelid = cast(:table as regclass) and attnum > 0 and not attisdropped
+                          and has_column_privilege('app_user', attrelid, attname, 'UPDATE')""").param("table", table).query(String.class).list();
+        updatable.stream()
+                .filter(column -> !declared.contains(column))
+                .forEach(column -> violations.add(table + ": column " + column + " is updatable but not declared"));
+        if (exact) {
+            declared.stream()
+                    .filter(column -> !updatable.contains(column))
+                    .forEach(column -> violations.add(table + ": declared column " + column + " is not updatable"));
+        }
     }
 
     /** app_user's write privileges beyond insert: table-level UPDATE, DELETE, TRUNCATE, and column-level UPDATE. */

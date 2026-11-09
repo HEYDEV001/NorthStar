@@ -111,9 +111,16 @@ public class ApiErrorMapper {
         return new ApiError(code, message, withRequestId);
     }
 
-    /** Logs a failure the caller did not expect, with the request ID from the log context. Never the query string. */
-    public void logIfUnexpected(Mapped mapped, Throwable failure, HttpServletRequest request) {
-        if (mapped.unexpected()) {
+    /**
+     * Logs what the logs need to see: unexpected failures with their stack trace, an unavailable database, and every
+     * by-ID lookup that found nothing (P9: attempts are logged; another tenant's ID looks like a missing one). Only
+     * the record type and the UUID are logged, never other client input or the query string.
+     */
+    public void log(Mapped mapped, Throwable failure, HttpServletRequest request) {
+        NotFoundException notFound = find(failure, NotFoundException.class);
+        if (notFound != null) {
+            log.info("Not found: {} {}", notFound.recordType(), notFound.requestedId());
+        } else if (mapped.unexpected()) {
             log.error("Unexpected failure on {} {}", request.getMethod(), request.getRequestURI(), failure);
         } else if (mapped.status() == HttpStatus.SERVICE_UNAVAILABLE) {
             log.warn(

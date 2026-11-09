@@ -79,4 +79,16 @@ public class Membership {
     public String getStatus() {
         return status;
     }
+
+    public Instant getCreatedAt() {
+        return createdAt;
+    }
+
+    void changeRole(Role role) {
+        this.role = role;
+    }
+
+    void changeStatus(String status) {
+        this.status = status;
+    }
 }
