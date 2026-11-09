@@ -81,11 +81,13 @@ Phase 10 (pilot) needs the frontend and is planned after it.
   - P13's second half (flagging a deactivated member's open leads and future appointments for reassignment) comes with deactivation in 1.8 and with leads and appointments in Phases 3 and 6.
 - [x] 1.6 API conventions: `/api/v1`, `{code, message, details}` errors, other tenant's record → 404 (P9)
   - Built as: `com.northstar.api` with one error mapper used by the exception handler, an error filter wrapping Spring Security, and a JSON `/error` fallback; `NotFoundException`, `ConflictException`, `ForbiddenException`; strict JSON for API bodies; the `/api/v1` prefix on every `@RestController`; a request ID on every response and log line, with `tenant_id` and `user_id` inside a tenant scope. Filter order: request ID, error filter, Spring Security.
-- [ ] 1.7 Create business and first admin; `GET /api/v1/me`
+- [x] 1.7 Create business and first admin; `GET /api/v1/me`
   - Add the create-business endpoint to `SecurityConfiguration`'s membership-optional list: a signed-in user with no active membership must be able to call it, without a tenant scope.
   - Creating a business sets `app.tenant_id` to the new tenant's ID (and `app.role` to `admin`), then inserts the tenant and the first admin membership in one transaction.
   - New migration: check constraint `tenants.id <> '00000000-0000-0000-0000-000000000000'`. The tenant guard's startup placeholder uses the all-zero UUID, so no real tenant may ever have it.
+  - Built as: `POST /api/v1/businesses` and `GET /api/v1/me`, both membership-optional. One transaction in a tenant scope for the new ID (role admin) writes the profile (if new), tenant, admin membership and a `business.created` audit entry. Slugs: format and reserved words in `Slugs`, checked first through the allowlisted `northstar.slug_is_taken(text)`; a supplied taken slug is 409 `slug_taken`, a reserved one 409 `slug_reserved`, a generated one gets `-2`…`-20` then a random suffix. An existing member gets 409 `already_has_business` (D4).
 - [ ] 1.8 Members: list, change role, deactivate; at least one active admin always (P14); audit entries
+  - Add a profile-update endpoint (the signed-in user's own `full_name`, `phone`, `avatar_path`), so `GET /api/v1/me` can show a name.
   - Member and invite writes are admin-only in the database (restrictive policies); the endpoints also check the role and return a clear error instead of a silent no-op.
   - Column-level update grants: `memberships` only `role`, `status`, `whatsapp_phone`; `invites` only `revoked_at`. The entities map every other column as `updatable = false`.
 - [ ] 1.9 Invites: create, revoke, accept; single-use, expiry (P12)
