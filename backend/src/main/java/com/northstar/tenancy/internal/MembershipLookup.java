@@ -5,10 +5,13 @@ import java.sql.Connection;
 import java.sql.PreparedStatement;
 import java.sql.ResultSet;
 import java.sql.SQLException;
+import java.sql.SQLNonTransientConnectionException;
+import java.sql.SQLTransientConnectionException;
 import java.util.Optional;
 import java.util.UUID;
 import javax.sql.DataSource;
 import org.springframework.dao.DataAccessResourceFailureException;
+import org.springframework.jdbc.UncategorizedSQLException;
 import org.springframework.stereotype.Component;
 
 /**
@@ -43,8 +46,16 @@ public class MembershipLookup {
                 connection.setAutoCommit(true);
             }
         } catch (SQLException e) {
-            throw new DataAccessResourceFailureException("Membership lookup failed", e);
+            if (connectionFailure(e)) throw new DataAccessResourceFailureException("Membership lookup failed", e);
+            throw new UncategorizedSQLException("Membership lookup", TenantGuardDataSource.MEMBERSHIP_LOOKUP, e);
         }
+    }
+
+    /** Only a lost or refused connection means the database is unavailable (503); anything else is a bug (500). */
+    private static boolean connectionFailure(SQLException e) {
+        return e instanceof SQLTransientConnectionException
+                || e instanceof SQLNonTransientConnectionException
+                || (e.getSQLState() != null && e.getSQLState().startsWith("08"));
     }
 
     private static Optional<ActiveMembership> lookUp(Connection connection, UUID userId) throws SQLException {

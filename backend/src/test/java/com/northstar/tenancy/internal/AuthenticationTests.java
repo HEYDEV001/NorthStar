@@ -71,7 +71,7 @@ class AuthenticationTests {
 
     @Test
     void missingTokenIs401Unauthorized() {
-        MvcTestResult result = mvc.get().uri("/test/whoami").exchange();
+        MvcTestResult result = mvc.get().uri("/api/v1/test/whoami").exchange();
 
         assertThat(result).hasStatus(401).bodyJson().extractingPath("$.code").isEqualTo("unauthorized");
         assertThat(result.getResponse().getHeader(HttpHeaders.WWW_AUTHENTICATE)).startsWith("Bearer");
@@ -193,7 +193,7 @@ class AuthenticationTests {
         String expected = "{\"tenantId\": \"%s\", \"visibleTenants\": [\"%s\"]}".formatted(tenantA, tenantA);
 
         assertThat(mvc.post()
-                        .uri("/test/whoami?tenantId=" + tenantB + "&tenant_id=" + tenantB)
+                        .uri("/api/v1/test/whoami?tenantId=" + tenantB + "&tenant_id=" + tenantB)
                         .header(HttpHeaders.AUTHORIZATION, "Bearer " + tokens.forUser(user))
                         .header("X-Tenant-Id", tenantB.toString())
                         .header("X-Northstar-Tenant", tenantB.toString())
@@ -211,7 +211,7 @@ class AuthenticationTests {
 
     private MvcTestResult whoAmI(String token) {
         return mvc.get()
-                .uri("/test/whoami")
+                .uri("/api/v1/test/whoami")
                 .header(HttpHeaders.AUTHORIZATION, "Bearer " + token)
                 .exchange();
     }

@@ -79,7 +79,8 @@ Phase 10 (pilot) needs the frontend and is planned after it.
   - The membership lookup runs before the tenant is known: a narrow user-only context calls one allowlisted `SECURITY DEFINER` function that takes no tenant argument, uses only `app.user_id`, and returns only that user's active membership.
   - Built as: JWKS verification with ES256/RS256 only (no HS256), checks on issuer, audience, expiry, `role = authenticated`, `is_anonymous` not true and `sub` a UUID; `northstar.current_membership()` called in the guard's lookup mode on every request (no cache); 401 `unauthorized` / `invalid_token`, 403 `no_active_membership`. The gate now also requires every allowlisted `SECURITY DEFINER` function to pin `search_path` and not be executable by `public`, `anon` or `authenticated`.
   - P13's second half (flagging a deactivated member's open leads and future appointments for reassignment) comes with deactivation in 1.8 and with leads and appointments in Phases 3 and 6.
-- [ ] 1.6 API conventions: `/api/v1`, `{code, message, details}` errors, other tenant's record → 404 (P9)
+- [x] 1.6 API conventions: `/api/v1`, `{code, message, details}` errors, other tenant's record → 404 (P9)
+  - Built as: `com.northstar.api` with one error mapper used by the exception handler, an error filter wrapping Spring Security, and a JSON `/error` fallback; `NotFoundException`, `ConflictException`, `ForbiddenException`; strict JSON for API bodies; the `/api/v1` prefix on every `@RestController`; a request ID on every response and log line, with `tenant_id` and `user_id` inside a tenant scope. Filter order: request ID, error filter, Spring Security.
 - [ ] 1.7 Create business and first admin; `GET /api/v1/me`
   - Add the create-business endpoint to `SecurityConfiguration`'s membership-optional list: a signed-in user with no active membership must be able to call it, without a tenant scope.
   - Creating a business sets `app.tenant_id` to the new tenant's ID (and `app.role` to `admin`), then inserts the tenant and the first admin membership in one transaction.
@@ -103,6 +104,7 @@ Phase 10 (pilot) needs the frontend and is planned after it.
 
 **Decided:** D4 (one active membership per user), D6 (email login only).
 **New dependencies:** Spring Security OAuth2 resource server, JobRunr.
+**Before the frontend phase:** CORS for the React app: `http://localhost:5173` locally and each environment's real domain through config, with credentials and the `Authorization` and `X-Request-Id` headers allowed and `X-Request-Id` exposed to the browser.
 
 ## Phase 2 — WhatsApp and conversations
 
