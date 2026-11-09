@@ -13,6 +13,7 @@ import java.util.Map;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
+import org.springframework.http.HttpMethod;
 import org.springframework.http.HttpStatus;
 import org.springframework.http.client.SimpleClientHttpRequestFactory;
 import org.springframework.security.config.Customizer;
@@ -28,6 +29,7 @@ import org.springframework.security.web.AuthenticationEntryPoint;
 import org.springframework.security.web.SecurityFilterChain;
 import org.springframework.security.web.access.intercept.AuthorizationFilter;
 import org.springframework.security.web.servlet.util.matcher.PathPatternRequestMatcher;
+import org.springframework.security.web.util.matcher.OrRequestMatcher;
 import org.springframework.security.web.util.matcher.RequestMatcher;
 import org.springframework.web.client.RestTemplate;
 
@@ -42,8 +44,13 @@ class SecurityConfiguration {
     private static final RequestMatcher PUBLIC_PATHS =
             PathPatternRequestMatcher.withDefaults().matcher("/actuator/health/**");
 
-    /** Endpoints a signed-in user without an active membership may call. Step 1.7 adds creating a business. */
-    private static final RequestMatcher MEMBERSHIP_OPTIONAL = request -> false;
+    /**
+     * Endpoints a signed-in user without an active membership may call; they run without a tenant scope. Members
+     * calling them still run in their own scope (creating a second business then answers 409, D4).
+     */
+    private static final RequestMatcher MEMBERSHIP_OPTIONAL = new OrRequestMatcher(
+            PathPatternRequestMatcher.withDefaults().matcher(HttpMethod.POST, "/api/v1/businesses"),
+            PathPatternRequestMatcher.withDefaults().matcher(HttpMethod.GET, "/api/v1/me"));
 
     @Bean
     SecurityFilterChain api(HttpSecurity http, MembershipLookup lookup, ApiErrorMapper errors, ApiErrorWriter writer)
