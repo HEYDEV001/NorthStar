@@ -19,4 +19,10 @@ interface TenantGuardedConnection extends Connection {
      * at login, before any tenant is known.
      */
     void beginMembershipLookup(UUID userId) throws SQLException;
+
+    /**
+     * Sets only app.user_id for the current transaction and allows exactly one statement, the invite acceptance. Used
+     * before the invitee has any tenant context.
+     */
+    void beginInviteAcceptance(UUID userId) throws SQLException;
 }

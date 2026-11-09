@@ -40,6 +40,7 @@ import org.springframework.jdbc.datasource.DelegatingDataSource;
  *
  * <p>The membership lookup at login runs before any tenant is known. {@link MembershipLookup} puts a connection into
  * lookup mode: only app.user_id is set, and the exact {@link #MEMBERSHIP_LOOKUP} statement is the only one allowed.
+ * Accepting an invite works the same way: {@link InviteAcceptance} allows only {@link #INVITE_ACCEPTANCE}.
  *
  * <p>This guards only the app_user datasource. The app_admin datasource (Phase 8) is a separate bean with its own rules.
  */
@@ -52,11 +53,23 @@ public final class TenantGuardDataSource extends DelegatingDataSource {
     /** The one statement allowed in lookup mode, calling the allowlisted SECURITY DEFINER function. */
     static final String MEMBERSHIP_LOOKUP = "select tenant_id, membership_id, role from northstar.current_membership()";
 
+    /** The one statement allowed in invite-acceptance mode, calling the allowlisted SECURITY DEFINER function. */
+    static final String INVITE_ACCEPTANCE =
+            "select outcome, tenant_id, membership_id, role from northstar.accept_invite(?, ?)";
+
     /** What the current transaction on a connection may do. */
     private enum Mode {
-        NONE,
-        TENANT,
-        MEMBERSHIP_LOOKUP
+        NONE(null),
+        TENANT(null),
+        MEMBERSHIP_LOOKUP(TenantGuardDataSource.MEMBERSHIP_LOOKUP),
+        INVITE_ACCEPTANCE(TenantGuardDataSource.INVITE_ACCEPTANCE);
+
+        /** For the user-only modes: the single statement allowed, set only app.user_id. */
+        private final String onlyStatement;
+
+        Mode(String onlyStatement) {
+            this.onlyStatement = onlyStatement;
+        }
     }
 
     /** JDBC objects that can lead back to a connection, most specific first. */
@@ -121,12 +134,16 @@ public final class TenantGuardDataSource extends DelegatingDataSource {
                     return null;
                 }
                 case "beginMembershipLookup" -> {
-                    beginLookup((UUID) args[0]);
+                    beginUserOnly((UUID) args[0], Mode.MEMBERSHIP_LOOKUP);
+                    return null;
+                }
+                case "beginInviteAcceptance" -> {
+                    beginUserOnly((UUID) args[0], Mode.INVITE_ACCEPTANCE);
                     return null;
                 }
                 case "prepareStatement" -> {
-                    boolean theLookup = mode == Mode.MEMBERSHIP_LOOKUP && MEMBERSHIP_LOOKUP.equals(args[0]);
-                    if (!theLookup) requireTenantTransaction("Statement");
+                    boolean theOnlyStatement = mode.onlyStatement != null && mode.onlyStatement.equals(args[0]);
+                    if (!theOnlyStatement) requireTenantTransaction("Statement");
                 }
                 case "createStatement", "prepareCall" -> requireTenantTransaction("Statement");
                 case "commit" -> mode = Mode.NONE;
@@ -251,15 +268,15 @@ public final class TenantGuardDataSource extends DelegatingDataSource {
             mode = Mode.TENANT;
         }
 
-        private void beginLookup(UUID userId) throws SQLException {
+        private void beginUserOnly(UUID userId, Mode userOnlyMode) throws SQLException {
             if (target.getAutoCommit()) {
-                throw new IllegalStateException("A membership lookup can only run inside a transaction");
+                throw new IllegalStateException("A user-only call can only run inside a transaction");
             }
             try (PreparedStatement statement = target.prepareStatement(SET_USER)) {
                 statement.setString(1, userId.toString());
                 statement.executeQuery().close();
             }
-            mode = Mode.MEMBERSHIP_LOOKUP;
+            mode = userOnlyMode;
         }
     }
 

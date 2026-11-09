@@ -108,7 +108,10 @@ record RlsReleaseGate(
                     "northstar.user_profiles", Set.of("full_name", "phone", "avatar_path")),
             // SECURITY DEFINER functions, as "schema.name(argument types)". Each must also pin search_path and be
             // executable by app_user only.
-            Set.of("northstar.current_membership()", "northstar.slug_is_taken(candidate text)"));
+            Set.of(
+                    "northstar.current_membership()",
+                    "northstar.slug_is_taken(candidate text)",
+                    "northstar.accept_invite(p_token_hash text, p_email text)"));
 
     /** The tenant_isolation expression exactly as Postgres stores it for the policy in data-model.md section 12. */
     static final String TENANT_ISOLATION_EXPRESSION =
