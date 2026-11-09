@@ -34,7 +34,7 @@ class ApiExceptionHandler extends ResponseEntityExceptionHandler {
     @ExceptionHandler(Exception.class)
     ResponseEntity<ApiError> handle(Exception failure, HttpServletRequest request) {
         ApiErrorMapper.Mapped mapped = errors.map(failure);
-        errors.logIfUnexpected(mapped, failure, request);
+        errors.log(mapped, failure, request);
         return ResponseEntity.status(mapped.status()).body(mapped.error());
     }
 

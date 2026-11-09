@@ -48,4 +48,14 @@ public class UserProfile {
     public String getFullName() {
         return fullName;
     }
+
+    public String getPhone() {
+        return phone;
+    }
+
+    /** The signed-in user's own name and phone; null clears a field. */
+    void update(String fullName, String phone) {
+        this.fullName = fullName;
+        this.phone = phone;
+    }
 }

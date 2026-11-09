@@ -5,7 +5,6 @@ import com.northstar.tenancy.Role;
 import com.northstar.tenancy.TenantContext;
 import com.northstar.tenancy.TenantScope;
 import java.util.UUID;
-import org.hibernate.exception.ConstraintViolationException;
 import org.springframework.dao.DataIntegrityViolationException;
 import org.springframework.jdbc.core.simple.JdbcClient;
 import org.springframework.stereotype.Service;
@@ -21,7 +20,6 @@ import org.springframework.transaction.support.TransactionTemplate;
 @Service
 class BusinessCreation {
 
-    private static final String ONE_ACTIVE_MEMBERSHIP = "memberships_one_active_per_user";
     private static final String SLUG_UNIQUE = "tenants_slug_key";
 
     private final TenantRepository tenants;
@@ -53,8 +51,9 @@ class BusinessCreation {
         try {
             return TenantScope.call(context, () -> transactions.execute(status -> createInScope(userId, request)));
         } catch (DataIntegrityViolationException e) {
-            String constraint = constraintName(e);
-            if (ONE_ACTIVE_MEMBERSHIP.equals(constraint)) throw alreadyHasBusiness(); // lost a race with itself
+            String constraint = DatabaseErrors.constraintName(e);
+            if (DatabaseErrors.ONE_ACTIVE_MEMBERSHIP.equals(constraint))
+                throw alreadyHasBusiness(); // lost a race with itself
             if (SLUG_UNIQUE.equals(constraint)) throw slugTaken(); // checked free, taken before the insert
             throw e;
         }
@@ -95,13 +94,6 @@ class BusinessCreation {
                 .param("slug", slug)
                 .query(Boolean.class)
                 .single());
-    }
-
-    private static String constraintName(Throwable failure) {
-        for (Throwable cause = failure; cause != null; cause = cause.getCause()) {
-            if (cause instanceof ConstraintViolationException violation) return violation.getConstraintName();
-        }
-        return null;
     }
 
     private static ConflictException alreadyHasBusiness() {

@@ -175,6 +175,7 @@ class RlsReleaseGateTests {
                             tenantTablePolicies,
                             northstar.insertOnlyTables(),
                             northstar.lifecycleTables(),
+                            northstar.columnRestrictedUpdates(),
                             northstar.securityDefinerFunctions())
                     .violations(jdbc);
         }
@@ -289,6 +290,7 @@ class RlsReleaseGateTests {
                                     Map.of(),
                                     Map.of(),
                                     Set.of(),
+                                    Map.of(),
                                     Map.of(),
                                     Set.of())
                             .violations(jdbc))
@@ -463,6 +465,54 @@ class RlsReleaseGateTests {
             assertThat(lifecycleGate()).containsExactly(PROBE + ": lifecycle table but app_user has DELETE");
         }
 
+        @Test
+        void columnRestrictedTableWithTheExactColumnsPasses() {
+            sql("revoke update on " + PROBE + " from app_user");
+            sql("grant update (status) on " + PROBE + " to app_user");
+            assertThat(columnRestrictedGate()).isEmpty();
+        }
+
+        @Test
+        void columnRestrictedTableWithAWiderGrantFails() {
+            assertThat(columnRestrictedGate())
+                    .containsExactly(
+                            PROBE + ": column amount_paise is updatable but not declared",
+                            PROBE + ": column id is updatable but not declared",
+                            PROBE + ": column-restricted table but app_user has UPDATE");
+        }
+
+        @Test
+        void columnRestrictedTableMissingADeclaredColumnFails() {
+            sql("revoke update on " + PROBE + " from app_user");
+            assertThat(columnRestrictedGate()).containsExactly(PROBE + ": declared column status is not updatable");
+        }
+
+        @Test
+        void columnRestrictedTableWithDeleteFails() {
+            sql("revoke update on " + PROBE + " from app_user");
+            sql("grant update (status) on " + PROBE + " to app_user");
+            sql("grant delete on " + PROBE + " to app_user");
+            assertThat(columnRestrictedGate())
+                    .containsExactly(PROBE + ": column-restricted table but app_user has DELETE");
+        }
+
+        private List<String> columnRestrictedGate() {
+            Map<String, Set<String>> platformTables = new HashMap<>(RlsReleaseGate.NORTHSTAR.platformTables());
+            platformTables.put(PROBE, Set.of());
+            Map<String, Set<String>> restricted = new HashMap<>(RlsReleaseGate.NORTHSTAR.columnRestrictedUpdates());
+            restricted.put(PROBE, Set.of("status"));
+            RlsReleaseGate northstar = RlsReleaseGate.NORTHSTAR;
+            return new RlsReleaseGate(
+                            northstar.schemas(),
+                            platformTables,
+                            northstar.tenantTablePolicies(),
+                            northstar.insertOnlyTables(),
+                            northstar.lifecycleTables(),
+                            restricted,
+                            northstar.securityDefinerFunctions())
+                    .violations(jdbc);
+        }
+
         private List<String> insertOnlyGate() {
             return gateWith(Map.of(PROBE, Set.of()), Set.of(PROBE), Map.of(), Set.of());
         }
@@ -487,6 +537,7 @@ class RlsReleaseGateTests {
                         RlsReleaseGate.NORTHSTAR.tenantTablePolicies(),
                         insertOnlyTables,
                         lifecycleTables,
+                        RlsReleaseGate.NORTHSTAR.columnRestrictedUpdates(),
                         allSecurityDefinerFunctions)
                 .violations(jdbc);
     }
