@@ -1,7 +1,7 @@
 # Database bootstrap
 
-`roles.sql` creates Northstar's three database roles and makes `migrator` the owner of the `northstar` schema
-(`data-model.md` section 12). Run it once per environment as `postgres`, before the first Flyway migration. It is
+`roles.sql` creates Northstar's four database roles and makes `migrator` the owner of the `northstar` and `jobrunr`
+schemas (`data-model.md` section 12). Run it once per environment as `postgres`, before the first Flyway migration. It is
 safe to run again, and it puts back any role attribute changed by hand.
 
 | Role | Login used by | Bypasses RLS |
@@ -9,6 +9,7 @@ safe to run again, and it puts back any role attribute changed by hand.
 | `migrator` | Flyway (`FLYWAY_USER`) | Yes |
 | `app_user` | Spring Boot API and worker (`DB_USER`) | No |
 | `app_admin` | Northstar admin module, from Phase 8 | Yes, read-only by default |
+| `jobrunr_user` | JobRunr's private pool, step 1.10 (`JOBRUNR_DB_USER`) | No; may use only the `jobrunr` schema |
 
 The roles are created without login. Passwords never go in the repo, in this script or in a migration.
 
@@ -26,11 +27,14 @@ docker exec -it supabase_db_NorthStar psql -U postgres -d postgres
   \password migrator
   alter role app_user login;
   \password app_user
+  alter role jobrunr_user login;
+  \password jobrunr_user
   \q
 ```
 
 Then in `.env.local`: `FLYWAY_USER=migrator`, `FLYWAY_PASSWORD=` the migrator password, `DB_USER=app_user`,
-`DB_PASSWORD=` the app_user password. Run `cd backend && ./mvnw initialize flyway:migrate`.
+`DB_PASSWORD=` the app_user password, `JOBRUNR_DB_USER=jobrunr_user`, `JOBRUNR_DB_PASSWORD=` the jobrunr_user
+password. Run `cd backend && ./mvnw initialize flyway:migrate`.
 
 `\password` sends only a hash of the password to the server, so the password itself never appears in database logs.
 Do not use `alter role ... password '...'` with a plain-text password.
@@ -42,12 +46,12 @@ superuser, so check that the script runs cleanly there and that the result match
 
 ```
 select rolname, rolbypassrls, rolcreaterole, rolcreatedb, rolcanlogin
-from pg_roles where rolname in ('migrator', 'app_user', 'app_admin');
-select nspowner::regrole from pg_namespace where nspname = 'northstar';
+from pg_roles where rolname in ('migrator', 'app_user', 'app_admin', 'jobrunr_user');
+select nspname, nspowner::regrole from pg_namespace where nspname in ('northstar', 'jobrunr');
 ```
 
-Expected: `migrator` and `app_admin` bypass RLS, `app_user` does not, none can create roles or databases, and
-`migrator` owns `northstar`.
+Expected: `migrator` and `app_admin` bypass RLS, `app_user` and `jobrunr_user` do not, none can create roles or
+databases, and `migrator` owns both schemas.
 
 Also confirm two findings from the local image, which Phase 1 relies on:
 

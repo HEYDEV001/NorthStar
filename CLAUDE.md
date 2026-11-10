@@ -37,6 +37,9 @@ Modules talk to each other only through their public service interfaces. No modu
 module's repositories or tables.
 Shared web infrastructure lives in `com.northstar.api` (error format, API exceptions, request IDs, the `/api/v1`
 prefix). It is not a business module, owns no tables, and depends on no module.
+Background jobs live in `com.northstar.jobs` (JobRunr on its own pool, the tenant job runner, the `Jobs` facade). It is
+shared infrastructure too: it owns only the `jobrunr` schema and depends only on `tenancy`'s public API. Only this
+package can create the worker's system context.
 
 ## Commands
 

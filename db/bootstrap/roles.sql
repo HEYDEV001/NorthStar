@@ -12,6 +12,9 @@ begin
   if not exists (select from pg_roles where rolname = 'app_admin') then
     create role app_admin nologin;
   end if;
+  if not exists (select from pg_roles where rolname = 'jobrunr_user') then
+    create role jobrunr_user nologin;
+  end if;
 end
 $$;
 
@@ -19,6 +22,7 @@ $$;
 alter role migrator  nocreatedb nocreaterole bypassrls;    -- Flyway only
 alter role app_user  nocreatedb nocreaterole nobypassrls;  -- API and worker; RLS always applies
 alter role app_admin nocreatedb nocreaterole bypassrls;    -- Northstar admin module, read-mostly, audited
+alter role jobrunr_user nocreatedb nocreaterole nobypassrls; -- JobRunr's own tables only; no access to northstar
 
 -- postgres can act as migrator, so it can hand over the schema below and operators can run fixes as migrator.
 grant migrator to postgres;
@@ -27,6 +31,12 @@ grant migrator to postgres;
 -- default privileges. Tables left owned by another role (a database first migrated as postgres) move to migrator.
 create schema if not exists northstar authorization migrator;
 alter schema northstar owner to migrator;
+
+-- JobRunr's tables live in their own schema, also owned by migrator; Flyway creates them and only jobrunr_user may
+-- use them (step 1.10). No role but migrator gets anything here by default.
+create schema if not exists jobrunr authorization migrator;
+alter schema jobrunr owner to migrator;
+revoke all on schema jobrunr from public;
 
 do $$
 declare

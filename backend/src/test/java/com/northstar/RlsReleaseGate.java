@@ -21,16 +21,22 @@ record RlsReleaseGate(
         Set<String> insertOnlyTables,
         Map<String, Set<String>> lifecycleTables,
         Map<String, Set<String>> columnRestrictedUpdates,
-        Set<String> securityDefinerFunctions) {
+        Set<String> securityDefinerFunctions,
+        Map<String, String> isolatedSchemas) {
 
     static final RlsReleaseGate NORTHSTAR = new RlsReleaseGate(
             // Schemas the gate scans. Add ingest and secrets here if Phase 2 adopts them.
-            List.of("northstar"),
+            List.of("northstar", "jobrunr"),
             // Platform-wide tables with no tenant_id, each with its exact RLS policies (see policy(...) for the
-            // format). An empty set means no policies: the app roles have no access. plans and JobRunr's tables join
-            // when created.
+            // format). An empty set means no policies: the app roles have no access. plans joins when created.
+            // JobRunr's tables have no RLS; only jobrunr_user may use them (see isolatedSchemas below).
             Map.of(
                     "northstar.flyway_schema_history", Set.of(),
+                    "jobrunr.jobrunr_migrations", Set.of(),
+                    "jobrunr.jobrunr_jobs", Set.of(),
+                    "jobrunr.jobrunr_recurring_jobs", Set.of(),
+                    "jobrunr.jobrunr_backgroundjobservers", Set.of(),
+                    "jobrunr.jobrunr_metadata", Set.of(),
                     "northstar.tenants",
                             Set.of(
                                     policy(
@@ -83,6 +89,18 @@ record RlsReleaseGate(
             // app_user may never delete or update the whole row; only the listed status and processing columns are
             // updatable. Each list is filled in by the migration that creates the table.
             Map.of(
+                    "northstar.actions",
+                            Set.of(
+                                    "status",
+                                    "result",
+                                    "attempts",
+                                    "next_attempt_at",
+                                    "lease_expires_at",
+                                    "last_attempt_at",
+                                    "last_error_class",
+                                    "last_error_code",
+                                    "approver_membership_id",
+                                    "approved_at"),
                     "northstar.webhook_events", Set.of(),
                     "northstar.payments", Set.of(),
                     "northstar.invoices", Set.of(),
@@ -111,7 +129,15 @@ record RlsReleaseGate(
             Set.of(
                     "northstar.current_membership()",
                     "northstar.slug_is_taken(candidate text)",
-                    "northstar.accept_invite(p_token_hash text, p_email text)"));
+                    "northstar.accept_invite(p_token_hash text, p_email text)",
+                    "northstar.tenants_with_due_actions()"),
+            // Schemas that belong to one login role: no other app or browser role may use the schema or anything in
+            // it, and that role may use no other scanned schema.
+            Map.of("jobrunr", "jobrunr_user"));
+
+    /** Every role that must stay out of a schema it does not own (see isolatedSchemas). */
+    private static final List<String> APP_AND_BROWSER_ROLES =
+            List.of("app_user", "app_admin", "jobrunr_user", "anon", "authenticated", "public");
 
     /** The tenant_isolation expression exactly as Postgres stores it for the policy in data-model.md section 12. */
     static final String TENANT_ISOLATION_EXPRESSION =
@@ -149,6 +175,7 @@ record RlsReleaseGate(
         checkLifecycleTables(jdbc, violations);
         checkColumnRestrictedTables(jdbc, violations);
         checkSecurityDefinerFunctions(jdbc, violations);
+        checkIsolatedSchemas(jdbc, violations);
         return new ArrayList<>(violations);
     }
 
@@ -376,6 +403,44 @@ record RlsReleaseGate(
                     return function;
                 })
                 .list();
+    }
+
+    /**
+     * An isolated schema is used only by its role: every other app or browser role has no privilege on the schema or
+     * on any table or view in it, and the role has none on the other scanned schemas or anything in them.
+     */
+    private void checkIsolatedSchemas(JdbcClient jdbc, Set<String> violations) {
+        isolatedSchemas.forEach((schema, owner) -> {
+            for (String role : APP_AND_BROWSER_ROLES) {
+                if (!role.equals(owner)) checkNoAccess(jdbc, role, schema, violations);
+            }
+            for (String other : schemas) {
+                if (!other.equals(schema)) checkNoAccess(jdbc, owner, other, violations);
+            }
+        });
+    }
+
+    private static void checkNoAccess(JdbcClient jdbc, String role, String schema, Set<String> violations) {
+        boolean usesSchema = jdbc.sql("""
+                        select has_schema_privilege(:role, :schema, 'USAGE')
+                               or has_schema_privilege(:role, :schema, 'CREATE')""")
+                .param("role", role)
+                .param("schema", schema)
+                .query(Boolean.class)
+                .single();
+        if (usesSchema) violations.add(schema + ": " + role + " may use this schema");
+        jdbc.sql("""
+                        select n.nspname || '.' || c.relname
+                        from pg_class c
+                        join pg_namespace n on n.oid = c.relnamespace
+                        where n.nspname = :schema and c.relkind in ('r', 'p', 'v', 'm')
+                          and has_table_privilege(:role, c.oid,
+                                                  'SELECT, INSERT, UPDATE, DELETE, TRUNCATE, REFERENCES, TRIGGER')""")
+                .param("role", role)
+                .param("schema", schema)
+                .query(String.class)
+                .list()
+                .forEach(table -> violations.add(table + ": " + role + " has privileges here"));
     }
 
     private static List<Map<String, Object>> policies(JdbcClient jdbc, String table) {

@@ -25,4 +25,10 @@ interface TenantGuardedConnection extends Connection {
      * before the invitee has any tenant context.
      */
     void beginInviteAcceptance(UUID userId) throws SQLException;
+
+    /**
+     * Sets no context and allows exactly one statement, the scan for tenants with due actions. Used by the job sweeper,
+     * which starts without a tenant; it returns tenant IDs only.
+     */
+    void beginDueActionScan() throws SQLException;
 }
