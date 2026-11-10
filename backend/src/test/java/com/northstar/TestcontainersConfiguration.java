@@ -51,12 +51,25 @@ public class TestcontainersConfiguration {
         };
     }
 
-    /** Throwaway passwords for this test run's migrator and app_user logins. */
-    record TestLogins(String migratorPassword, String appUserPassword) {}
+    /** Throwaway passwords for this test run's migrator, app_user and jobrunr_user logins. */
+    record TestLogins(String migratorPassword, String appUserPassword, String jobRunrPassword) {}
 
     @Bean
     TestLogins testLogins() {
-        return new TestLogins(UUID.randomUUID().toString(), UUID.randomUUID().toString());
+        return new TestLogins(
+                UUID.randomUUID().toString(),
+                UUID.randomUUID().toString(),
+                UUID.randomUUID().toString());
+    }
+
+    /** JobRunr's private pool connects as jobrunr_user, exactly as in every environment. */
+    @Bean
+    DynamicPropertyRegistrar jobRunrConnection(PostgreSQLContainer postgres, TestLogins logins) {
+        return registry -> {
+            registry.add("northstar.jobs.database.url", postgres::getJdbcUrl);
+            registry.add("northstar.jobs.database.username", () -> "jobrunr_user");
+            registry.add("northstar.jobs.database.password", logins::jobRunrPassword);
+        };
     }
 
     /** Sets up the roles as postgres, then migrates as migrator, the same order every environment follows. */
@@ -68,6 +81,7 @@ public class TestcontainersConfiguration {
                 DatabaseBootstrap.applyRoles(admin);
                 DatabaseBootstrap.enableLogin(admin, "migrator", logins.migratorPassword());
                 DatabaseBootstrap.enableLogin(admin, "app_user", logins.appUserPassword());
+                DatabaseBootstrap.enableLogin(admin, "jobrunr_user", logins.jobRunrPassword());
             } catch (SQLException e) {
                 throw new IllegalStateException("Database bootstrap failed", e);
             }

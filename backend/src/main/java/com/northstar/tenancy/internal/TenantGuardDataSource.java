@@ -40,7 +40,8 @@ import org.springframework.jdbc.datasource.DelegatingDataSource;
  *
  * <p>The membership lookup at login runs before any tenant is known. {@link MembershipLookup} puts a connection into
  * lookup mode: only app.user_id is set, and the exact {@link #MEMBERSHIP_LOOKUP} statement is the only one allowed.
- * Accepting an invite works the same way: {@link InviteAcceptance} allows only {@link #INVITE_ACCEPTANCE}.
+ * Accepting an invite works the same way: {@link InviteAcceptance} allows only {@link #INVITE_ACCEPTANCE}. The job
+ * sweeper's scan for tenants with due actions sets no context at all and allows only {@link #DUE_ACTION_TENANTS}.
  *
  * <p>This guards only the app_user datasource. The app_admin datasource (Phase 8) is a separate bean with its own rules.
  */
@@ -57,14 +58,18 @@ public final class TenantGuardDataSource extends DelegatingDataSource {
     static final String INVITE_ACCEPTANCE =
             "select outcome, tenant_id, membership_id, role from northstar.accept_invite(?, ?)";
 
+    /** The one statement allowed in due-action scan mode, calling the allowlisted SECURITY DEFINER function. */
+    static final String DUE_ACTION_TENANTS = "select tenant_id from northstar.tenants_with_due_actions()";
+
     /** What the current transaction on a connection may do. */
     private enum Mode {
         NONE(null),
         TENANT(null),
         MEMBERSHIP_LOOKUP(TenantGuardDataSource.MEMBERSHIP_LOOKUP),
-        INVITE_ACCEPTANCE(TenantGuardDataSource.INVITE_ACCEPTANCE);
+        INVITE_ACCEPTANCE(TenantGuardDataSource.INVITE_ACCEPTANCE),
+        DUE_ACTION_SCAN(TenantGuardDataSource.DUE_ACTION_TENANTS);
 
-        /** For the user-only modes: the single statement allowed, set only app.user_id. */
+        /** For the single-statement modes: the one statement allowed. */
         private final String onlyStatement;
 
         Mode(String onlyStatement) {
@@ -139,6 +144,13 @@ public final class TenantGuardDataSource extends DelegatingDataSource {
                 }
                 case "beginInviteAcceptance" -> {
                     beginUserOnly((UUID) args[0], Mode.INVITE_ACCEPTANCE);
+                    return null;
+                }
+                case "beginDueActionScan" -> {
+                    if (target.getAutoCommit()) {
+                        throw new IllegalStateException("A due-action scan can only run inside a transaction");
+                    }
+                    mode = Mode.DUE_ACTION_SCAN;
                     return null;
                 }
                 case "prepareStatement" -> {

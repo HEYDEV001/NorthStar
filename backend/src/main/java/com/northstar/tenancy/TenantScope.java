@@ -2,6 +2,7 @@ package com.northstar.tenancy;
 
 import java.util.Optional;
 import java.util.function.Supplier;
+import org.springframework.web.context.request.RequestContextHolder;
 
 /**
  * Holds the {@link TenantContext} for the current thread while a unit of work runs. The only way to set it is
@@ -25,10 +26,14 @@ public final class TenantScope {
 
     /**
      * Runs the work with the given context. Nesting is allowed only for the same context: an open transaction is
-     * already bound to the outer tenant, so switching tenants inside it would be unsafe.
+     * already bound to the outer tenant, so switching tenants inside it would be unsafe. The system context is refused
+     * on a thread serving a web request: only background jobs act as the system (step 1.10).
      */
     public static <T> T call(TenantContext context, Supplier<T> work) {
         if (context == null) throw new IllegalArgumentException("context must not be null");
+        if (context.isSystem() && RequestContextHolder.getRequestAttributes() != null) {
+            throw new IllegalStateException("The system context cannot run inside a web request");
+        }
         TenantContext outer = CURRENT.get();
         if (outer != null) {
             if (!outer.equals(context)) {

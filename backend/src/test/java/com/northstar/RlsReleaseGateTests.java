@@ -176,7 +176,8 @@ class RlsReleaseGateTests {
                             northstar.insertOnlyTables(),
                             northstar.lifecycleTables(),
                             northstar.columnRestrictedUpdates(),
-                            northstar.securityDefinerFunctions())
+                            northstar.securityDefinerFunctions(),
+                            northstar.isolatedSchemas())
                     .violations(jdbc);
         }
 
@@ -292,9 +293,30 @@ class RlsReleaseGateTests {
                                     Set.of(),
                                     Map.of(),
                                     Map.of(),
-                                    Set.of())
+                                    Set.of(),
+                                    Map.of())
                             .violations(jdbc))
                     .contains("gate_other.t: no tenant_id and not declared platform-wide");
+        }
+
+        @Test
+        void anotherRoleOnTheJobRunrSchemaFails() {
+            sql("grant select on jobrunr.jobrunr_jobs to app_user");
+            sql("grant usage on schema jobrunr to app_admin");
+            assertThat(RlsReleaseGate.NORTHSTAR.violations(jdbc))
+                    .containsExactly(
+                            "jobrunr.jobrunr_jobs: app_user has privileges here",
+                            "jobrunr: app_admin may use this schema");
+        }
+
+        @Test
+        void jobRunrRoleOnNorthstarFails() {
+            sql("grant usage on schema northstar to jobrunr_user");
+            sql("grant select on northstar.tenants to jobrunr_user");
+            assertThat(RlsReleaseGate.NORTHSTAR.violations(jdbc))
+                    .containsExactly(
+                            "northstar.tenants: jobrunr_user has privileges here",
+                            "northstar: jobrunr_user may use this schema");
         }
     }
 
@@ -509,7 +531,8 @@ class RlsReleaseGateTests {
                             northstar.insertOnlyTables(),
                             northstar.lifecycleTables(),
                             restricted,
-                            northstar.securityDefinerFunctions())
+                            northstar.securityDefinerFunctions(),
+                            northstar.isolatedSchemas())
                     .violations(jdbc);
         }
 
@@ -538,7 +561,8 @@ class RlsReleaseGateTests {
                         insertOnlyTables,
                         lifecycleTables,
                         RlsReleaseGate.NORTHSTAR.columnRestrictedUpdates(),
-                        allSecurityDefinerFunctions)
+                        allSecurityDefinerFunctions,
+                        RlsReleaseGate.NORTHSTAR.isolatedSchemas())
                 .violations(jdbc);
     }
 

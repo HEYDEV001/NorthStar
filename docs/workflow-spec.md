@@ -234,14 +234,18 @@ New businesses start in approval mode; the admin can switch to automatic, but so
 
 Every side effect runs as an action through the job queue with a status, an idempotency key and a retry policy; the engine never calls an external service inline from a webhook.
 
-**Statuses:** Pending → Processing → Succeeded | Failed | Needs Review (approval or manual check) | Skipped (staff chose to skip) | Cancelled (no longer applies).
+**Statuses:** Pending → Processing → Succeeded | Failed | Needs Review (approval or manual check) | Paused (an auth failure; waits for the integration to reconnect) | Skipped (staff chose to skip) | Cancelled (no longer applies).
+
+**Attempts and retries.** "N attempts" in the table below counts every try, the first one included. Where waits are listed, the first try runs at once and each retry waits the next listed time, so "a first try plus 5 retries" is 6 attempts. While an attempt runs the action is Processing under a lease (5 minutes); every action handler has a timeout shorter than the lease, and an attempt that times out is recorded as a retryable failure. An attempt whose worker dies is taken over when its lease expires, and still counts.
+
+**Failure classes** (`integration-specs.md` section 1): **retryable** (timeouts, 429, 5xx) waits for the next retry, and the action fails once its attempts are used up; **permanent** (invalid input, revoked authorisation) fails at once; **auth** (expired credentials) pauses the action without using an attempt, and it resumes when the integration reconnects. A provider's `Retry-After` longer than the scheduled wait moves the next attempt later, but never past the type's overall window, counted from when the action first became runnable (created, or approved); a type with no window listed has the sum of its waits as its window.
 
 **Idempotency key** = `tenant_id + lead_id + action_type + stage_entry_id (+ version or amount where relevant)`. Before calling a provider, the worker checks whether an action with that key already succeeded; providers that support idempotency headers get the same key.
 
 | Action type | Retry policy | On final failure |
 | --- | --- | --- |
-| WhatsApp send | 5 attempts, backoff 30 s → 1 m → 5 m → 15 m → 1 h | Failed; staff alerted; if outside 24-hour window, retry with template |
-| Razorpay link create | 5 attempts, same backoff | Failed; lead stays in stage; staff alerted |
+| WhatsApp send | A first try plus 5 retries (6 attempts), waiting 30 s → 1 m → 5 m → 15 m → 1 h; window 81.5 min | Failed; staff alerted; if outside 24-hour window, retry with template |
+| Razorpay link create | Same as WhatsApp send (6 attempts) | Failed; lead stays in stage; staff alerted |
 | Invoice generate + send | 5 attempts | Failed; payment record unaffected; retry from Failed Actions |
 | Google Calendar write | 8 attempts up to 6 h | Failed; platform calendar still correct; resync on reconnect |
 | Sheets row upsert | Batched; retry until success, max 24 h | Integration marked error; outbox kept |
@@ -250,7 +254,7 @@ Every side effect runs as an action through the job queue with a status, an idem
 
 **Failed Actions screen:** shows lead, action, error, attempts, last try; buttons Retry, Skip (with reason), Open lead.
 
-**Alerts:** same action failing 3 times, or any integration failing for more than 30 minutes, notifies the business admin; repeated failures across tenants notify the Northstar admin.
+**Alerts:** same action failing 3 times, or any integration failing for more than 30 minutes, notifies the business admin; repeated failures across tenants notify the Northstar admin. An action raises at most one alert at its third failed attempt and at most one when it fails for good (both, if its third attempt is its last); an auth pause raises its own alert.
 
 ## 11. AI contract per stage
 

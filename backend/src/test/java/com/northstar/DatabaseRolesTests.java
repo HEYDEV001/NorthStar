@@ -20,7 +20,7 @@ class DatabaseRolesTests {
             select rolname || ' super=' || rolsuper || ' bypassrls=' || rolbypassrls
                    || ' createrole=' || rolcreaterole || ' createdb=' || rolcreatedb
             from pg_roles
-            where rolname in ('migrator', 'app_user', 'app_admin')
+            where rolname in ('migrator', 'app_user', 'app_admin', 'jobrunr_user')
             order by rolname""";
 
     private final PostgresAdmin postgres;
@@ -37,6 +37,7 @@ class DatabaseRolesTests {
                 .containsExactly(
                         "app_admin super=false bypassrls=true createrole=false createdb=false",
                         "app_user super=false bypassrls=false createrole=false createdb=false",
+                        "jobrunr_user super=false bypassrls=false createrole=false createdb=false",
                         "migrator super=false bypassrls=true createrole=false createdb=false");
     }
 
@@ -104,10 +105,14 @@ class DatabaseRolesTests {
             DatabaseBootstrap.applyRoles(admin);
         }
 
-        assertThat(jdbc.sql(ROLE_POWERS).query(String.class).list()).hasSize(3);
-        assertThat(jdbc.sql("select nspowner::regrole::text from pg_namespace where nspname = 'northstar'")
-                        .query(String.class)
+        assertThat(jdbc.sql(ROLE_POWERS).query(String.class).list()).hasSize(4);
+        assertThat(jdbc.sql("""
+                        select nspname || '=' || nspowner::regrole::text from pg_namespace
+                        where nspname in ('northstar', 'jobrunr') order by nspname""").query(String.class).list()).containsExactly("jobrunr=migrator", "northstar=migrator");
+        // Running it again leaves JobRunr's own access in place.
+        assertThat(jdbc.sql("select has_table_privilege('jobrunr_user', 'jobrunr.jobrunr_jobs', 'SELECT, DELETE')")
+                        .query(Boolean.class)
                         .single())
-                .isEqualTo("migrator");
+                .isTrue();
     }
 }
