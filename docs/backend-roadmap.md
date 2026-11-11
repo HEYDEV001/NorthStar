@@ -101,7 +101,8 @@ Phase 10 (pilot) needs the frontend and is planned after it.
 - [x] 1.10 Job and action core: JobRunr (own schema), worker sets tenant context from the job, `actions` table with idempotency key and statuses, retryable / permanent / auth classification, retry table; no tenant context → fails loudly (P10)
   - JobRunr's tables are created by a Flyway migration as `migrator`, with JobRunr's own table creation turned off. Only the dedicated `jobrunr_user` role gets DML (including delete) on them, through JobRunr's private pool; `app_user` gets nothing there and `jobrunr_user` nothing in `northstar`. JobRunr's tables go on the gate's platform-wide list, and the gate checks the schema is isolated both ways.
   - Built as: JobRunr 9.0.2 core (not the Spring Boot starter, which offers no hook for job filters), wired in `com.northstar.jobs` on a private pool (5 connections, `prepareThreshold=0`, transaction pooler: JobRunr uses no advisory locks, LISTEN/NOTIFY or session state). No scheduler beans: jobs are created only through `Jobs`, after the surrounding transaction commits, with stable job IDs so a repeat creates nothing; inside a tenant scope only for that tenant. The worker's activator runs only tenant and platform job handlers. Worker on only with `NORTHSTAR_WORKER_ENABLED=true`; no dashboard; JobRunr's own retries off. Actions in `workflow`: `Actions` (create, approve, failed list, resume paused), `ActionHandler` with a timeout under the 5-minute lease, the executor (claim under a row lock → call outside any transaction → record), `RetryPolicy.STANDARD_BACKOFF`, `ActionAlerts` (logged for now), and a 30-second sweeper through `northstar.tenants_with_due_actions()`.
-  - Later: notifying the business admin on alerts (1.12 email, Phase 2 WhatsApp); integration status on auth failures and the resume trigger (Phase 2 / 7); retry numbers for each other action type when it is built; Failed Actions endpoints and per-role approval rules (Phase 3).
+  - Later: notifying the business admin on alerts (1.12 email, Phase 2 WhatsApp); integration status on auth failures and the resume trigger (Phase 2 / 7); retry numbers for each other action type when it is built; Failed Actions endpoints (Phase 3).
+  - `Actions.approve` is admin-only for now (403 `admin_only` for staff). Step 3.7 sets the per-role approval rules from `workflow-spec.md` §9 (staff approve most types; refunds and discounts above the limit stay with admins).
 - [ ] 1.11 Fake-adapter test kit: duplicates, delays, timeouts, 429, auth failures
 - [ ] 1.12 Email adapter (Resend) behind the integrations interface; invite email sent as an action
   - The send action issues or rotates the invite token at send time, and the invite API stops returning the link.
@@ -153,6 +154,7 @@ Phase 10 (pilot) needs the frontend and is planned after it.
 - [ ] 3.5 Step type executors (§5) producing actions
 - [ ] 3.6 Timers (§8): `timers` mirrors JobRunr jobs; quiet hours and reminders in the tenant timezone (P22); cancellation
 - [ ] 3.7 Approval mode (§9): `needs_review`, approve and reject API, reminders at 30 min and 2 h (W35)
+  - Per-role approval rules per action type replace 1.10's admin-only `Actions.approve`.
 - [ ] 3.8 Failed actions API: list, retry, skip; alert on final failure; kill switches per business and platform-wide
 - [ ] 3.9 Leads API: reassign with history (P5), admin-only soft delete (P6), notes, tasks, request idempotency key (P21)
 - [ ] 3.10 Contact from a Lost or Junk lead starts a new lead (W2)

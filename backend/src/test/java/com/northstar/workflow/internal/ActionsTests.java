@@ -7,6 +7,7 @@ import static org.assertj.core.api.Assertions.within;
 import com.northstar.PostgresAdmin;
 import com.northstar.TestData;
 import com.northstar.TestcontainersConfiguration;
+import com.northstar.api.ForbiddenException;
 import com.northstar.jobs.JobTenantException;
 import com.northstar.jobs.Jobs;
 import com.northstar.tenancy.Role;
@@ -211,6 +212,27 @@ class ActionsTests {
     }
 
     @Test
+    void aThirdAttemptThatIsAlsoTheLastSendsOnlyTheFinalAlert() {
+        TestData.Member member = data.member("admin");
+        String key = key();
+        UUID id = create(member, key, false).id();
+        provider.script(
+                key,
+                ActionOutcome.retryable("http_503"),
+                ActionOutcome.retryable("http_503"),
+                ActionOutcome.permanent("invalid_recipient"));
+
+        run(member.tenantId(), id);
+        makeDue(id);
+        run(member.tenantId(), id);
+        makeDue(id);
+        run(member.tenantId(), id);
+
+        assertThat(state(id)).isEqualTo("failed|3|permanent|invalid_recipient|");
+        assertThat(alerts.of(id)).containsExactly("failed|" + id + "|3|permanent|invalid_recipient");
+    }
+
+    @Test
     void aLongerRetryAfterDelaysTheNextAttemptButNeverPastTheWindow() {
         TestData.Member member = data.member("admin");
         String later = key();
@@ -335,6 +357,23 @@ class ActionsTests {
         run(member.tenantId(), id);
         assertThat(provider.calls(key)).isOne();
         assertThat(state(id)).isEqualTo("succeeded|1|||");
+    }
+
+    @Test
+    void onlyAnAdminCanApproveForNow() {
+        TestData.Member admin = data.member("admin");
+        UUID staffUser = data.user();
+        data.membership(admin.tenantId(), staffUser, "staff", "active");
+        UUID id = create(admin, key(), true).id();
+
+        assertThatThrownBy(() -> TenantScope.call(
+                        new TenantContext(admin.tenantId(), staffUser, Role.STAFF), () -> actions.approve(id)))
+                .isInstanceOfSatisfying(
+                        ForbiddenException.class,
+                        refused -> assertThat(refused.code()).isEqualTo("admin_only"));
+
+        assertThat(state(id)).isEqualTo("needs_review|0|||");
+        assertThat(audit(admin.tenantId(), id)).isEmpty();
     }
 
     @Test

@@ -254,7 +254,7 @@ Every side effect runs as an action through the job queue with a status, an idem
 
 **Failed Actions screen:** shows lead, action, error, attempts, last try; buttons Retry, Skip (with reason), Open lead.
 
-**Alerts:** same action failing 3 times, or any integration failing for more than 30 minutes, notifies the business admin; repeated failures across tenants notify the Northstar admin. An action raises at most one alert at its third failed attempt and at most one when it fails for good (both, if its third attempt is its last); an auth pause raises its own alert.
+**Alerts:** same action failing 3 times, or any integration failing for more than 30 minutes, notifies the business admin; repeated failures across tenants notify the Northstar admin. An action raises at most one alert at its third failed attempt and at most one when it fails for good; when its third attempt is also its last, only the final-failure alert is sent. An auth pause raises its own alert.
 
 ## 11. AI contract per stage
 

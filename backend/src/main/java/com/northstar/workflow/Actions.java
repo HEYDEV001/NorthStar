@@ -19,9 +19,9 @@ public interface Actions {
     Optional<ActionView> find(UUID actionId);
 
     /**
-     * Approves a needs_review action so it runs; approving one that is no longer waiting changes nothing. Needs a
-     * member: the system actor cannot approve. Which role may approve which type comes with the approval screens
-     * (Phase 3).
+     * Approves a needs_review action so it runs; approving one that is no longer waiting changes nothing. Admins only
+     * for now (403 admin_only for staff); the system actor cannot approve. Phase 3 sets which role may approve which
+     * type.
      */
     ActionView approve(UUID actionId);
 
