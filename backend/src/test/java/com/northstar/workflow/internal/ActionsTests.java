@@ -8,22 +8,23 @@ import com.northstar.PostgresAdmin;
 import com.northstar.TestData;
 import com.northstar.TestcontainersConfiguration;
 import com.northstar.api.ForbiddenException;
+import com.northstar.fakes.FakeCall;
+import com.northstar.fakes.FakeClock;
+import com.northstar.fakes.FakeProvider;
+import com.northstar.fakes.Gate;
 import com.northstar.jobs.JobTenantException;
 import com.northstar.jobs.Jobs;
 import com.northstar.tenancy.Role;
 import com.northstar.tenancy.TenantContext;
 import com.northstar.tenancy.TenantScope;
 import com.northstar.workflow.ActionMode;
-import com.northstar.workflow.ActionOutcome;
 import com.northstar.workflow.ActionView;
 import com.northstar.workflow.Actions;
 import com.northstar.workflow.NewAction;
 import java.time.Duration;
-import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
 import java.util.UUID;
-import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 import java.util.concurrent.Future;
@@ -41,8 +42,9 @@ import org.springframework.jdbc.core.simple.JdbcClient;
 import org.springframework.web.context.request.RequestContextHolder;
 
 /**
- * The action core (step 1.10, workflow-spec.md sections 9 and 10) against real Postgres with RLS. Attempts run through
- * {@link ExecuteActionHandler}, exactly as the worker runs them, without waiting for JobRunr to poll.
+ * The action core (step 1.10, workflow-spec.md sections 9 and 10) against real Postgres with RLS, driven through the
+ * fake-adapter kit (step 1.11). Attempts run through {@link ExecuteActionHandler}, exactly as the worker runs them,
+ * without waiting for JobRunr to poll.
  */
 @SpringBootTest
 @Import(TestcontainersConfiguration.class)
@@ -55,8 +57,8 @@ class ActionsTests {
     private final Actions actions;
     private final ExecuteActionHandler executeAction;
     private final TenantActionSweeper tenantSweeper;
-    private final ScriptedActionHandler provider;
-    private final SlowActionHandler slow;
+    private final FakeProvider provider;
+    private final FakeClock clock;
     private final RecordingActionAlerts alerts;
     private final Jobs jobs;
     private final TestData data;
@@ -66,8 +68,8 @@ class ActionsTests {
             @Autowired Actions actions,
             @Autowired ExecuteActionHandler executeAction,
             @Autowired TenantActionSweeper tenantSweeper,
-            @Autowired ScriptedActionHandler provider,
-            @Autowired SlowActionHandler slow,
+            @Autowired FakeProvider provider,
+            @Autowired FakeClock clock,
             @Autowired RecordingActionAlerts alerts,
             @Autowired Jobs jobs,
             @Autowired PostgresAdmin postgres) {
@@ -75,7 +77,7 @@ class ActionsTests {
         this.executeAction = executeAction;
         this.tenantSweeper = tenantSweeper;
         this.provider = provider;
-        this.slow = slow;
+        this.clock = clock;
         this.alerts = alerts;
         this.jobs = jobs;
         this.data = new TestData(postgres);
@@ -103,7 +105,10 @@ class ActionsTests {
 
         assertThat(state(created.id())).isEqualTo("succeeded|1|||");
         assertThat(provider.calls(key)).isOne();
-        assertThat(provider.tenantSeen(key)).isEqualTo(member.tenantId());
+        assertThat(provider.callsFor(key))
+                .extracting(FakeProvider.Call::tenantId)
+                .containsExactly(member.tenantId());
+        assertThat(provider.effects(key)).isOne();
         assertThat(admin.sql("select result->>'providerId' from northstar.actions where id = :id")
                         .param("id", created.id())
                         .query(String.class)
@@ -134,6 +139,7 @@ class ActionsTests {
         run(member.tenantId(), id); // the job delivered again: the action already succeeded
 
         assertThat(provider.calls(key)).isOne();
+        assertThat(provider.effects(key)).isOne();
         assertThat(state(id)).isEqualTo("succeeded|1|||");
     }
 
@@ -143,13 +149,85 @@ class ActionsTests {
             TestData.Member member = data.member("admin");
             String key = key();
             UUID id = create(member, key, false).id();
-            provider.delay(key, Duration.ofMillis(300)); // holds the lease while the second delivery arrives
+            Gate gate = new Gate();
+            provider.script(key, FakeCall.gated(gate));
 
-            together(() -> run(member.tenantId(), id), () -> run(member.tenantId(), id));
+            try (ExecutorService worker = Executors.newSingleThreadExecutor()) {
+                Future<?> first = worker.submit(() -> run(member.tenantId(), id));
+                assertThat(gate.awaitArrival(Duration.ofSeconds(5)))
+                        .as("attempt 1 is in flight")
+                        .isTrue();
+                run(member.tenantId(), id); // the same job again, while attempt 1 holds the lease
+                assertThat(provider.calls(key)).as("round " + round).isOne();
+                gate.release();
+                first.get(10, TimeUnit.SECONDS);
+            }
 
             assertThat(provider.calls(key)).as("round " + round).isOne();
+            assertThat(provider.effects(key)).isOne();
             assertThat(state(id)).isEqualTo("succeeded|1|||");
         }
+    }
+
+    @Test
+    void aDelayedCallKeepsTheActionProcessingUntilTheFakeClockMoves() throws Exception {
+        TestData.Member member = data.member("admin");
+        String key = key();
+        UUID id = create(member, key, false).id();
+        provider.script(key, FakeCall.delayed(Duration.ofMinutes(2), FakeCall.succeed()));
+
+        try (ExecutorService worker = Executors.newSingleThreadExecutor()) {
+            Future<?> attempt = worker.submit(() -> run(member.tenantId(), id));
+            assertThat(clock.awaitWaiting(1, Duration.ofSeconds(5))).isTrue();
+            assertThat(state(id)).isEqualTo("processing|1|||");
+            assertThat(provider.effects(key)).isZero();
+
+            clock.advance(Duration.ofMinutes(2));
+            attempt.get(10, TimeUnit.SECONDS);
+        }
+
+        assertThat(state(id)).isEqualTo("succeeded|1|||");
+        assertThat(provider.effects(key)).isOne();
+    }
+
+    /**
+     * A warning, not a feature: when a provider performs the side effect but the response is lost, and the provider
+     * does not honour idempotency keys (Meta's Conversions API does not), the retry performs it again. Such a type needs
+     * its own dedupe before sending.
+     */
+    @Test
+    void lostResponseWithoutProviderIdempotencyDuplicatesTheEffect() {
+        TestData.Member member = data.member("admin");
+        String key = key();
+        UUID id = create(member, key, false).id();
+        provider.script(key, FakeCall.performedButLost());
+
+        run(member.tenantId(), id);
+        assertThat(state(id)).isEqualTo("pending|1|retryable|timeout|");
+        makeDue(id);
+        run(member.tenantId(), id);
+
+        assertThat(state(id)).isEqualTo("succeeded|2|||");
+        assertThat(provider.effects(key)).as("sent twice").isEqualTo(2);
+    }
+
+    @Test
+    void lostResponseWithProviderIdempotencyStaysOneEffect() {
+        TestData.Member member = data.member("admin");
+        String key = key();
+        UUID id = create(member, key, false).id();
+        provider.honourIdempotencyKeyFor(key);
+        provider.script(key, FakeCall.performedButLost());
+
+        run(member.tenantId(), id);
+        makeDue(id);
+        run(member.tenantId(), id);
+
+        assertThat(state(id)).isEqualTo("succeeded|2|||");
+        assertThat(provider.calls(key)).isEqualTo(2);
+        assertThat(provider.effects(key))
+                .as("the provider deduplicated the retry")
+                .isOne();
     }
 
     @Test
@@ -180,12 +258,12 @@ class ActionsTests {
         UUID id = create(member, key, false).id();
         provider.script(
                 key,
-                ActionOutcome.retryable("http_503"),
-                ActionOutcome.retryable("http_503"),
-                ActionOutcome.retryable("timeout"),
-                ActionOutcome.retryable("http_503"),
-                ActionOutcome.retryable("http_503"),
-                ActionOutcome.retryable("http_502"));
+                FakeCall.serverError(503),
+                FakeCall.serverError(503),
+                FakeCall.clientTimeout(),
+                FakeCall.serverError(503),
+                FakeCall.serverError(503),
+                FakeCall.serverError(502));
 
         for (int attempt = 1; attempt <= 5; attempt++) {
             run(member.tenantId(), id);
@@ -209,6 +287,7 @@ class ActionsTests {
         run(member.tenantId(), id); // a failed action never runs again, and never alerts twice
         assertThat(provider.calls(key)).isEqualTo(6);
         assertThat(alerts.of(id)).hasSize(2);
+        assertThat(provider.effects(key)).isZero();
     }
 
     @Test
@@ -217,10 +296,7 @@ class ActionsTests {
         String key = key();
         UUID id = create(member, key, false).id();
         provider.script(
-                key,
-                ActionOutcome.retryable("http_503"),
-                ActionOutcome.retryable("http_503"),
-                ActionOutcome.permanent("invalid_recipient"));
+                key, FakeCall.serverError(503), FakeCall.serverError(503), FakeCall.rejected("invalid_recipient"));
 
         run(member.tenantId(), id);
         makeDue(id);
@@ -237,13 +313,13 @@ class ActionsTests {
         TestData.Member member = data.member("admin");
         String later = key();
         UUID delayed = create(member, later, false).id();
-        provider.script(later, ActionOutcome.retryableAfter("http_429", Duration.ofMinutes(10)));
+        provider.script(later, FakeCall.rateLimited(Duration.ofMinutes(10)));
         run(member.tenantId(), delayed);
         assertThat(secondsUntilNextAttempt(delayed)).isCloseTo(600, within(5.0));
 
         String shorter = key();
         UUID scheduled = create(member, shorter, false).id();
-        provider.script(shorter, ActionOutcome.retryableAfter("http_429", Duration.ofSeconds(5)));
+        provider.script(shorter, FakeCall.rateLimited(Duration.ofSeconds(5)));
         run(member.tenantId(), scheduled);
         assertThat(secondsUntilNextAttempt(scheduled))
                 .as("never earlier than the schedule")
@@ -251,7 +327,7 @@ class ActionsTests {
 
         String tooLong = key();
         UUID capped = create(member, tooLong, false).id();
-        provider.script(tooLong, ActionOutcome.retryableAfter("http_429", Duration.ofHours(5)));
+        provider.script(tooLong, FakeCall.rateLimited(Duration.ofHours(5)));
         run(member.tenantId(), capped);
         assertThat(admin.sql("""
                         select extract(epoch from next_attempt_at - created_at)::float8
@@ -265,7 +341,7 @@ class ActionsTests {
         TestData.Member member = data.member("admin");
         String key = key();
         UUID id = create(member, key, false).id();
-        provider.script(key, ActionOutcome.permanent("invalid_recipient"));
+        provider.script(key, FakeCall.rejected("invalid_recipient"));
 
         run(member.tenantId(), id);
         run(member.tenantId(), id);
@@ -273,6 +349,20 @@ class ActionsTests {
         assertThat(provider.calls(key)).isOne();
         assertThat(state(id)).isEqualTo("failed|1|permanent|invalid_recipient|");
         assertThat(alerts.of(id)).containsExactly("failed|" + id + "|1|permanent|invalid_recipient");
+        assertThat(provider.effects(key)).isZero();
+    }
+
+    @Test
+    void anAdapterThatThrowsIsRecordedAsRetryable() {
+        TestData.Member member = data.member("admin");
+        String key = key();
+        UUID id = create(member, key, false).id();
+        provider.script(key, FakeCall.throwing());
+
+        run(member.tenantId(), id);
+
+        assertThat(state(id)).isEqualTo("pending|1|retryable|unexpected_error|");
+        assertThat(provider.effects(key)).isZero();
     }
 
     @Test
@@ -280,7 +370,7 @@ class ActionsTests {
         TestData.Member member = data.member("admin");
         String key = key();
         UUID id = create(member, key, false).id();
-        provider.script(key, ActionOutcome.auth("token_expired"), ActionOutcome.auth("token_expired"));
+        provider.script(key, FakeCall.authExpired(), FakeCall.authExpired());
 
         run(member.tenantId(), id);
         assertThat(state(id)).isEqualTo("paused|0|auth|token_expired|");
@@ -288,25 +378,27 @@ class ActionsTests {
         run(member.tenantId(), id);
         assertThat(provider.calls(key)).as("paused actions don't run").isOne();
 
-        assertThat(as(member, () -> actions.resumePaused(ScriptedActionHandler.TYPE)))
+        assertThat(as(member, () -> actions.resumePaused(FakeActionHandlers.TYPE)))
                 .isPositive();
         run(member.tenantId(), id);
         assertThat(state(id)).isEqualTo("paused|0|auth|token_expired|");
-        as(member, () -> actions.resumePaused(ScriptedActionHandler.TYPE));
+        as(member, () -> actions.resumePaused(FakeActionHandlers.TYPE));
         run(member.tenantId(), id);
 
         assertThat(provider.calls(key)).isEqualTo(3);
         assertThat(state(id)).as("only the successful attempt counts").isEqualTo("succeeded|1|||");
+        assertThat(provider.effects(key)).isOne();
     }
 
     @Test
     void aHandlerPastItsTimeoutIsRecordedAsRetryableAndInterrupted() throws Exception {
         TestData.Member member = data.member("admin");
-        slow.interrupted = new CountDownLatch(1);
+        String key = key();
+        provider.script(key, FakeCall.hang());
         UUID id = as(
                         member,
                         () -> actions.create(new NewAction(
-                                SlowActionHandler.TYPE, key(), ActionMode.AUTOMATIC, false, null, null, null)))
+                                FakeActionHandlers.QUICK_TYPE, key, ActionMode.AUTOMATIC, false, null, null, null)))
                 .action()
                 .id();
 
@@ -321,15 +413,17 @@ class ActionsTests {
                         .single())
                 .as("recorded, not left processing for a takeover")
                 .isTrue();
-        assertThat(slow.interrupted.await(5, TimeUnit.SECONDS)).isTrue();
+        assertThat(provider.awaitInterrupted(key, Duration.ofSeconds(5))).isTrue();
+        assertThat(provider.effects(key)).isZero();
     }
 
     @Test
     void handlerTimeoutsMustBeShorterThanTheLease() {
-        assertThatThrownBy(() -> new ActionHandlers(List.of(slow), Duration.ofMillis(300)))
+        FakeActionHandler quick = new FakeActionHandler("test.limit", Duration.ofMillis(300), provider);
+        assertThatThrownBy(() -> new ActionHandlers(List.of(quick), Duration.ofMillis(300)))
                 .isInstanceOf(IllegalStateException.class)
                 .hasMessageContaining("shorter than the lease");
-        assertThatThrownBy(() -> new ActionHandlers(List.of(provider, provider), Duration.ofMinutes(5)))
+        assertThatThrownBy(() -> new ActionHandlers(List.of(quick, quick), Duration.ofMinutes(5)))
                 .hasMessageContaining("Two action handlers");
     }
 
@@ -446,7 +540,7 @@ class ActionsTests {
 
     private static NewAction newAction(String key, boolean needsReview) {
         return new NewAction(
-                ScriptedActionHandler.TYPE,
+                FakeActionHandlers.TYPE,
                 key,
                 needsReview ? ActionMode.APPROVAL : ActionMode.AUTOMATIC,
                 needsReview,
@@ -510,21 +604,5 @@ class ActionsTests {
                 .param("id", target)
                 .query(String.class)
                 .list();
-    }
-
-    private static void together(Runnable... work) throws Exception {
-        CountDownLatch start = new CountDownLatch(1);
-        try (ExecutorService pool = Executors.newFixedThreadPool(work.length)) {
-            List<Future<?>> futures = new ArrayList<>();
-            for (Runnable task : work) {
-                futures.add(pool.submit(() -> {
-                    start.await();
-                    task.run();
-                    return null;
-                }));
-            }
-            start.countDown();
-            for (Future<?> future : futures) future.get(30, TimeUnit.SECONDS);
-        }
     }
 }

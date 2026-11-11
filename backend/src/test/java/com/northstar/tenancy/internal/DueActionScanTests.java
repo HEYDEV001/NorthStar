@@ -95,7 +95,7 @@ class DueActionScanTests {
         admin.sql("""
                         insert into northstar.actions
                           (tenant_id, type, status, idempotency_key, mode, next_attempt_at, lease_expires_at)
-                        values (:t, 'test.scripted', :status, :key, 'automatic', %s, %s)""".formatted(nextAttemptAt, leaseExpiresAt))
+                        values (:t, 'test.fake', :status, :key, 'automatic', %s, %s)""".formatted(nextAttemptAt, leaseExpiresAt))
                 .param("t", tenant)
                 .param("status", status)
                 .param("key", "scan:" + UUID.randomUUID())
