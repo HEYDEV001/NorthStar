@@ -1,0 +1,4 @@
+# Step 1.11: the test JVM resolves host names only from this file (-Djdk.net.hosts.file, set in pom.xml), so no test
+# can reach a provider or any other host by name. Testcontainers, the JWKS stub and every local server use localhost.
+127.0.0.1 localhost
+::1 localhost

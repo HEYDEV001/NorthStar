@@ -69,7 +69,7 @@ class JobWorkerTests {
         // A committed action whose job was never created (a crash between the commit and the enqueue).
         admin.sql("""
                         insert into northstar.actions (id, tenant_id, type, status, idempotency_key, mode, next_attempt_at)
-                        values (:id, :t, 'test.scripted', 'pending', :key, 'automatic', now() - interval '1 second')""")
+                        values (:id, :t, 'test.fake', 'pending', :key, 'automatic', now() - interval '1 second')""")
                 .param("id", id)
                 .param("t", member.tenantId())
                 .param("key", "lost:" + id)
@@ -110,7 +110,7 @@ class JobWorkerTests {
         return TenantScope.call(
                 new TenantContext(member.tenantId(), member.userId(), Role.ADMIN),
                 () -> actions.create(new NewAction(
-                                "test.scripted",
+                                "test.fake",
                                 "worker:" + UUID.randomUUID(),
                                 ActionMode.AUTOMATIC,
                                 false,
