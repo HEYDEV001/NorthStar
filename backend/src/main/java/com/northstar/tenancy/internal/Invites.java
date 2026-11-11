@@ -3,6 +3,7 @@ package com.northstar.tenancy.internal;
 import com.northstar.api.ConflictException;
 import com.northstar.api.ForbiddenException;
 import com.northstar.api.NotFoundException;
+import com.northstar.tenancy.InviteEmailQueue;
 import com.northstar.tenancy.Role;
 import com.northstar.tenancy.TenantContext;
 import com.northstar.tenancy.TenantScope;
@@ -10,15 +11,14 @@ import java.time.Instant;
 import java.util.List;
 import java.util.Map;
 import java.util.UUID;
-import org.springframework.beans.factory.annotation.Value;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.PlatformTransactionManager;
 import org.springframework.transaction.support.TransactionTemplate;
 
 /**
  * Staff invites, admin side (step 1.9, build-document.md section 3): create, list, revoke, resend. All admin-only and
- * inside the admin's tenant scope; another tenant's invite is the same 404 as a missing one (P9). Until the email
- * action exists (step 1.12), create and resend return the invite link once; it is never listed, logged or audited.
+ * inside the admin's tenant scope; another tenant's invite is the same 404 as a missing one (P9). Create and resend
+ * queue the invite email in the same transaction (step 1.12); the link exists only in that email.
  */
 @Service
 class Invites {
@@ -28,26 +28,26 @@ class Invites {
     private final InviteRepository invites;
     private final MembershipRepository memberships;
     private final AuditLogRepository auditLog;
+    private final InviteEmailQueue emails;
     private final TransactionTemplate transactions;
     private final TransactionTemplate readOnly;
-    private final String appBaseUrl;
 
     Invites(
             InviteRepository invites,
             MembershipRepository memberships,
             AuditLogRepository auditLog,
-            PlatformTransactionManager transactionManager,
-            @Value("${northstar.app.base-url}") String appBaseUrl) {
+            InviteEmailQueue emails,
+            PlatformTransactionManager transactionManager) {
         this.invites = invites;
         this.memberships = memberships;
         this.auditLog = auditLog;
+        this.emails = emails;
         this.transactions = new TransactionTemplate(transactionManager);
         this.readOnly = new TransactionTemplate(transactionManager);
         this.readOnly.setReadOnly(true);
-        this.appBaseUrl = appBaseUrl.replaceAll("/+$", "");
     }
 
-    CreatedInviteResponse create(CreateInviteRequest request) {
+    InviteView create(CreateInviteRequest request) {
         TenantContext admin = requireAdmin();
         String email = request.email().trim();
         try {
@@ -95,7 +95,7 @@ class Invites {
      * one is inserted in the same transaction, so the one-pending-per-email index never fires. The old link stops
      * working.
      */
-    CreatedInviteResponse resend(UUID inviteId) {
+    InviteView resend(UUID inviteId) {
         TenantContext admin = requireAdmin();
         return transactions.execute(status -> {
             Invite old = lockedOrNotFound(inviteId);
@@ -108,14 +108,17 @@ class Invites {
         });
     }
 
-    /** Creates an invite with a fresh token and returns its link once. Audited with IDs only, never the email. */
-    private CreatedInviteResponse issue(TenantContext admin, String email, Role role, String action) {
-        String token = InviteTokens.newToken();
+    /**
+     * Creates an invite and queues its email in the same transaction. token_hash starts as the hash of a throwaway
+     * token that is never sent, so no link works until the email action sets the real one. Audited with IDs only.
+     */
+    private InviteView issue(TenantContext admin, String email, Role role, String action) {
+        String throwaway = InviteTokens.newToken();
         Invite invite =
-                invites.saveAndFlush(new Invite(email, role, InviteTokens.hash(token), currentMembership(admin)));
+                invites.saveAndFlush(new Invite(email, role, InviteTokens.hash(throwaway), currentMembership(admin)));
         auditLog.save(new AuditLogEntry(admin.userId(), action, "invites", invite.getId()));
-        return new CreatedInviteResponse(
-                InviteView.of(invite, invite.openStatus(Instant.now())), appBaseUrl + "/invite#token=" + token);
+        emails.queue(invite.getId());
+        return InviteView.of(invite, invite.openStatus(Instant.now()));
     }
 
     private UUID currentMembership(TenantContext admin) {

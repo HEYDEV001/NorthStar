@@ -334,7 +334,7 @@ Webhooks come into the API, which stores the event and queues a job; the worker 
 | Code and CI/CD | GitHub + GitHub Actions | Reviews, tests, deploys |
 | Testing | JUnit 5 + Testcontainers, Vitest, Playwright | Including cross-tenant access test |
 
-**Backend modules (one deployable):** tenant & access · contacts & conversations · workflow runtime · CRM & jobs · AI orchestration · commercial (quotes, ledger, invoices) · scheduling · integrations · reporting · admin. Modules call each other through service interfaces only, so any can be split out later.
+**Backend modules (one deployable):** tenant & access · contacts & conversations · workflow runtime · CRM & jobs · AI orchestration · commercial (quotes, ledger, invoices) · scheduling · integrations · notifications (invite emails, approval and failure notifications) · reporting · admin. Modules call each other through service interfaces only, and their dependencies point one way, so any can be split out later.
 
 ## 14. Data model
 

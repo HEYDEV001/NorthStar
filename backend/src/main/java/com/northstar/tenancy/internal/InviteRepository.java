@@ -18,6 +18,13 @@ public interface InviteRepository extends JpaRepository<Invite, UUID> {
     @Lock(LockModeType.PESSIMISTIC_WRITE)
     Optional<Invite> findLockedById(UUID id);
 
+    /**
+     * Sets a pending invite's token hash through northstar.set_invite_token() (step 1.12), which allows it only for the
+     * system actor, in the current tenant, on an invite neither accepted, revoked nor expired. True if it changed.
+     */
+    @Query(nativeQuery = true, value = "select northstar.set_invite_token(:inviteId, :tokenHash)")
+    boolean setToken(@Param("inviteId") UUID inviteId, @Param("tokenHash") String tokenHash);
+
     /** Invites neither accepted nor revoked, oldest first. */
     List<Invite> findByAcceptedAtIsNullAndRevokedAtIsNullOrderByCreatedAtAsc();
 

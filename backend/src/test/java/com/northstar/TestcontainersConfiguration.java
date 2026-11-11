@@ -62,6 +62,23 @@ public class TestcontainersConfiguration {
                 UUID.randomUUID().toString());
     }
 
+    /**
+     * Email settings for this test run: a random invite token key and Resend key (never real), and a sender. The
+     * worker tests need them; every other test sends through the fake email sender.
+     */
+    @Bean
+    DynamicPropertyRegistrar testEmailSettings() {
+        byte[] tokenKey = new byte[32];
+        new java.security.SecureRandom().nextBytes(tokenKey);
+        String encodedTokenKey = java.util.Base64.getEncoder().encodeToString(tokenKey);
+        String resendKey = "re_test_" + UUID.randomUUID();
+        return registry -> {
+            registry.add("northstar.invites.token-key", () -> encodedTokenKey);
+            registry.add("northstar.email.resend.api-key", () -> resendKey);
+            registry.add("northstar.email.from", () -> "Northstar <invites@example.test>");
+        };
+    }
+
     /** JobRunr's private pool connects as jobrunr_user, exactly as in every environment. */
     @Bean
     DynamicPropertyRegistrar jobRunrConnection(PostgreSQLContainer postgres, TestLogins logins) {

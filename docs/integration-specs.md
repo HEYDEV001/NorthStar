@@ -178,7 +178,11 @@ These four are smaller integrations, but each follows the same adapter, retry an
 
 - Sending domain verified (SPF, DKIM) before launch; separate sub-domain for transactional mail.
 - Used for: staff invites, email verification, approval and failure notifications, Northstar's own subscription invoices.
-- Bounces and complaints recorded; repeated bounces mark the address invalid.
+- Bounces and complaints recorded; repeated bounces mark the address invalid (Resend webhooks, after the webhook pipeline in step 2.2).
+- Sent as an `actions` row through `POST /emails` with the action's idempotency key in `Idempotency-Key`. Resend keeps a key 24 hours: the same key and body is not sent again (the first response comes back); the same key with a different body is refused (409 `invalid_idempotent_request`); the same key while the first request runs is a 409 `concurrent_idempotent_requests`.
+- Classification: 429 rate limit (with `retry-after`), 5xx, timeouts, lost connections and a concurrent idempotent request are retryable; a rejected or suspended platform key, an unverified sender, daily or monthly quota exhaustion, 400/422 and an idempotency conflict are permanent. A rejected key also logs the platform event `resend_key_rejected` at ERROR.
+- Invite emails derive their token from the action (HMAC of a platform key), so a retry is byte-identical and Resend's idempotency gives the invitee one email whose link works.
+- Local development can use the Mailpit that the Supabase CLI runs (`NORTHSTAR_EMAIL_PROVIDER=mailpit`, localhost only).
 
 **LLM provider**
 

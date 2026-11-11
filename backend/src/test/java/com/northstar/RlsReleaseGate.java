@@ -130,7 +130,8 @@ record RlsReleaseGate(
                     "northstar.current_membership()",
                     "northstar.slug_is_taken(candidate text)",
                     "northstar.accept_invite(p_token_hash text, p_email text)",
-                    "northstar.tenants_with_due_actions()"),
+                    "northstar.tenants_with_due_actions()",
+                    "northstar.set_invite_token(p_invite_id uuid, p_token_hash text)"),
             // Schemas that belong to one login role: no other app or browser role may use the schema or anything in
             // it, and that role may use no other scanned schema.
             Map.of("jobrunr", "jobrunr_user"));

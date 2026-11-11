@@ -32,9 +32,13 @@ docs/              Specs (see above)
 ```
 
 Backend modules (package per module under `backend/src/main/java/com/northstar/`):
-`tenancy`, `contacts`, `workflow`, `crm`, `ai`, `commercial`, `scheduling`, `integrations`, `reporting`, `admin`.
+`tenancy`, `contacts`, `workflow`, `crm`, `ai`, `commercial`, `scheduling`, `integrations`, `notifications`,
+`reporting`, `admin`. (`notifications` tells people about platform events, such as the invite email; it owns no
+tables.)
 Modules talk to each other only through their public service interfaces. No module reaches into another
-module's repositories or tables.
+module's repositories, tables or `.internal` package, and module dependencies point one way: when a lower module
+needs something a higher one does, it declares a port (an interface) that the higher module implements.
+`ModuleDependencyTests` fails on any cycle or `.internal` use in main code.
 Shared web infrastructure lives in `com.northstar.api` (error format, API exceptions, request IDs, the `/api/v1`
 prefix). It is not a business module, owns no tables, and depends on no module.
 Background jobs live in `com.northstar.jobs` (JobRunr on its own pool, the tenant job runner, the `Jobs` facade). It is
@@ -50,6 +54,7 @@ cd backend && ./mvnw spotless:apply        # format
 cd backend && ./mvnw verify                # format check + unit + integration tests (Testcontainers, needs Docker)
 cd backend && ./mvnw spring-boot:run       # local API on :8080 against .env.local (DB down until app_user exists, Phase 1)
 cd backend && ./mvnw spring-boot:test-run  # local API on :8080 against a throwaway Supabase Postgres container
+# local email: NORTHSTAR_EMAIL_PROVIDER=mailpit in .env.local sends to Supabase's Mailpit; read it at :54324
 
 # frontend (not scaffolded yet)
 cd frontend && npm run lint

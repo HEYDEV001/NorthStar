@@ -29,8 +29,8 @@ class InviteController {
     }
 
     @PostMapping("/invites")
-    ResponseEntity<CreatedInviteResponse> create(@Valid @RequestBody CreateInviteRequest request) {
-        CreatedInviteResponse created = invites.create(request);
+    ResponseEntity<InviteView> create(@Valid @RequestBody CreateInviteRequest request) {
+        InviteView created = invites.create(request);
         return ResponseEntity.created(URI.create("/api/v1/invites")).body(created);
     }
 
@@ -45,8 +45,8 @@ class InviteController {
     }
 
     @PostMapping("/invites/{inviteId}/resend")
-    ResponseEntity<CreatedInviteResponse> resend(@PathVariable UUID inviteId) {
-        CreatedInviteResponse resent = invites.resend(inviteId);
+    ResponseEntity<InviteView> resend(@PathVariable UUID inviteId) {
+        InviteView resent = invites.resend(inviteId);
         return ResponseEntity.created(URI.create("/api/v1/invites")).body(resent);
     }
 

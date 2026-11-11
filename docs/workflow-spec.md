@@ -250,6 +250,7 @@ Every side effect runs as an action through the job queue with a status, an idem
 | Google Calendar write | 8 attempts up to 6 h | Failed; platform calendar still correct; resync on reconnect |
 | Sheets row upsert | Batched; retry until success, max 24 h | Integration marked error; outbox kept |
 | Meta CAPI event | 5 attempts up to 24 h | Failed; logged for admin view |
+| Email send (Resend) | Same as WhatsApp send (6 attempts) | Failed; alert; for an invite, the admin resends it |
 | AI call | 3 attempts | Escalate lead to Needs Human |
 
 **Failed Actions screen:** shows lead, action, error, attempts, last try; buttons Retry, Skip (with reason), Open lead.
