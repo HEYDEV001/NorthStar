@@ -8,12 +8,16 @@ import com.northstar.TestData;
 import com.northstar.TestTokens;
 import com.northstar.TestcontainersConfiguration;
 import com.northstar.api.LogContext;
+import com.northstar.fakes.FakeEmailSender;
 import com.northstar.tenancy.MissingTenantContextException;
+import com.northstar.workflow.internal.ExecuteAction;
+import com.northstar.workflow.internal.ExecuteActionHandler;
 import java.io.UnsupportedEncodingException;
 import java.sql.Connection;
 import java.sql.SQLException;
 import java.util.ArrayList;
 import java.util.List;
+import java.util.Map;
 import java.util.UUID;
 import java.util.concurrent.Callable;
 import java.util.concurrent.CountDownLatch;
@@ -36,7 +40,11 @@ import org.springframework.jdbc.core.simple.JdbcClient;
 import org.springframework.test.web.servlet.assertj.MockMvcTester;
 import org.springframework.test.web.servlet.assertj.MvcTestResult;
 
-/** Staff invites (step 1.9) through the real login path: create, list, revoke, resend, accept, and P12. */
+/**
+ * Staff invites (step 1.9) through the real login path: create, list, revoke, resend, accept, and P12. Since step 1.12
+ * the link arrives only by email: each invite's email action is run as the worker runs it, and the token is read from
+ * the fake email sender's outbox.
+ */
 @SpringBootTest
 @AutoConfigureMockMvc
 @Import(TestcontainersConfiguration.class)
@@ -48,17 +56,23 @@ class InvitesTests {
     private final TestData data;
     private final JdbcClient admin;
     private final DataSource dataSource;
+    private final FakeEmailSender email;
+    private final ExecuteActionHandler executeAction;
 
     InvitesTests(
             @Autowired MockMvcTester mvc,
             @Autowired TestTokens tokens,
             @Autowired PostgresAdmin postgres,
-            @Autowired DataSource dataSource) {
+            @Autowired DataSource dataSource,
+            @Autowired FakeEmailSender email,
+            @Autowired ExecuteActionHandler executeAction) {
         this.mvc = mvc;
         this.tokens = tokens;
         this.data = new TestData(postgres);
         this.admin = postgres.jdbc();
         this.dataSource = dataSource;
+        this.email = email;
+        this.executeAction = executeAction;
     }
 
     /** A business with an admin and a staff member. */
@@ -71,14 +85,14 @@ class InvitesTests {
         return new Team(owner.tenantId(), owner.userId(), staff);
     }
 
-    /** An invite created through the API, with the raw token taken from its link. */
+    /** An invite created through the API, its email sent, with the raw token taken from the emailed link. */
     private record Sent(UUID id, String token, String email) {}
 
     private Sent invite(Team team, String role) throws Exception {
         String email = "invitee-" + UUID.randomUUID().toString().substring(0, 8) + "@example.com";
         MvcTestResult created = createInvite(team.adminUser(), email, role);
         assertThat(created).hasStatus(201);
-        return sentFrom(created, email);
+        return delivered(created, email);
     }
 
     @Test
@@ -88,10 +102,9 @@ class InvitesTests {
 
         MvcTestResult created = createInvite(team.adminUser(), email, "staff");
         assertThat(created).hasStatus(201).bodyJson().isLenientlyEqualTo("""
-                        {"invite": {"email": "%s", "role": "staff", "status": "pending"}}""".formatted(email));
-        Sent sent = sentFrom(created, email);
-        assertThat(body(created))
-                .contains("\"inviteLink\":\"http://localhost:5173/invite#token=" + sent.token() + "\"");
+                        {"email": "%s", "role": "staff", "status": "pending"}""".formatted(email));
+        assertThat(body(created)).as("the link goes only by email").doesNotContain("inviteLink", "token");
+        Sent sent = delivered(created, email);
         assertThat(sent.token()).matches(InviteTokens.FORMAT);
         assertThat(admin.sql(
                                 "select token_hash || ',' || (expires_at - created_at) from northstar.invites where id = :id")
@@ -184,12 +197,8 @@ class InvitesTests {
         Sent first = invite(team, "admin");
 
         MvcTestResult resent = post(team.adminUser(), "/api/v1/invites/" + first.id() + "/resend");
-        assertThat(resent)
-                .hasStatus(201)
-                .bodyJson()
-                .extractingPath("$.invite.role")
-                .isEqualTo("admin");
-        Sent second = sentFrom(resent, first.email());
+        assertThat(resent).hasStatus(201).bodyJson().extractingPath("$.role").isEqualTo("admin");
+        Sent second = delivered(resent, first.email());
         assertThat(second.id()).isNotEqualTo(first.id());
         assertThat(second.token()).isNotEqualTo(first.token());
 
@@ -268,7 +277,7 @@ class InvitesTests {
             UUID invitee = UUID.randomUUID();
             String email = first.email();
             MvcTestResult second = createInvite(other.adminUser(), email, "staff");
-            Sent sentByOther = sentFrom(second, email);
+            Sent sentByOther = delivered(second, email);
 
             List<MvcTestResult> results = together(
                     () -> accept(invitee, email, first.token()), () -> accept(invitee, email, sentByOther.token()));
@@ -537,11 +546,23 @@ class InvitesTests {
         assertThat(result).hasStatus(status).bodyJson().extractingPath("$.code").isEqualTo(code);
     }
 
-    private static Sent sentFrom(MvcTestResult result, String email) throws Exception {
-        String body = body(result);
-        UUID id = UUID.fromString(body.replaceAll(".*\"invite\":\\{\"id\":\"([^\"]+)\".*", "$1"));
-        String token = body.replaceAll(".*#token=([A-Za-z0-9_-]+)\".*", "$1");
-        return new Sent(id, token, email);
+    /**
+     * The invite from a create or resend response, after its email action has run as the worker runs it (on a thread
+     * that serves no request), with the token taken from the emailed link.
+     */
+    private Sent delivered(MvcTestResult result, String address) throws Exception {
+        UUID id = UUID.fromString(body(result).replaceAll(".*\"id\":\"([^\"]+)\".*", "$1"));
+        Map<String, Object> action = admin.sql(
+                        "select id, tenant_id from northstar.actions where idempotency_key = :key")
+                .param("key", "invite-email:" + id)
+                .query()
+                .singleRow();
+        ExecuteAction job = new ExecuteAction((UUID) action.get("tenant_id"), (UUID) action.get("id"));
+        try (ExecutorService worker = Executors.newSingleThreadExecutor()) {
+            worker.submit(() -> executeAction.run(job)).get(30, TimeUnit.SECONDS);
+        }
+        String token = email.latestTokenFor(address).orElseThrow(() -> new AssertionError("no invite email"));
+        return new Sent(id, token, address);
     }
 
     private void expire(UUID invite) {

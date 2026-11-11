@@ -8,8 +8,10 @@ import java.util.Base64;
 import java.util.HexFormat;
 
 /**
- * Invite tokens (step 1.9): 32 random bytes from SecureRandom, base64url without padding (43 characters). Only the
- * SHA-256 hash is stored; the raw token exists only in the invite link and is never logged, listed or audited.
+ * Invite tokens (step 1.9): 32 bytes, base64url without padding (43 characters). Only the SHA-256 hash is stored; the
+ * raw token exists only in the invite email's link and is never logged, listed or audited. Since step 1.12 the token
+ * that is sent is derived by the invite email action and set at send time; {@link #newToken()} makes the throwaway
+ * token whose hash fills token_hash until then, which is never sent anywhere.
  */
 final class InviteTokens {
 

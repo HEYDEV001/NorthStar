@@ -76,13 +76,29 @@ public final class FakeProvider {
 
     /** Plays the next scripted call for the request's idempotency key. */
     public ActionOutcome call(ActionRequest request) {
-        String key = request.idempotencyKey();
+        return call(request.idempotencyKey(), request.attempt(), () -> {});
+    }
+
+    /**
+     * Plays the next scripted call for a provider adapter that sees only the key (an email sender, for example).
+     * onEffect runs exactly when the provider performs a new side effect, so a fake can record what it "sent".
+     */
+    public ActionOutcome call(String idempotencyKey, Runnable onEffect) {
+        return call(idempotencyKey, calls(idempotencyKey) + 1, onEffect);
+    }
+
+    /** The provider forgets this key, as Resend does after 24 hours: the next performed call is a new effect. */
+    public void expireIdempotencyKey(String idempotencyKey) {
+        performedKeys.remove(idempotencyKey);
+    }
+
+    private ActionOutcome call(String key, int attempt, Runnable onEffect) {
         UUID tenant = TenantScope.current().map(TenantContext::tenantId).orElse(null);
-        calls.add(new Call(key, request.attempt(), tenant));
+        calls.add(new Call(key, attempt, tenant));
         Deque<FakeCall> script = scripts.get(key);
         FakeCall next = script == null ? null : script.poll();
         try {
-            return play(request, next != null ? next : FakeCall.succeed());
+            return play(key, attempt, onEffect, next != null ? next : FakeCall.succeed());
         } catch (InterruptedException e) {
             latch(key).countDown();
             Thread.currentThread().interrupt();
@@ -90,41 +106,43 @@ public final class FakeProvider {
         }
     }
 
-    private ActionOutcome play(ActionRequest request, FakeCall call) throws InterruptedException {
-        String key = request.idempotencyKey();
+    private ActionOutcome play(String key, int attempt, Runnable onEffect, FakeCall call) throws InterruptedException {
         return switch (call) {
             case FakeCall.Succeed succeed -> {
-                perform(key);
+                perform(key, onEffect);
                 String result = succeed.resultJson() != null
                         ? succeed.resultJson()
-                        : "{\"providerId\": \"fake-" + request.attempt() + "\"}";
+                        : "{\"providerId\": \"fake-" + attempt + "\"}";
                 yield ActionOutcome.succeeded(result);
             }
             case FakeCall.Fail fail -> fail.failure();
             case FakeCall.Delayed delayed -> {
                 clock.awaitUntil(clock.instant().plus(delayed.delay()));
-                yield play(request, delayed.then());
+                yield play(key, attempt, onEffect, delayed.then());
             }
             case FakeCall.Hang hang -> {
                 new CountDownLatch(1).await();
                 throw new IllegalStateException("unreachable");
             }
             case FakeCall.PerformedButLost lost -> {
-                perform(key);
+                perform(key, onEffect);
                 yield ActionOutcome.retryable("timeout");
             }
             case FakeCall.Gated gated -> {
                 gated.gate().pass();
-                yield play(request, gated.then());
+                yield play(key, attempt, onEffect, gated.then());
             }
             case FakeCall.Throwing throwing -> throw new IllegalStateException("Fake provider failure");
         };
     }
 
-    private void perform(String key) {
+    private void perform(String key, Runnable onEffect) {
         boolean honoured = honoursIdempotencyKeys || honouredKeys.contains(key);
         boolean firstTime = performedKeys.add(key);
-        if (firstTime || !honoured) effects.merge(key, 1, Integer::sum);
+        if (firstTime || !honoured) {
+            effects.merge(key, 1, Integer::sum);
+            onEffect.run();
+        }
     }
 
     private CountDownLatch latch(String key) {
