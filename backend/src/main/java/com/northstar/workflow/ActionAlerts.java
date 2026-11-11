@@ -10,7 +10,7 @@ import java.util.UUID;
  */
 public interface ActionAlerts {
 
-    /** The action's third failed attempt, when it will still be retried or has just failed for good. */
+    /** The action's third failed attempt, when it will still be retried. If it was the last, only {@link #failed}. */
     void failedRepeatedly(UUID tenantId, UUID actionId, String type, int attempts, String errorClass, String code);
 
     /** The action failed for good: permanent, or out of attempts. It is now on the Failed Actions screen. */

@@ -167,7 +167,9 @@ Run the formatter and the relevant tests before every commit. Update this sectio
   use bind parameters only, and native queries keep an explicit `tenant_id` filter. `open-in-view` and Hibernate's
   caches stay off. All database work runs inside `TenantScope` and a transaction; anything else throws
   `MissingTenantContextException`, which is never caught and swallowed. No database access in constructors,
-  `@PostConstruct` methods or startup listeners; startup work runs as a job inside `TenantScope`.
+  `@PostConstruct` methods or startup listeners; startup work runs as a job inside `TenantScope`. The one exception:
+  when the worker starts, it registers the sweeper's recurring job through JobRunr's own pool (`jobrunr` schema only,
+  no tenant data).
 - API: REST under `/api/v1`, JSON, ISO-8601 UTC timestamps, amounts in paise as integers, errors as
   `{ "code", "message", "details" }`.
   - Every `@RestController` is served under `/api/v1` automatically; request bodies must be JSON (else 415).

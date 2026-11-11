@@ -45,7 +45,7 @@ class ActionExecutor implements DisposableBean {
 
     private static final Logger log = LoggerFactory.getLogger(ActionExecutor.class);
 
-    /** The third failed attempt raises an alert (workflow-spec.md section 10). */
+    /** The third failed attempt raises an alert, unless it is also the last (workflow-spec.md section 10). */
     static final int REPEATED_FAILURE_ALERT_AT = 3;
 
     private final ActionRepository actions;
@@ -221,7 +221,8 @@ class ActionExecutor implements DisposableBean {
                 }
             }
         }
-        if (attempt == REPEATED_FAILURE_ALERT_AT) {
+        // Only the final-failure alert when the third attempt is also the last.
+        if (attempt == REPEATED_FAILURE_ALERT_AT && !Action.FAILED.equals(action.getStatus())) {
             afterCommit(() -> alerts.failedRepeatedly(
                     action.getTenantId(), action.getId(), action.getType(), attempt, errorClass, failed.code()));
         }

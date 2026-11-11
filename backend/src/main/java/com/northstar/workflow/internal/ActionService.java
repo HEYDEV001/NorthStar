@@ -4,6 +4,7 @@ import com.northstar.api.ForbiddenException;
 import com.northstar.api.NotFoundException;
 import com.northstar.jobs.Jobs;
 import com.northstar.tenancy.AuditTrail;
+import com.northstar.tenancy.Role;
 import com.northstar.tenancy.TenantContext;
 import com.northstar.tenancy.TenantDirectory;
 import com.northstar.tenancy.TenantScope;
@@ -82,7 +83,10 @@ class ActionService implements Actions {
 
     @Override
     public ActionView approve(UUID actionId) {
-        if (TenantScope.require().isSystem()) throw new IllegalStateException("The system actor cannot approve");
+        TenantContext context = TenantScope.require();
+        if (context.isSystem()) throw new IllegalStateException("The system actor cannot approve");
+        // Admins only until Phase 3 sets per-role approval rules (workflow-spec.md section 9).
+        if (context.role() != Role.ADMIN) throw new ForbiddenException("admin_only", "Only an admin can do this");
         UUID approver = tenants.currentMembershipId()
                 .orElseThrow(() -> new ForbiddenException("no_active_membership", "This account has no membership"));
         return transactions.execute(status -> {
