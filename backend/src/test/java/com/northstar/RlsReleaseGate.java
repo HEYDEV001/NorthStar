@@ -79,9 +79,11 @@ record RlsReleaseGate(
             // Policies on tenant tables besides tenant_isolation. Each must be restrictive and match exactly.
             Map.of(
                     "northstar.memberships", adminOnlyWrites("memberships"),
-                    "northstar.invites", adminOnlyWrites("invites")),
+                    "northstar.invites", adminOnlyWrites("invites"),
+                    "northstar.leads", Set.of(staffSeeAssignedLeads())),
             // app_user may insert and read, never update or delete.
             Set.of(
+                    "northstar.workflow_versions",
                     "northstar.timeline_events",
                     "northstar.audit_log",
                     "northstar.lead_score_history",
@@ -155,6 +157,20 @@ record RlsReleaseGate(
     /** A restrictive app_user policy, in the same format as {@link #policy}. */
     static String restrictivePolicy(String name, String command, String using, String withCheck) {
         return describe(name, "RESTRICTIVE", command, "{app_user}", using, withCheck);
+    }
+
+    /**
+     * The restrictive policy on leads (P11, step 1.13): admins and the system actor see the tenant's leads; staff only
+     * those assigned to their own active membership. The same expression guards reads and writes.
+     */
+    private static String staffSeeAssignedLeads() {
+        String assigned = "((current_setting('app.role'::text, true) = ANY (ARRAY['admin'::text, 'system'::text]))"
+                + " OR ((current_setting('app.role'::text, true) = 'staff'::text) AND (assigned_membership_id = ("
+                + " SELECT m.id FROM northstar.memberships m WHERE ((m.tenant_id ="
+                + " (current_setting('app.tenant_id'::text, true))::uuid) AND (m.user_id ="
+                + " (NULLIF(current_setting('app.user_id'::text, true), ''::text))::uuid) AND (m.status ="
+                + " 'active'::text))))))";
+        return restrictivePolicy("leads_staff_assigned", "ALL", assigned, assigned);
     }
 
     /** The restrictive policies that limit insert, update and delete to app.role = 'admin'. */
