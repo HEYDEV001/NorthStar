@@ -132,6 +132,24 @@ class RlsReleaseGateTests {
         }
 
         @Test
+        void aSecondPermissivePolicyOnLeadsFails() {
+            sql("create policy leads_everyone on northstar.leads for select to app_user using (true)");
+            assertThat(gate())
+                    .containsExactly("northstar.leads: policy leads_everyone is permissive, must be restrictive");
+        }
+
+        @Test
+        void aWeakenedStaffPolicyOnLeadsFails() {
+            sql("drop policy leads_staff_assigned on northstar.leads");
+            sql("create policy leads_staff_assigned on northstar.leads as restrictive for all to app_user"
+                    + " using (true) with check (true)");
+            assertThat(gate())
+                    .hasSize(2)
+                    .anySatisfy(v -> assertThat(v).startsWith("northstar.leads: undeclared or changed policy"))
+                    .anySatisfy(v -> assertThat(v).startsWith("northstar.leads: declared policy missing"));
+        }
+
+        @Test
         void declaredRestrictivePolicyPasses() {
             createTenantProbe();
             sql("create policy staff_view on " + PROBE + " as restrictive for select to app_user using (id > 0)");

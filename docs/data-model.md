@@ -154,7 +154,7 @@ A contact is one phone number per tenant; it can have many leads over time but o
 
 | Table | Columns (type) | Constraints / notes |
 | --- | --- | --- |
-| `contacts` | id, tenant\_id, normalized\_phone, name, email, is\_repeat\_customer (bool), consent\_state (text), opted\_in\_at, opt\_out\_at, attributes (jsonb), created\_at, updated\_at, deleted\_at | unique (tenant\_id, normalized\_phone); consent\_state in ('unknown','opted\_in','opted\_out') |
+| `contacts` | id, tenant\_id, normalized\_phone, name, email, is\_repeat\_customer (bool), consent\_state (text), opted\_in\_at, opt\_out\_at, attributes (jsonb), created\_at, updated\_at, deleted\_at | unique (tenant\_id, normalized\_phone); normalized\_phone is E.164; consent\_state in ('unknown','opted\_in','opted\_out'); no delete (soft delete) |
 | `contact_sources` | id, tenant\_id, contact\_id, source (text), chat\_link\_id, ad\_referral\_id, first\_seen\_at | One row per distinct source a contact arrived from |
 | `conversations` | id, tenant\_id, contact\_id, channel (text), whatsapp\_phone\_number\_id (text), status (text), ai\_paused (bool), assigned\_membership\_id, last\_inbound\_at, window\_expires\_at, needs\_human (bool), created\_at, updated\_at | unique (tenant\_id, contact\_id, channel); window\_expires\_at = last\_inbound\_at + 24 h |
 | `messages` | id, tenant\_id, conversation\_id, direction (text), sender\_type (text), sender\_membership\_id, provider\_message\_id (text), type (text), body (text), media\_path, template\_id, status (text), error\_code, sent\_at, delivered\_at, read\_at, created\_at | unique (tenant\_id, provider\_message\_id); direction in ('in','out'); sender\_type in ('contact','ai','staff','system'); status in ('queued','sent','delivered','read','failed') |
@@ -179,8 +179,8 @@ The lead is the central record: it belongs to a contact, runs on one workflow ve
 | Table | Columns (type) | Constraints / notes |
 | --- | --- | --- |
 | `workflows` | id, tenant\_id, name, template (text), current\_version\_id, draft\_config (jsonb), created\_at, updated\_at | One active workflow per tenant in MVP |
-| `workflow_versions` | id, tenant\_id, workflow\_id, version (int), config (jsonb), published\_by, published\_at | unique (workflow\_id, version); immutable after insert (no update grant) |
-| `leads` | id, tenant\_id, contact\_id, conversation\_id, workflow\_version\_id, stage (text), previous\_stage (text), stage\_entered\_at, origin (text), ad\_referral\_id, chat\_link\_id, service (text), event\_date (date), event\_time (time), location (text), location\_geo (point), budget\_paise (bigint), requirements (jsonb), score (smallint), band (text), score\_reasons (jsonb), junk\_rule\_id (text), lost\_reason (text), assigned\_membership\_id, amount\_due\_paise (bigint), version (int), created\_at, updated\_at, closed\_at, deleted\_at | stage must exist in the version config; band in ('hot','warm','cold','junk'); origin in ('meta\_ad','chat\_link','direct','manual'); score 0–100 |
+| `workflow_versions` | id, tenant\_id, workflow\_id, version (int), config (jsonb), published\_by (membership, null when the system publishes), published\_at | unique (tenant\_id, workflow\_id, version); published versions only (drafts live in `workflows.draft_config`); immutable after insert: `app_user` may only insert and read (insert-only in the RLS release gate), and triggers refuse update, delete and truncate for every role, the owner included (SQLSTATE NSW01). A workflow's `current_version_id` must be one of its own versions (composite FK) |
+| `leads` | id, tenant\_id, contact\_id, conversation\_id, workflow\_version\_id, stage (text), previous\_stage (text), stage\_entered\_at, origin (text), ad\_referral\_id, chat\_link\_id, service (text), event\_date (date), event\_time (time), location (text), location\_geo (point), budget\_paise (bigint), requirements (jsonb), score (smallint), band (text), score\_reasons (jsonb), junk\_rule\_id (text), lost\_reason (text), assigned\_membership\_id, amount\_due\_paise (bigint), version (int), created\_at, updated\_at, closed\_at, deleted\_at | stage must exist in the version config (checked by the engine, not the database); band in ('hot','warm','cold','junk'); origin in ('meta\_ad','chat\_link','direct','manual'); score 0–100; one open lead per contact (section 13), and every closing stage (Junk, Lost, Completed) sets closed\_at; staff see only their assigned leads (section 12); no delete (P6 soft delete). conversation\_id, ad\_referral\_id and chat\_link\_id get their composite FKs with their tables (steps 2.3 and 7.1) |
 | `lead_fields` | id, tenant\_id, lead\_id, field (text), value (jsonb), confidence (numeric(3,2)), source\_message\_id, set\_by (text), created\_at | Every extracted/edited field value with provenance; latest per field = current |
 | `lead_score_history` | id, tenant\_id, lead\_id, score, band, reasons (jsonb), model, prompt\_version, created\_at | Append-only |
 | `events` | id, tenant\_id, lead\_id, type (text), dedupe\_key (text), payload (jsonb), received\_at, processed\_at | unique (tenant\_id, dedupe\_key); engine input log |
@@ -319,7 +319,23 @@ create policy tenant_isolation on leads
   with check (tenant_id = current_setting('app.tenant_id', true)::uuid);
 ```
 
-**Staff visibility** (staff see only their own leads and appointments) is enforced in the service layer from the membership role, with an additional policy on `leads`, `appointments`, `conversations` checking `assigned_membership_id` when `app.role = 'staff'`.
+**Staff visibility** (staff see only their own leads and appointments) is enforced in the service layer from the membership role, with an additional policy on `leads`, `appointments`, `conversations` checking `assigned_membership_id` when `app.role = 'staff'`. The policy on `leads` (step 1.13) is restrictive, so it only narrows `tenant_isolation`, and the RLS release gate holds its exact text; `conversations` and `appointments` get the same pattern:
+
+```sql
+create policy leads_staff_assigned on leads
+  as restrictive for all to app_user
+  using (
+    current_setting('app.role', true) in ('admin', 'system')
+    or (current_setting('app.role', true) = 'staff'
+        and assigned_membership_id = (
+          select m.id from memberships m
+          where m.tenant_id = current_setting('app.tenant_id', true)::uuid
+            and m.user_id = nullif(current_setting('app.user_id', true), '')::uuid
+            and m.status = 'active')))
+  with check ( /* the same expression */ );
+```
+
+Admins and the system actor see the tenant's leads. Staff see and change only leads assigned to their own active membership: they cannot take a colleague's lead, hand their own to someone else, or create an unassigned one. A missing or unknown role sees nothing.
 
 **Release gates**
 
@@ -331,7 +347,7 @@ create policy tenant_isolation on leads
   - a `SECURITY DEFINER` function is not on the declared allowlist;
   - an append-only table gives `app_user` more than the rules below allow.
 - Append-only tables come in two tiers:
-  - **Insert-only** (`timeline_events`, `audit_log`, `lead_score_history`, `credit_notes`): `app_user` has no update, delete or truncate.
+  - **Insert-only** (`workflow_versions`, `timeline_events`, `audit_log`, `lead_score_history`, `credit_notes`): `app_user` has no update, delete or truncate.
   - **Lifecycle** (`webhook_events`, `payments`, `invoices`, `refunds`): no delete or truncate, and no table-level update. The table's migration revokes table-level update first, then grants column-level update on a declared list of status and processing columns only; the gate fails if any other column is updatable. Amounts, numbers, lines and parties never change.
 - A cross-tenant test creates two tenants and asserts zero rows leak through API, jobs, exports and webhooks.
 - No missing `app.tenant_id` ever returns rows: `current_setting(..., true)` returns null, so the policy matches nothing.
@@ -391,7 +407,7 @@ These are proposed defaults to confirm with legal and tax advisers; a nightly jo
 
 ## 15. Open questions
 
-- [ ] Can a contact have more than one open lead at a time (e.g. two separate shoots)? The model currently allows one.
+- [x] Can a contact have more than one open lead at a time (e.g. two separate shoots)? No: one open lead per contact, enforced by the partial unique index in section 13; Junk, Lost and Completed set `closed_at`, so a returning contact starts a new lead (W2) (decided 13 Nov 2026).
 - [x] Should staff log in with phone OTP as well as email? No: email only for MVP (decided 2 Nov 2026).
 - [ ] Retention periods in section 14: confirm with legal and CA
 - [ ] Store message bodies encrypted at the column level, or rely on database encryption at rest?

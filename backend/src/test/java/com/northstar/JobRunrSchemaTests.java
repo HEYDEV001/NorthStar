@@ -53,7 +53,11 @@ class JobRunrSchemaTests {
 
             assertThat(columns("jobrunr")).isEqualTo(columns(REFERENCE)).isNotEmpty();
             assertThat(indexes("jobrunr")).isEqualTo(indexes(REFERENCE)).isNotEmpty();
-            assertThat(metadata("jobrunr")).isEqualTo(metadata(REFERENCE));
+            // The rows JobRunr's migrations seed. A running JobRunr adds its own (cluster ID, database version) and
+            // moves the counter's value, so only the seeded rows' identity is compared.
+            List<String> seeded = seededMetadata(REFERENCE);
+            assertThat(seeded).isNotEmpty();
+            assertThat(seededMetadata("jobrunr")).containsAll(seeded);
         } finally {
             admin.sql("drop schema " + REFERENCE + " cascade").update();
         }
@@ -108,9 +112,8 @@ class JobRunrSchemaTests {
                         order by tablename, indexname""").param("schema", schema).query(String.class).list();
     }
 
-    private List<String> metadata(String schema) {
-        return admin.sql("select id || ' ' || name || ' ' || owner || ' ' || value from " + schema
-                        + ".jobrunr_metadata order by id")
+    private List<String> seededMetadata(String schema) {
+        return admin.sql("select id || ' ' || name || ' ' || owner from " + schema + ".jobrunr_metadata order by id")
                 .query(String.class)
                 .list();
     }

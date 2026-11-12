@@ -110,10 +110,11 @@ Phase 10 (pilot) needs the frontend and is planned after it.
   - The send action issues or rotates the invite token at send time, and the invite API stops returning the link.
   - Workers run as the system actor, which the admin-only policy on `invites` denies, and `token_hash` has no update grant. Rotating the token from the worker needs its own fix (for example a narrow allowlisted function); decide it in this step's plan.
   - Built as: `integrations.EmailSender` with a Resend adapter on Java's `HttpClient` (no SDK) and a local-only Mailpit adapter; the first lenient provider JSON mapper. Create and resend queue an `invite.email` action (payload: the invite ID) in the same transaction and return only the invite. The new `notifications` module runs it: the token is `HMAC-SHA256(NORTHSTAR_INVITE_TOKEN_KEY, "invite-token:v1:" + actionId)`, set through the allowlisted `northstar.set_invite_token` (system actor only, pending invites in its tenant), and sent under the action's idempotency key, so a lost response never sends a second, different email. Tenancy stays independent through two ports, `InviteEmailQueue` and `InviteDelivery`; `ModuleDependencyTests` fails on any module cycle or any use of another module's `.internal`.
-- [ ] 1.13 Minimal lead tables: `contacts`, `workflows`, `workflow_versions`, `leads`, with the staff policy on `leads` (P11)
+- [x] 1.13 Minimal lead tables: `contacts`, `workflows`, `workflow_versions`, `leads`, with the staff policy on `leads` (P11)
   - The staff policy is restrictive; the gate fails on a second permissive policy.
   - The staff policy must let the system actor (`app.role = 'system'`) through, or workers cannot act on leads.
   - Add the composite foreign key from `actions (tenant_id, lead_id)` to `leads`.
+  - Built as: four migrations with composite FKs, RLS and `tenant_isolation`; every §13 lead index, including one open lead per contact (decided 13 Nov 2026). `leads_staff_assigned` is restrictive: admins and the system actor see the tenant's leads, staff only those assigned to their own active membership (a subquery on `memberships`, no new context). Published `workflow_versions` are insert-only for `app_user` and refused by triggers for every role (SQLSTATE NSW01). A workflow's current version must be its own. Only a minimal `Lead` entity in `workflow`; P9 and P11 are shown through a test-only endpoint in test sources.
 - [ ] 1.14 Cross-tenant suite P9, P10, P11 runs on every PR
 - [ ] 1.15 Staging deploy pipeline (needs DigitalOcean and the Supabase staging project from Step 0; may slip without blocking Phase 2)
   - Run `db/bootstrap/roles.sql` on the staging project and verify it there first: hosted `postgres` is not a full superuser.
@@ -135,6 +136,8 @@ Phase 10 (pilot) needs the frontend and is planned after it.
 - [ ] 2.2 `POST /webhooks/whatsapp`: verify signature (P15) → store → dedupe (P1) → resolve tenant by phone number ID (P16) → queue → 200
 - [ ] 2.2a Resend webhooks: bounces and complaints recorded through the webhook pipeline (verify, store, dedupe, queue); repeated bounces mark the address invalid (`integration-specs.md` §6). Decide the table for invalid addresses in `data-model.md` first.
 - [ ] 2.3 Conversation schema: `contact_sources`, `conversations`, `messages`, `message_templates`
+  - Add the composite foreign key from `leads (tenant_id, conversation_id)` to `conversations`, unlinked since 1.13.
+  - `conversations` gets the same restrictive staff policy pattern as `leads` (assigned membership; admins and the system actor see all), declared in the gate.
 - [ ] 2.4 Inbound job: normalise to an `events` row; upsert contact by normalised phone; join the open lead's conversation (W1); lead created in one transaction (P3)
 - [ ] 2.5 Opt-out checked first on every inbound message; cancels all scheduled outbound actions (W32)
 - [ ] 2.6 Send action: WhatsApp adapter (real and fake), 24-hour window, templates only outside it (W33)
@@ -154,6 +157,9 @@ Phase 10 (pilot) needs the frontend and is planned after it.
 - [ ] 3.1 Workflow config format (§15) with validation; publish makes a version immutable
 - [ ] 3.2 Reelrr template as seed data (§4, §14)
 - [ ] 3.3 Lead state machine: only transitions allowed by the lead's version; `timeline_events` on every change; optimistic lock on `version` (P7)
+  - Every closing stage (Junk, Lost, Completed) sets `closed_at`, so the one-open-lead-per-contact index frees the contact (W2).
+  - The engine checks that a lead's stage exists in its version's config; the database does not (decided in 1.13).
+  - The engine enforces one active workflow per tenant for MVP; there is no database constraint while `data-model.md` §15 is open.
 - [ ] 3.4 Events and triggers (§6); conditions and rules (§7)
 - [ ] 3.5 Step type executors (§5) producing actions
 - [ ] 3.6 Timers (§8): `timers` mirrors JobRunr jobs; quiet hours and reminders in the tenant timezone (P22); cancellation
@@ -161,11 +167,12 @@ Phase 10 (pilot) needs the frontend and is planned after it.
   - Per-role approval rules per action type replace 1.10's admin-only `Actions.approve`.
 - [ ] 3.8 Failed actions API: list, retry, skip; alert on final failure; kill switches per business and platform-wide
 - [ ] 3.9 Leads API: reassign with history (P5), admin-only soft delete (P6), notes, tasks, request idempotency key (P21)
+  - Before any contacts endpoint exists, decide how staff access to contacts is limited (only the contacts of their assigned leads): contacts hold phone numbers, and `contacts` has no staff policy yet.
 - [ ] 3.10 Contact from a Lost or Junk lead starts a new lead (W2)
 - [ ] 3.11 Versioning and migration (§16): in-flight leads keep their version (W36)
 - [ ] 3.12 End-to-end engine test on the Reelrr template with fake providers
 
-**Needs answers:** Reelrr defaults (`workflow-spec.md` §18); one open lead per contact, and one or many workflows per tenant (`data-model.md` §15); precedence between tenant and action approval mode; `closed_at` for Junk and Lost.
+**Needs answers:** Reelrr defaults (`workflow-spec.md` §18); one or many workflows per tenant (`data-model.md` §15); precedence between tenant and action approval mode. (One open lead per contact, and `closed_at` for Junk, Lost and Completed, were decided on 13 Nov 2026.)
 
 ## Phase 4 — AI and scoring
 
@@ -190,6 +197,7 @@ Phase 10 (pilot) needs the frontend and is planned after it.
 **Module:** `scheduling`.
 
 - [ ] 6.1 Schema: `calendar_connections`, `busy_blocks`, `slot_holds`, `appointments`, `appointment_assignments`
+  - `appointments` gets the same restrictive staff policy pattern as `leads` (assigned membership; admins and the system actor see all), declared in the gate.
 - [ ] 6.2 Google OAuth per staff member; disconnect removes them from auto-assignment (P19)
 - [ ] 6.3 Free/busy sync into `busy_blocks`; keeps working when Google is down
 - [ ] 6.4 Slot finder with skills, leave and tenant timezone; nearest open slots when none fit (W10)
@@ -228,6 +236,7 @@ Phase 10 (pilot) needs the frontend and is planned after it.
 **Modules:** `integrations`, `reporting`.
 
 - [ ] 7.1 Schema: `sheet_mappings`, `sync_outbox`, `sheet_conflicts`, `meta_events`, `chat_links`, `link_clicks`, `ad_referrals`, `ad_spend_daily`
+  - Add the composite foreign keys from `leads (tenant_id, ad_referral_id)` and `leads (tenant_id, chat_link_id)`, unlinked since 1.13.
 - [ ] 7.2 Sheets sync from the outbox: upsert by ID in batches; quota backoff (P17); deleted sheet or tab (P18); protected-field edits restored and sent to review
 - [ ] 7.3 Meta Conversions API events at configured stages, matched on click ID
   - Meta does not deduplicate business-messaging events, so a lost response followed by a retry sends the event twice (`lostResponseWithoutProviderIdempotencyDuplicatesTheEffect` shows it). The send needs its own dedupe first, e.g. on `meta_events (tenant_id, lead_id, event_name)`, checked and recorded before the call.
