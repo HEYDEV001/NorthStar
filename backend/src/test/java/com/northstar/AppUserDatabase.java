@@ -42,6 +42,15 @@ public final class AppUserDatabase {
         });
     }
 
+    /**
+     * A transaction on a fresh app_user connection with no app.tenant_id, app.user_id or app.role at all, as a bug that
+     * skipped the tenant context would have (P10).
+     */
+    public <T> T withoutContext(Function<JdbcClient, T> work) {
+        connect();
+        return transactions.execute(status -> work.apply(jdbc));
+    }
+
     public void run(UUID tenantId, UUID userId, String role, Consumer<JdbcClient> work) {
         as(tenantId, userId, role, jdbc -> {
             work.accept(jdbc);
