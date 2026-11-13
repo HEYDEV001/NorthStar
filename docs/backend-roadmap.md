@@ -115,7 +115,8 @@ Phase 10 (pilot) needs the frontend and is planned after it.
   - The staff policy must let the system actor (`app.role = 'system'`) through, or workers cannot act on leads.
   - Add the composite foreign key from `actions (tenant_id, lead_id)` to `leads`.
   - Built as: four migrations with composite FKs, RLS and `tenant_isolation`; every §13 lead index, including one open lead per contact (decided 13 Nov 2026). `leads_staff_assigned` is restrictive: admins and the system actor see the tenant's leads, staff only those assigned to their own active membership (a subquery on `memberships`, no new context). Published `workflow_versions` are insert-only for `app_user` and refused by triggers for every role (SQLSTATE NSW01). A workflow's current version must be its own. Only a minimal `Lead` entity in `workflow`; P9 and P11 are shown through a test-only endpoint in test sources.
-- [ ] 1.14 Cross-tenant suite P9, P10, P11 runs on every PR
+- [x] 1.14 Cross-tenant suite P9, P10, P11 runs on every PR
+  - Built as: the CI job `cross-tenant` runs every test named `P9_`, `P10_` or `P11_` (`-Dtest='*Tests#P9_*+P10_*+P11_*'`); `CrossTenantSuiteGuardTests` fails, by name, on a case test the pattern would miss. `CrossTenantLeakTests` reads every tenant table from the catalogue, seeds one row per tenant from `TenantFixtures` (an unregistered or stale table fails by name), and checks admin, staff, the system actor and no context: tenant A sees and changes nothing of tenant B, with a positive control, plus `tenants` and `user_profiles`. `EndpointIsolationTests` walks Spring's request mappings: every main-code endpoint taking an ID, any method, gives the same 404 for another tenant's record as for a missing one. A new tenant table needs a fixture; a new endpoint needs nothing, unless its ID or body is unusual.
 - [ ] 1.15 Staging deploy pipeline (needs DigitalOcean and the Supabase staging project from Step 0; may slip without blocking Phase 2)
   - Run `db/bootstrap/roles.sql` on the staging project and verify it there first: hosted `postgres` is not a full superuser.
   - Flyway uses a direct or session-pooler connection; the app uses the transaction pooler with `prepareThreshold=0`.
@@ -134,6 +135,7 @@ Phase 10 (pilot) needs the frontend and is planned after it.
 - [ ] 2.1 Integration schema: `integrations`, `integration_credentials` (encrypted, decrypted only in the worker), `whatsapp_accounts`, `webhook_events`
   - `webhook_events` is a lifecycle table; declare its updatable columns in the gate. Its nullable `tenant_id` fails the gate as specified, so settle that open question here. Any new schema (`ingest`, `secrets`) joins the gate's schema list.
 - [ ] 2.2 `POST /webhooks/whatsapp`: verify signature (P15) → store → dedupe (P1) → resolve tenant by phone number ID (P16) → queue → 200
+  - Extend the cross-tenant suite: a webhook routed to tenant A never reads or writes tenant B, named `P9_`/`P10_` so the `cross-tenant` job runs it. `webhook_events` and every new tenant table need a `TenantFixtures` entry.
 - [ ] 2.2a Resend webhooks: bounces and complaints recorded through the webhook pipeline (verify, store, dedupe, queue); repeated bounces mark the address invalid (`integration-specs.md` §6). Decide the table for invalid addresses in `data-model.md` first.
 - [ ] 2.3 Conversation schema: `contact_sources`, `conversations`, `messages`, `message_templates`
   - Add the composite foreign key from `leads (tenant_id, conversation_id)` to `conversations`, unlinked since 1.13.
@@ -254,6 +256,7 @@ Phase 10 (pilot) needs the frontend and is planned after it.
 **Modules:** `reporting`, `admin`, `tenancy`.
 
 - [ ] 8.1 Overview, CRM and report APIs; integration health API
+  - Exports join the cross-tenant suite: an export or report run as tenant A contains none of tenant B's rows, named `P9_` so the `cross-tenant` job runs it.
 - [ ] 8.2 Onboarding readiness API: each step green or pending, with what is blocking it
 - [ ] 8.3 Northstar admin over `app_admin`, every call audited: tenants, failed jobs, webhook errors, usage, pause a business
   - `app_admin` gets its own datasource bean, separate from the guarded `dataSource`; the tenant guard wraps only `dataSource`, so this needs its own audited access rules, not a bypass of the guard.

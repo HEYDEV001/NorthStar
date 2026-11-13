@@ -37,3 +37,27 @@ jobs:
       # Format check, unit and integration tests. Testcontainers uses the runner's Docker for Supabase Postgres.
       - name: Verify
         run: ./mvnw -B -ntp verify
+
+  # The cross-tenant suite (step 1.14): every P9, P10 and P11 test, selected by its case-ID name, plus the guard that
+  # fails if a case test sits where this pattern would miss it. Its own job so its result shows on the pull request
+  # and can be required on its own; the backend job still runs everything, these included.
+  cross-tenant:
+    name: cross-tenant
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    defaults:
+      run:
+        working-directory: backend
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - uses: actions/setup-java@b843ebf9b913146b38da2eaa7aeddf76074ae1ad # v6.1.0
+        with:
+          distribution: temurin
+          java-version: '21'
+          cache: maven
+
+      - name: Cross-tenant suite (P9, P10, P11)
+        run: ./mvnw -B -ntp test -Dtest='*Tests#P9_*+P10_*+P11_*,CrossTenantSuiteGuardTests'

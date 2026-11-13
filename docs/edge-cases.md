@@ -85,5 +85,5 @@ Each case ID (P1–P24, W1–W36) becomes a named automated test, so a failing t
 - **Naming:** test names start with the case ID, e.g. `W18_duplicate_razorpay_webhook_creates_one_payment`.
 - **Where:** backend cases as JUnit + Testcontainers against a real Postgres with RLS on; end-to-end cases as Playwright on staging with a test WhatsApp number and Razorpay test mode.
 - **Simulated providers:** WhatsApp, Razorpay, Google and Meta calls go through adapters with fake implementations for tests, including duplicates, delays, timeouts and errors.
-- **Gate:** a phase is done only when every case with that phase number passes in CI; P9, P10 and P11 run on every pull request.
+- **Gate:** a phase is done only when every case with that phase number passes in CI; P9, P10 and P11 run on every pull request, as the required CI job `cross-tenant`.
 - **New cases:** any bug found in the pilot gets a new row here and a test before the fix is merged.

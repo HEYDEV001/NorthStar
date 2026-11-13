@@ -55,6 +55,7 @@ cd backend && ./mvnw verify                # format check + unit + integration t
 cd backend && ./mvnw spring-boot:run       # local API on :8080 against .env.local (DB down until app_user exists, Phase 1)
 cd backend && ./mvnw spring-boot:test-run  # local API on :8080 against a throwaway Supabase Postgres container
 # local email: NORTHSTAR_EMAIL_PROVIDER=mailpit in .env.local sends to Supabase's Mailpit; read it at :54324
+cd backend && ./mvnw test -Dtest='*Tests#P9_*+P10_*+P11_*,CrossTenantSuiteGuardTests'   # the cross-tenant suite
 
 # frontend (not scaffolded yet)
 cd frontend && npm run lint
@@ -145,7 +146,9 @@ Run the formatter and the relevant tests before every commit. Update this sectio
 - Backend integration tests run against real Postgres with RLS on (Testcontainers), never H2.
 - External providers are faked through the adapter interfaces; fakes must be able to simulate duplicates,
   delays, timeouts, 429s and auth failures.
-- The cross-tenant isolation tests (P9, P10, P11) run on every pull request and block the merge.
+- The cross-tenant isolation tests (P9, P10, P11) run on every pull request and block the merge: the `cross-tenant`
+  CI job runs every test named `P9_`, `P10_` or `P11_`. A new tenant table needs a `TenantFixtures` entry, or the
+  suite fails naming it.
 
 ## How to work in this repo
 1. For any task larger than a small fix, plan first: read the spec section, list the files you will touch and

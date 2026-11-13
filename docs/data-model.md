@@ -349,7 +349,7 @@ Admins and the system actor see the tenant's leads. Staff see and change only le
 - Append-only tables come in two tiers:
   - **Insert-only** (`workflow_versions`, `timeline_events`, `audit_log`, `lead_score_history`, `credit_notes`): `app_user` has no update, delete or truncate.
   - **Lifecycle** (`webhook_events`, `payments`, `invoices`, `refunds`): no delete or truncate, and no table-level update. The table's migration revokes table-level update first, then grants column-level update on a declared list of status and processing columns only; the gate fails if any other column is updatable. Amounts, numbers, lines and parties never change.
-- A cross-tenant test creates two tenants and asserts zero rows leak through API, jobs, exports and webhooks.
+- A cross-tenant test creates two tenants and asserts zero rows leak through API, jobs, exports and webhooks. Since step 1.14 it is the CI job `cross-tenant`: every tenant table from the catalogue (each needs a fixture in `TenantFixtures`) under admin, staff, the system actor and no context; every endpoint taking an ID; and every P9, P10 and P11 test. Exports and webhooks join it in Phase 8 and step 2.2.
 - No missing `app.tenant_id` ever returns rows: `current_setting(..., true)` returns null, so the policy matches nothing.
 
 **Storage:** private buckets; object paths start with `tenant_id/`; files served only through short-lived signed URLs created by the backend.
