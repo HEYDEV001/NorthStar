@@ -27,6 +27,8 @@ Spec changes go into `docs/` first, in the same pull request as the code that im
 frontend/          React + TypeScript (Vite), Tailwind, shadcn/ui, FullCalendar, Recharts, Zod
 backend/           Spring Boot (Java 21), modular monolith, Maven
 db/migrations/     Flyway SQL migrations (Supabase Postgres)
+db/migrate/        Migration runner for hosted environments (the deploy's pre-deploy job); its own small build
+.do/               App Platform spec for staging (docs/staging-runbook.md)
 docs/              Specs (see above)
 .github/workflows/ CI: build, test, deploy
 ```
@@ -56,6 +58,8 @@ cd backend && ./mvnw spring-boot:run       # local API on :8080 against .env.loc
 cd backend && ./mvnw spring-boot:test-run  # local API on :8080 against a throwaway Supabase Postgres container
 # local email: NORTHSTAR_EMAIL_PROVIDER=mailpit in .env.local sends to Supabase's Mailpit; read it at :54324
 cd backend && ./mvnw test -Dtest='*Tests#P9_*+P10_*+P11_*,CrossTenantSuiteGuardTests'   # the cross-tenant suite
+cd backend && ./mvnw -f ../db/migrate/pom.xml spotless:apply verify   # the migration runner's own build
+docker build -f backend/Dockerfile -t northstar:local .   # the deploy image, from the repo root
 
 # frontend (not scaffolded yet)
 cd frontend && npm run lint
@@ -65,6 +69,9 @@ cd frontend && npm run dev                 # local app on :5173
 # database (roles first, once per environment and after `supabase db reset`: db/bootstrap/README.md)
 docker exec -i supabase_db_NorthStar psql -U postgres -d postgres -v ON_ERROR_STOP=1 < db/bootstrap/roles.sql
 cd backend && ./mvnw initialize flyway:migrate   # as migrator, against the DB in .env.local (initialize loads it)
+docker exec -i supabase_db_NorthStar psql -U postgres -d postgres < db/bootstrap/verify.sql   # PASS/FAIL per check
+
+# staging deploys: only the deploy-staging CI job, after backend and cross-tenant pass on main (docs/staging-runbook.md)
 
 # end to end (staging)
 cd frontend && npm run e2e                 # Playwright

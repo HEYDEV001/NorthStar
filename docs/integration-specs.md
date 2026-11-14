@@ -211,7 +211,7 @@ Staging and production never share credentials, and staging uses only provider t
 | LLM | Separate API key with a low budget | Production key with per-tenant budgets |
 | Email | Sandbox or test domain | Verified sending domain |
 
-**Platform secrets** (Northstar's own app secrets, signing keys, database roles) live in DigitalOcean App Platform encrypted environment variables, never in the repo. **Tenant secrets** (business tokens, refresh tokens, Razorpay keys) live encrypted in `integration_credentials`, decrypted only inside the worker at call time. Rotation: platform secrets every 90 days or on staff change; tenant tokens refreshed per provider rules.
+**Platform secrets** (Northstar's own app secrets, signing keys, database roles) live in DigitalOcean App Platform encrypted environment variables, never in the repo, each set only on the component that reads it. The one exception is the deploy token (`DIGITALOCEAN_ACCESS_TOKEN`: custom scopes app read/update and registry read/update, 90-day expiry), a GitHub environment secret per environment that only `main` may use. Staging email uses Resend's shared test sender until a staging sub-domain is verified; it delivers only to the Resend account owner (`docs/staging-runbook.md`). **Tenant secrets** (business tokens, refresh tokens, Razorpay keys) live encrypted in `integration_credentials`, decrypted only inside the worker at call time. Rotation: platform secrets every 90 days or on staff change; tenant tokens refreshed per provider rules.
 
 ## 8. Open questions
 

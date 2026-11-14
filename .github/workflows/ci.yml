@@ -1,5 +1,6 @@
 # Runs on every pull request to main and every push to main. The job names are the required status checks in
-# the protect-main ruleset, so renaming a job means updating the ruleset too.
+# the protect-main ruleset, so renaming a job means updating the ruleset too. On main, deploy-staging then deploys the
+# commit once both of them pass (step 1.15).
 name: CI
 
 on:
@@ -11,9 +12,11 @@ on:
 permissions:
   contents: read
 
+# A newer push cancels an older pull-request run. On main nothing is cancelled, so a deploy is never cut off halfway;
+# a newer run waits for the running one.
 concurrency:
   group: ci-${{ github.ref }}
-  cancel-in-progress: true
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 jobs:
   backend:
@@ -38,6 +41,10 @@ jobs:
       - name: Verify
         run: ./mvnw -B -ntp verify
 
+      # The migration runner's own build (db/migrate, step 1.15): format check and packaging. Its tests run in Verify.
+      - name: Verify the migration runner
+        run: ./mvnw -B -ntp -f ../db/migrate/pom.xml verify
+
   # The cross-tenant suite (step 1.14): every P9, P10 and P11 test, selected by its case-ID name, plus the guard that
   # fails if a case test sits where this pattern would miss it. Its own job so its result shows on the pull request
   # and can be required on its own; the backend job still runs everything, these included.
@@ -61,3 +68,54 @@ jobs:
 
       - name: Cross-tenant suite (P9, P10, P11)
         run: ./mvnw -B -ntp test -Dtest='*Tests#P9_*+P10_*+P11_*,CrossTenantSuiteGuardTests'
+
+  # The staging deploy (step 1.15, docs/staging-runbook.md): only for pushes to main, only after both required jobs
+  # pass. It builds the image from this exact commit, pushes it as app-<sha>, checks that the live app still matches
+  # .do/staging.app.yaml, then sets that tag on every component and waits. App Platform runs the migrate job first;
+  # if migrations or the health check fail, the deployment fails and the previous version keeps running.
+  # The DigitalOcean token is a secret of the staging environment, which only main may use.
+  deploy-staging:
+    name: deploy-staging
+    needs: [backend, cross-tenant]
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    environment: staging
+    concurrency:
+      group: deploy-staging
+      cancel-in-progress: false
+    env:
+      APP_NAME: ${{ vars.DO_APP_NAME }}
+      IMAGE: registry.digitalocean.com/${{ vars.DO_REGISTRY }}/northstar:app-${{ github.sha }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - uses: digitalocean/action-doctl@3cb3953159719656269e044e0e24ca16dd2a690f # v2.5.2
+        with:
+          token: ${{ secrets.DIGITALOCEAN_ACCESS_TOKEN }}
+
+      # Registry credentials that expire in 20 minutes, kept only on this runner.
+      - name: Log in to the container registry
+        run: doctl registry login --expiry-seconds 1200
+
+      - name: Build and push the image
+        run: |
+          docker build -f backend/Dockerfile -t "$IMAGE" .
+          docker push "$IMAGE"
+
+      - name: Check the live app against .do/staging.app.yaml
+        run: .github/scripts/check-staging-spec.sh "$APP_NAME"
+
+      # Takes the live spec (so the encrypted secrets stay as they are), changes only the image tags, and waits for the
+      # deployment. Build and deploy logs are not printed.
+      - name: Deploy
+        uses: digitalocean/app_action/deploy@cc55bc9b848d25f9c1c9f831cf843fbab3fbfb15 # v2.0.11
+        env:
+          IMAGE_TAG_API: app-${{ github.sha }}
+          IMAGE_TAG_WORKER: app-${{ github.sha }}
+          IMAGE_TAG_MIGRATE: app-${{ github.sha }}
+        with:
+          token: ${{ secrets.DIGITALOCEAN_ACCESS_TOKEN }}
+          app_name: ${{ vars.DO_APP_NAME }}

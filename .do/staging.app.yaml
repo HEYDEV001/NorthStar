@@ -1,0 +1,149 @@
+# Northstar staging on DigitalOcean App Platform (step 1.15; docs/staging-runbook.md).
+#
+# Every component runs the one backend image (backend/Dockerfile), tagged app-<commit sha> by the deploy-staging CI
+# job, which changes only the image tags on the live app (the tags below are placeholders). Auto-deploy is off: a
+# deploy happens only after CI is green on main.
+#
+# Values: only the fixed, non-secret ones are in this file. Everything else is typed into the DigitalOcean dashboard,
+# secrets with Encrypt ticked. Variables are declared per component, never app-wide, so the migrator's credentials
+# reach only the migrate job, and the email and invite secrets only the worker. All are runtime-only: nothing reaches a
+# build. StagingAppSpecTests checks these rules; the deploy job fails if the live app's components or variables drift
+# from this file.
+name: northstar-staging
+region: blr
+
+alerts:
+  - rule: DEPLOYMENT_FAILED
+  - rule: DOMAIN_FAILED
+
+ingress:
+  rules:
+    - component:
+        name: api
+      match:
+        path:
+          prefix: /
+
+services:
+  - name: api
+    image:
+      registry_type: DOCR
+      repository: northstar
+      tag: app-placeholder
+      deploy_on_push:
+        enabled: false
+    instance_size_slug: apps-s-1vcpu-1gb-fixed
+    instance_count: 1
+    http_port: 8080
+    run_command: /opt/northstar/bin/start-app
+    health_check:
+      http_path: /actuator/health
+      initial_delay_seconds: 30
+      period_seconds: 10
+      timeout_seconds: 3
+      success_threshold: 1
+      failure_threshold: 6
+    envs:
+      # Transaction pooler, port 6543, ?sslmode=require. No password in the URL (the app refuses to start).
+      - key: DB_URL
+        scope: RUN_TIME
+        type: GENERAL
+      # app_user.<project-ref>
+      - key: DB_USER
+        scope: RUN_TIME
+        type: GENERAL
+      - key: DB_PASSWORD
+        scope: RUN_TIME
+        type: SECRET
+      # jobrunr_user.<project-ref>; the API queues jobs, so it needs JobRunr's login too.
+      - key: JOBRUNR_DB_USER
+        scope: RUN_TIME
+        type: GENERAL
+      - key: JOBRUNR_DB_PASSWORD
+        scope: RUN_TIME
+        type: SECRET
+      # https://<project-ref>.supabase.co (tokens are checked against its public signing keys)
+      - key: SUPABASE_URL
+        scope: RUN_TIME
+        type: GENERAL
+
+workers:
+  - name: worker
+    image:
+      registry_type: DOCR
+      repository: northstar
+      tag: app-placeholder
+      deploy_on_push:
+        enabled: false
+    instance_size_slug: apps-s-1vcpu-1gb-fixed
+    instance_count: 1
+    run_command: /opt/northstar/bin/start-app
+    envs:
+      - key: NORTHSTAR_WORKER_ENABLED
+        scope: RUN_TIME
+        type: GENERAL
+        value: "true"
+      - key: DB_URL
+        scope: RUN_TIME
+        type: GENERAL
+      - key: DB_USER
+        scope: RUN_TIME
+        type: GENERAL
+      - key: DB_PASSWORD
+        scope: RUN_TIME
+        type: SECRET
+      - key: JOBRUNR_DB_USER
+        scope: RUN_TIME
+        type: GENERAL
+      - key: JOBRUNR_DB_PASSWORD
+        scope: RUN_TIME
+        type: SECRET
+      - key: SUPABASE_URL
+        scope: RUN_TIME
+        type: GENERAL
+      - key: NORTHSTAR_EMAIL_PROVIDER
+        scope: RUN_TIME
+        type: GENERAL
+        value: resend
+      # Staging sends from Resend's shared test sender until a sub-domain is verified (option B in the runbook): it
+      # delivers only to the Resend account owner's address.
+      - key: NORTHSTAR_EMAIL_FROM
+        scope: RUN_TIME
+        type: GENERAL
+        value: Northstar <onboarding@resend.dev>
+      - key: RESEND_API_KEY
+        scope: RUN_TIME
+        type: SECRET
+      - key: NORTHSTAR_INVITE_TOKEN_KEY
+        scope: RUN_TIME
+        type: SECRET
+      # No staging frontend before the frontend phase; change it then (roadmap 1.15 note).
+      - key: NORTHSTAR_APP_URL
+        scope: RUN_TIME
+        type: GENERAL
+        value: http://localhost:5173
+
+jobs:
+  - name: migrate
+    kind: PRE_DEPLOY
+    image:
+      registry_type: DOCR
+      repository: northstar
+      tag: app-placeholder
+      deploy_on_push:
+        enabled: false
+    instance_size_slug: apps-s-1vcpu-0.5gb
+    instance_count: 1
+    run_command: /opt/northstar/bin/migrate
+    envs:
+      # Session pooler, port 5432, ?sslmode=require. No password in the URL (the runner refuses to start).
+      - key: FLYWAY_URL
+        scope: RUN_TIME
+        type: GENERAL
+      # migrator.<project-ref>
+      - key: FLYWAY_USER
+        scope: RUN_TIME
+        type: GENERAL
+      - key: FLYWAY_PASSWORD
+        scope: RUN_TIME
+        type: SECRET
