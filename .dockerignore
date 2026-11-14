@@ -1,0 +1,13 @@
+# The backend image (backend/Dockerfile) is built from the repo root with this allowlist: everything is left out except
+# the sources below, so no .env file, local secret, build output or editor setting can reach the image.
+*
+!backend/mvnw
+!backend/.mvn/
+!backend/pom.xml
+!backend/src/main/
+!backend/docker/
+!db/migrate/pom.xml
+!db/migrate/src/main/
+!db/migrations/
+# Never an env file, even inside the allowlist.
+**/.env*

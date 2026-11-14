@@ -4,6 +4,7 @@ import com.zaxxer.hikari.HikariConfig;
 import com.zaxxer.hikari.HikariDataSource;
 import java.time.Duration;
 import java.util.List;
+import java.util.Locale;
 import org.jobrunr.jobs.filters.RetryFilter;
 import org.jobrunr.jobs.mappers.JobMapper;
 import org.jobrunr.scheduling.JobRequestScheduler;
@@ -50,6 +51,10 @@ class JobsConfiguration {
             @Value("${northstar.jobs.database.username}") String username,
             @Value("${northstar.jobs.database.password}") String password,
             @Value("${northstar.jobs.database.pool-size}") int poolSize) {
+        if (carriesPassword(url)) {
+            throw new IllegalStateException(
+                    "The JobRunr database URL must not carry a password; set JOBRUNR_DB_PASSWORD");
+        }
         HikariConfig config = new HikariConfig();
         config.setPoolName("jobrunr");
         config.setJdbcUrl(url);
@@ -111,6 +116,20 @@ class JobsConfiguration {
                 return context.getBean(type);
             }
         };
+    }
+
+    /**
+     * A password parameter, or user:password@ before the host (step 1.15). Passwords go in their own setting, never in
+     * a URL that logs or error messages may print.
+     */
+    static boolean carriesPassword(String url) {
+        String lower = url.toLowerCase(Locale.ROOT);
+        int authorityStart = lower.indexOf("//");
+        int authorityEnd = authorityStart < 0 ? -1 : lower.indexOf('/', authorityStart + 2);
+        String authority = authorityStart < 0
+                ? ""
+                : lower.substring(authorityStart + 2, authorityEnd < 0 ? lower.length() : authorityEnd);
+        return lower.contains("password") || authority.contains("@");
     }
 
     /** JobRunr's Postgres storage on the private pool, which it closes when Spring closes the storage. */

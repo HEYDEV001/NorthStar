@@ -42,26 +42,52 @@ Do not use `alter role ... password '...'` with a plain-text password.
 ## Staging and production (hosted Supabase)
 
 **Verify this script on the staging project before production.** On hosted Supabase `postgres` is not a full
-superuser, so check that the script runs cleanly there and that the result matches:
+superuser, so check that the script runs cleanly there and that `verify.sql` passes. `verify.sql` is read-only and
+prints one `PASS` or `FAIL` line per check, then a summary line. It checks:
+
+- `migrator` and `app_admin` have `BYPASSRLS`; `app_user` and `jobrunr_user` do not;
+- no Northstar role is a superuser or can create roles or databases;
+- `migrator`, `app_user` and `jobrunr_user` can log in, `app_admin` not yet;
+- `app_user` and `jobrunr_user` are members of no other role, and `postgres` can act as `migrator`;
+- `migrator` owns both schemas, `jobrunr_user` cannot reach `northstar` and `app_user` cannot reach `jobrunr`;
+- the two findings from the local image that Phase 1 relies on: `migrator` cannot use schema `auth` (so `user_profiles`
+  has no foreign key to `auth.users` and the service enforces it), and `citext` is available but not installed (so
+  `invites.email` is plain text with a `lower(email)` index).
+
+**If any line says FAIL, stop and report it before running Flyway.** In particular, if `migrator` cannot get
+`BYPASSRLS` on hosted Supabase, stop: the fix is never to weaken a policy, drop `force row level security`, or give
+`app_user` more rights. If the two `auth`/`citext` findings differ, update `data-model.md` section 3 before production.
+
+### Commands (hosted)
+
+Connect through the **session pooler** (port 5432), never the transaction pooler: `\password` and the bootstrap need a
+session. The pooler's user names carry the project ref, e.g. `postgres.<project-ref>`; the host and ref are in the
+Supabase dashboard under **Connect → Session pooler** (the connection string shown there has only a
+`[YOUR-PASSWORD]` placeholder). No local `psql` is needed; Docker runs one. Run these from the repo root:
 
 ```
-select rolname, rolbypassrls, rolcreaterole, rolcreatedb, rolcanlogin
-from pg_roles where rolname in ('migrator', 'app_user', 'app_admin', 'jobrunr_user');
-select nspname, nspowner::regrole from pg_namespace where nspname in ('northstar', 'jobrunr');
+# 1. Create the roles (psql asks for the postgres password; type it at the prompt)
+docker run --rm -it -v "$PWD/db/bootstrap:/bootstrap:ro" postgres:17-alpine \
+  psql "host=<session-pooler-host> port=5432 dbname=postgres user=postgres.<project-ref> sslmode=require" \
+  -v ON_ERROR_STOP=1 -f /bootstrap/roles.sql
+
+# 2. Open a session (same command without -v and -f), then:
+alter role migrator login;
+alter role app_user login;
+alter role jobrunr_user login;
+\password migrator
+\password app_user
+\password jobrunr_user
+\q
+
+# 3. Verify (same command as step 1 with -f /bootstrap/verify.sql); every line must say PASS
 ```
 
-Expected: `migrator` and `app_admin` bypass RLS, `app_user` and `jobrunr_user` do not, none can create roles or
-databases, and `migrator` owns both schemas.
+For each `\password`, generate the password straight onto the clipboard in a second terminal, so it is never shown and
+never on a command line: `openssl rand -base64 32 | pbcopy`. Paste it at both prompts, then paste it into its
+DigitalOcean variable (`docs/staging-runbook.md`), then clear the clipboard with `pbcopy < /dev/null`. Do one role at a
+time. Before starting, turn off any clipboard-history app (Raycast, Alfred, Maccy, Paste and the like) or pause its
+history, so no password is kept in it.
 
-Also confirm two findings from the local image, which Phase 1 relies on:
-
-- `migrator` cannot create a foreign key to `auth.users` (`permission denied for schema auth`), so `user_profiles` has
-  none and the service enforces it.
-- `citext` is available but not installed, so `invites.email` is plain text with a `lower(email)` index.
-
-If staging behaves differently, stop and update `data-model.md` section 3 before production.
-
-1. Connect with `psql` as `postgres` on a direct or session-pooler connection (not the transaction pooler).
-2. Run `roles.sql`, then turn on login and set passwords with `\password` as above. Use generated passwords and keep
-   them only in the environment's secret store.
-3. Only then run Flyway as `migrator`.
+Leave `app_admin` without a login until Phase 8. Then run `verify.sql` again after the first deploy has migrated the
+database. Only after it passes does Flyway run as `migrator`, through the deploy's pre-deploy job.

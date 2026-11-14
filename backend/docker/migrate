@@ -1,0 +1,5 @@
+#!/bin/sh
+# The pre-deploy migrate job: applies /opt/northstar/migrations as migrator (FLYWAY_URL, FLYWAY_USER, FLYWAY_PASSWORD).
+# A non-zero exit fails the deployment before the new app version starts.
+exec java -XX:MaxRAMPercentage=65 -XX:+ExitOnOutOfMemoryError -cp '/opt/northstar/migrate/lib/*' \
+    com.northstar.migrate.Migrate

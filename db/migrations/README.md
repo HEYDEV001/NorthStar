@@ -39,7 +39,7 @@ the same default privileges. The roles must exist first: run `db/bootstrap/roles
 | --- | --- |
 | Tests | Test setup runs the bootstrap script, then Flyway applies this folder as `migrator` before each test context |
 | Local Supabase | `cd backend && ./mvnw initialize flyway:migrate`, with `FLYWAY_USER=migrator` in `.env.local` |
-| Staging, production | Deploy pipeline (Phase 1), over a direct or session-pooler connection |
+| Staging, production | The deploy's `migrate` pre-deploy job: the runner in `db/migrate/` as `migrator`, over the session pooler (`docs/staging-runbook.md`) |
 
 The running app never migrates: Flyway is not on its runtime classpath, and it connects as `app_user`.
 

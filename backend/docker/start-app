@@ -1,0 +1,5 @@
+#!/bin/sh
+# The api service and the worker (NORTHSTAR_WORKER_ENABLED=true only on the worker). Heap is capped below the
+# container's memory, and the JVM exits on running out of memory so App Platform restarts it.
+cd /opt/northstar/app || exit 1
+exec java -XX:MaxRAMPercentage=65 -XX:+ExitOnOutOfMemoryError org.springframework.boot.loader.launch.JarLauncher

@@ -144,6 +144,27 @@
         </configuration>
       </plugin>
 
+      <!-- The migration runner (db/migrate, step 1.15) is its own build; its sources are also compiled with the tests
+           here, so MigrationRunnerTests runs it against the test database with the tests' own Flyway and driver. -->
+      <plugin>
+        <groupId>org.codehaus.mojo</groupId>
+        <artifactId>build-helper-maven-plugin</artifactId>
+        <executions>
+          <execution>
+            <id>add-migration-runner-sources</id>
+            <phase>generate-test-sources</phase>
+            <goals>
+              <goal>add-test-source</goal>
+            </goals>
+            <configuration>
+              <sources>
+                <source>${project.basedir}/../db/migrate/src/main/java</source>
+              </sources>
+            </configuration>
+          </execution>
+        </executions>
+      </plugin>
+
       <!-- CI and production run Java 21; fail fast on any other JDK instead of building something untested. -->
       <plugin>
         <groupId>org.apache.maven.plugins</groupId>
