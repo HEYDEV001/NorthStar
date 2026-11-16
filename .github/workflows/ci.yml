@@ -72,8 +72,10 @@ jobs:
   # The staging deploy (step 1.15, docs/staging-runbook.md): only for pushes to main, only after both required jobs
   # pass. It builds the image from this exact commit, pushes it as app-<sha>, checks that the live app still matches
   # .do/staging.app.yaml, then sets that tag on every component and waits. App Platform runs the migrate job first;
-  # if migrations or the health check fail, the deployment fails and the previous version keeps running.
-  # The DigitalOcean token is a secret of the staging environment, which only main may use.
+  # if migrations or the health check fail, the deployment fails and the previous version keeps running. After a
+  # successful deploy it deletes every image tag but the deployed one and the one that ran before, starts registry
+  # garbage collection and reports storage (the Starter registry holds 500 MiB). The DigitalOcean token is a secret of
+  # the staging environment, which only main may use.
   deploy-staging:
     name: deploy-staging
     needs: [backend, cross-tenant]
@@ -87,6 +89,9 @@ jobs:
     env:
       APP_NAME: ${{ vars.DO_APP_NAME }}
       IMAGE: registry.digitalocean.com/${{ vars.DO_REGISTRY }}/northstar:app-${{ github.sha }}
+      # Starter registry: keep 2 tags within 500 MiB. On Basic, set the environment variables to 20 and 5120.
+      KEEP_TAGS: ${{ vars.DO_REGISTRY_KEEP_TAGS || '2' }}
+      LIMIT_MIB: ${{ vars.DO_REGISTRY_LIMIT_MIB || '500' }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -95,10 +100,15 @@ jobs:
       - uses: digitalocean/action-doctl@3cb3953159719656269e044e0e24ca16dd2a690f # v2.5.2
         with:
           token: ${{ secrets.DIGITALOCEAN_ACCESS_TOKEN }}
+          version: 1.186.0
 
       # Registry credentials that expire in 20 minutes, kept only on this runner.
       - name: Log in to the container registry
         run: doctl registry login --expiry-seconds 1200
+
+      # The registry is read-only while garbage collection (started by the previous deploy) runs.
+      - name: Wait for registry garbage collection
+        run: .github/scripts/wait-for-registry-gc.sh
 
       - name: Build and push the image
         run: |
@@ -107,6 +117,11 @@ jobs:
 
       - name: Check the live app against .do/staging.app.yaml
         run: .github/scripts/check-staging-spec.sh "$APP_NAME"
+
+      # The tags the app runs now: the cleanup keeps them as the rollback target.
+      - name: Record the running image tags
+        id: running
+        run: echo "tags=$(.github/scripts/running-image-tags.sh "$APP_NAME")" >> "$GITHUB_OUTPUT"
 
       # Takes the live spec (so the encrypted secrets stay as they are), changes only the image tags, and waits for the
       # deployment. Build and deploy logs are not printed.
@@ -119,3 +134,10 @@ jobs:
         with:
           token: ${{ secrets.DIGITALOCEAN_ACCESS_TOKEN }}
           app_name: ${{ vars.DO_APP_NAME }}
+
+      # Only after a successful deploy. Deletes the other tags, starts garbage collection (one already running is not a
+      # failure), prints the storage used and warns above 80% of LIMIT_MIB.
+      - name: Clean up the registry
+        env:
+          RUNNING_TAGS: ${{ steps.running.outputs.tags }}
+        run: .github/scripts/clean-registry.sh "app-${{ github.sha }}" "$RUNNING_TAGS"

@@ -11,15 +11,23 @@ have: `docs/deploy-checklist.md`. Database roles: `db/bootstrap/README.md`.
 | `api` service | DigitalOcean App Platform `northstar-staging`, Bangalore, 1 × 1 vCPU / 1 GiB | Public; health check `/actuator/health` |
 | `worker` | Same app, 1 × 1 vCPU / 1 GiB | `NORTHSTAR_WORKER_ENABLED=true`; no public route |
 | `migrate` pre-deploy job | Same app, 1 vCPU / 512 MiB, about a minute per deploy | Applies `db/migrations` as `migrator` before the new version starts |
-| Image | DigitalOcean Container Registry, Basic plan, repository `northstar`, tags `app-<commit sha>` | One image for all three components |
+| Image | DigitalOcean Container Registry, Starter plan (500 MiB, 1 repository), repository `northstar`, tags `app-<commit sha>` | One image for all three components; the deploy keeps 2 tags |
 | Deploy | GitHub Actions job `deploy-staging` | Only on `main`, only after `backend` and `cross-tenant` pass |
 
 The components and their variables are declared in `.do/staging.app.yaml`; `StagingAppSpecTests` checks the rules, and
 the deploy job fails if the live app drifts from the file.
 
-**Cost** (DigitalOcean's pricing page, November 2026): api $10 + worker $10 + container registry Basic $5 + the
-`migrate` job, billed per second at the $5/month rate for about a minute per deploy (cents a month) ≈ **$25/month**, plus
-GST.
+**Cost** (DigitalOcean's pricing page, November 2026):
+
+| Item | $/month |
+| --- | --- |
+| `api`, 1 × shared 1 vCPU / 1 GiB | 10 |
+| `worker`, 1 × shared 1 vCPU / 1 GiB | 10 |
+| `migrate` job, billed per second at the $5/month rate, about a minute per deploy | under 0.10 |
+| Container registry, Starter (500 MiB, 1 repository) | 0 |
+| **Total** | **≈ 20, plus GST** |
+
+The registry moves to Basic ($5, 5 GiB) before production (see Image tags).
 
 ## Secrets
 
@@ -60,10 +68,11 @@ and nothing is paused. To invite other people, verify a staging sub-domain in Re
 
 1. **Supabase:** turn on Enforce SSL, then run `roles.sql`, set the three passwords and run `verify.sql`
    (`db/bootstrap/README.md`). Every line must say PASS; on any FAIL, stop.
-2. **Container registry:** DigitalOcean → Container Registry → Create: Basic plan, Bangalore if offered, a unique
+2. **Container registry:** DigitalOcean → Container Registry → Create: Starter plan, Bangalore if offered, a unique
    name. Turn on nothing else.
 3. **Deploy token:** DigitalOcean → API → Tokens → Generate New Token. Name `github-deploy-staging`, expiration 90 days,
-   Custom Scopes: App `read`, `update`; Registry `read`, `update`. Copy it once, straight into step 4.
+   Custom Scopes: App `read`, `update`; Registry `read`, `update`, `delete` (the deploy deletes old image tags). Copy it
+   once, straight into step 4.
 4. **GitHub:** repo Settings → Environments → New environment `staging`.
    - Deployment branches and tags: Selected branches → add `main`.
    - Environment secret `DIGITALOCEAN_ACCESS_TOKEN`: paste the token.
@@ -91,10 +100,13 @@ and nothing is paused. To invite other people, verify a staging sub-domain in Re
 
 Merge to `main`. When `backend` and `cross-tenant` pass, `deploy-staging`:
 
-1. builds the image from that commit and pushes it as `app-<sha>`;
-2. checks the live app against `.do/staging.app.yaml` (components, sizes, commands, variable names and types; never
+1. waits for any registry garbage collection to finish (the registry is read-only while one runs);
+2. builds the image from that commit and pushes it as `app-<sha>`;
+3. checks the live app against `.do/staging.app.yaml` (components, sizes, commands, variable names and types; never
    values) and fails on any difference;
-3. takes the live spec, sets `app-<sha>` on `api`, `worker` and `migrate`, and waits for the deployment.
+4. records the tag the app runs now, takes the live spec, sets `app-<sha>` on `api`, `worker` and `migrate`, and waits
+   for the deployment;
+5. after a successful deploy only, cleans up the registry (see Image tags).
 
 App Platform runs `migrate` first. If it fails, or the new `api` fails its health check, the deployment fails, the
 previous version keeps running and DigitalOcean emails a `DEPLOYMENT_FAILED` alert. `migrate`'s log (App → Activity →
@@ -109,11 +121,14 @@ deploy, and remove old ones only after nothing reads them.
 
 ## Rolling back
 
-- **Fastest:** App → Activity → the last good deployment → Rollback. App Platform redeploys that version's image and
-  spec.
-- **From GitHub:** Actions → the CI run of the last good commit on `main` → `deploy-staging` → Re-run job. It
-  deploys that commit's tag again. Its drift check uses that commit's `.do/staging.app.yaml`, so this works only if the
-  spec has not changed since; otherwise use the dashboard.
+**Re-run an older green `deploy-staging` job:** Actions → the CI run of the last good commit on `main` →
+`deploy-staging` → Re-run job. It rebuilds that commit's image, pushes it as `app-<that sha>` and deploys it, so it
+works however long ago the commit was, even though the registry keeps only 2 tags. Its drift check uses that commit's
+`.do/staging.app.yaml`; if the spec has changed since, make the live app match that version first (Changing the app
+spec), or fix forward instead.
+
+The dashboard's App → Activity → Rollback works only for the version that ran just before the current one: its image
+is the only older tag the registry keeps.
 
 Either way the database keeps its newer migrations: an older `migrate` ignores migrations it does not know (Flyway's
 default), so it passes. If a migration itself is wrong, fix forward with a new migration; never edit or delete a
@@ -121,14 +136,29 @@ merged one.
 
 ## Image tags
 
-The Basic registry holds 5 GiB. Every tag shares the base and dependency layers; a commit that changes only code adds a
-few MB. **Keep the 20 most recent `app-*` tags, and always the tag running now plus the two before it** (the rollback
-targets). Once a month, or when the registry passes 80% full:
+Staging uses the free **Starter** registry: 500 MiB and 1 repository, with no overage, so a push that would go over
+the limit is refused. **Keep 2 tags on Starter; raise to 20 when moving to Basic.**
 
-1. DigitalOcean → Container Registry → `northstar` → sort tags by date; delete tags older than the 20 most recent,
-   never the three above.
-2. Settings → Garbage collection → Start garbage collection. The registry is read-only while it runs, so do it when
-   no deploy is running.
+After every successful deploy, `deploy-staging` cleans up by itself (`.github/scripts/clean-registry.sh`):
+
+1. It keeps the tag just deployed and the tag the app ran before it (the dashboard's rollback target), and deletes
+   every other tag, oldest first. If the two are the same (a re-run), it keeps the newest other tag instead. It never
+   deletes a tag the app runs, and deletes nothing if the deployed tag is missing from the registry.
+2. It starts garbage collection, which frees the deleted tags' space. If one is already running, it notes that and
+   carries on; any other failure to start fails the job (the deploy itself has already succeeded).
+3. It prints the storage used, with the time DigitalOcean measured it (the figure updates once garbage collection
+   finishes), and adds a warning annotation to the run above 80% of the plan's limit.
+
+Tags share the base and dependency layers, so two tags cost little more than one. A commit that changes dependencies
+adds a new dependency layer until the older tag is deleted.
+
+**If the warning appears or a push is refused for storage:** check Container Registry → `northstar` for tags other
+than the two above and delete them, then Settings → Garbage collection → Start garbage collection, then re-run the job.
+If two images no longer fit, move to Basic.
+
+**Before production (or as soon as Starter is too small), move to Basic:** Container Registry → Settings → Change
+plan → Basic ($5/month, 5 GiB). Then in GitHub → Settings → Environments → `staging` → Environment variables, set
+`DO_REGISTRY_KEEP_TAGS` = `20` and `DO_REGISTRY_LIMIT_MIB` = `5120`. Unset, they default to Starter's `2` and `500`.
 
 ## Changing the app spec
 
@@ -154,7 +184,7 @@ and finds nothing to do).
 you create it. If it has already expired, `deploy-staging` fails at the doctl step; do the same steps.
 
 1. DigitalOcean → API → Tokens → Generate New Token: name `github-deploy-staging-<yyyy-mm>`, expiration 90 days, Custom
-   Scopes App `read`, `update` and Registry `read`, `update`. Copy it once.
+   Scopes App `read`, `update` and Registry `read`, `update`, `delete`. Copy it once.
 2. GitHub → repo Settings → Environments → `staging` → `DIGITALOCEAN_ACCESS_TOKEN` → edit → paste → Update secret.
 3. Actions → the latest CI run on `main` → `deploy-staging` → Re-run job. It must pass.
 4. DigitalOcean → API → Tokens → the old token → Delete.

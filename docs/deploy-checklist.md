@@ -57,5 +57,9 @@ and rotate secrets on staging: `docs/staging-runbook.md`.
 - [ ] Deploys come only from the `deploy-staging` CI job after `backend` and `cross-tenant` pass on `main`; App
       Platform's auto-deploy is off on every component.
 - [ ] The GitHub environment (`staging`) allows only the `main` branch, and holds `DIGITALOCEAN_ACCESS_TOKEN`: a
-      custom-scoped token (app read and update, registry read and update), 90-day expiry, rotated before it expires.
-- [ ] The container registry keeps enough tags to roll back (`docs/staging-runbook.md`).
+      custom-scoped token (app read and update, registry read, update and delete), 90-day expiry, rotated before it
+      expires.
+- [ ] The container registry keeps enough tags to roll back: staging is on Starter (500 MiB) and the deploy keeps 2
+      tags (`docs/staging-runbook.md`, image tags).
+- [ ] Before production: the registry is on Basic (5 GiB), with `DO_REGISTRY_KEEP_TAGS=20` and
+      `DO_REGISTRY_LIMIT_MIB=5120` set on the GitHub environment.
