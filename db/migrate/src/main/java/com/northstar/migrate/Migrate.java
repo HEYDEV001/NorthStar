@@ -9,6 +9,7 @@ import java.util.Map;
 import java.util.Set;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
+import javax.sql.DataSource;
 import org.flywaydb.core.Flyway;
 import org.flywaydb.core.api.FlywayException;
 import org.flywaydb.core.api.MigrationInfo;
@@ -19,6 +20,7 @@ import org.flywaydb.core.api.callback.Event;
 import org.flywaydb.core.api.configuration.FluentConfiguration;
 import org.flywaydb.core.api.exception.FlywayValidateException;
 import org.flywaydb.core.api.output.MigrateResult;
+import org.postgresql.ds.PGSimpleDataSource;
 
 /**
  * Applies db/migrations to a hosted database as migrator: the deploy's pre-deploy job (step 1.15). A failure exits
@@ -64,7 +66,7 @@ public final class Migrate {
 
         MigrationTracker tracker = new MigrationTracker();
         Flyway flyway = configure(migrations)
-                .dataSource(env.get("FLYWAY_URL"), env.get("FLYWAY_USER"), env.get("FLYWAY_PASSWORD"))
+                .dataSource(dataSource(env.get("FLYWAY_URL"), env.get("FLYWAY_USER"), env.get("FLYWAY_PASSWORD")))
                 .callbacks(tracker)
                 .load();
         try {
@@ -83,6 +85,20 @@ public final class Migrate {
                     + " sql_state=" + sqlState(e) + migration);
             return 1;
         }
+    }
+
+    /**
+     * The migrator's connection. Errors carry Postgres's primary message only (logServerErrorDetail=false), never the
+     * detail that can quote row values or a statement's parameters, as every Northstar pool does. The runner prints no
+     * message anyway (only the exception's class, error code and SQL state); this keeps the exceptions themselves clean.
+     */
+    public static DataSource dataSource(String url, String user, String password) {
+        PGSimpleDataSource dataSource = new PGSimpleDataSource();
+        dataSource.setURL(url);
+        dataSource.setUser(user);
+        dataSource.setPassword(password);
+        dataSource.setLogServerErrorDetail(false);
+        return dataSource;
     }
 
     /** The settings shared with the Maven plugin (backend/pom.xml); the connection is added by {@link #run}. */

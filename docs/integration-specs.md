@@ -17,6 +17,27 @@ Every external service sits behind one Java interface in the `integrations` modu
 
 Anyone can POST to a webhook URL, so the unrouted write path is rate-limited (step 2.2). Unrouted rows are never processed or copied into a tenant table, and are deleted after 30 days (`data-model.md` section 14).
 
+How step 2.2 builds this (decided 19 Nov 2026):
+
+- **Public, and only there.** The webhook paths live outside `/api/v1` and have their own security chain, which
+  matches exactly the listed method and path pairs (`GET` and `POST /webhooks/whatsapp` so far) and needs no token; a
+  bearer token sent there is ignored. Every other path keeps the Supabase login.
+- **Body limit.** Bodies over `northstar.webhooks.max-body-bytes` (3 MiB, Meta's maximum) get 413 before they are read
+  past the limit; nothing is stored or parked.
+- **Status codes.** Bad or missing signature: 401. Unknown account: 200 (a non-200 would make the provider retry for
+  days against an endpoint every tenant shares). A signed body that is unreadable, or carries nothing storable: 200,
+  nothing stored, one ERROR line for an unreadable one. Any database failure: 500 or 503, so the provider retries;
+  dedupe makes the retry safe. Not configured on this process: 503 (section 7).
+- **Rate limits on the unrouted path, global rather than per IP** (the client address would come from an edge header
+  the app must trust, and senders rotate addresses): a token bucket per reason in each API instance (30 invalid
+  signatures and 120 unknown accounts a minute), then a cap inside the parking functions across every instance (60 and
+  600 a minute). Over a limit nothing is stored, the answer is unchanged, and drops are logged once, then counted once
+  a minute.
+- **Alert for an unknown account:** for now a WARN line, `webhook.unknown_account ... unrouted_id=<id>`; the Northstar
+  admin is notified from Phase 8.
+- **Logs:** counts, status codes, webhook event IDs, unrouted row IDs and tenant IDs only; never a body, wamid, phone
+  number ID, phone number, signature, secret or challenge.
+
 **Outbound (actions)**
 
 - Every call is an `actions` row executed by the worker with an idempotency key; provider idempotency headers used where offered.
@@ -47,10 +68,14 @@ Northstar operates as a Meta Tech Provider: each business connects its own Whats
 
 | Item | Rule |
 | --- | --- |
-| Verification | `GET` with `hub.mode`, `hub.verify_token`, `hub.challenge`; echo the challenge when the token matches |
-| Signature | `X-Hub-Signature-256`: HMAC-SHA256 of the raw body with the app secret; reject on mismatch |
-| Routing | `metadata.phone_number_id` → `whatsapp_accounts` → tenant |
-| Dedupe | Message ID for messages; message ID + status for status updates |
+| Endpoint | `GET` and `POST /webhooks/whatsapp`, outside `/api/v1` (step 2.2) |
+| Verification | `GET` with `hub.mode`, `hub.verify_token`, `hub.challenge`; echo the challenge when the token matches. Built: `hub.mode` must be `subscribe` (Meta: "always set to subscribe"), the token is compared in constant time, and the challenge (Meta: "an int you must pass back") is echoed as plain text only if it is 1 to 64 digits; anything else is 403 `verification_failed` |
+| Signature | `X-Hub-Signature-256`: HMAC-SHA256 of the raw body with the app secret; reject on mismatch. Built: exactly `sha256=` and 64 lowercase hex digits, checked on the exact bytes received before any JSON parsing, in constant time; mismatch, missing or malformed → 401 `invalid_signature`, parked as metadata only (P15). The provider event ID of a bad-signature row stays null: an unverified body is never parsed |
+| Routing | `metadata.phone_number_id` → `whatsapp_accounts` → tenant, through the allowlisted `northstar.whatsapp_tenants()` (`data-model.md` section 12) |
+| Splitting | One delivery can carry several entries and changes, for several numbers and so several tenants, and Meta batches up to 1000 updates without guaranteeing the grouping. Each element of a change's `messages` or `statuses` is one item, stored as its own `webhook_events` row in its number's tenant (one transaction per tenant), with a Meta-shaped slice as payload: the envelope, the entry ID, one change with its `value` fields (metadata, contacts, messaging_product) and only that item. Items for unknown numbers are parked one by one with only their own slice. U+0000 and unpaired surrogates in the slice become U+FFFD (jsonb cannot hold them) |
+| Dedupe | Message ID for messages; message ID + status for status updates. Built as `provider_event_id` = `message:<wamid>` (`messages[].id`) and `status:<wamid>:<status>` (`statuses[].id`, the sent message's wamid, and `statuses[].status`); per item, so a retry batched differently still dedupes (P1). A duplicate is not stored and queues nothing |
+| Not stored (until step 2.8) | Changes whose `field` is not `messages` (template status, quality and account updates, keyed by the WABA ID in `entry.id`), value-level `errors` (no item ID), items without a usable ID and changes without a phone number ID: 200, counted as `ignored` in the log. Only the `messages` field is subscribed until 2.8 routes the rest by WABA |
+| Queueing | One `ProcessWhatsAppWebhook` job (IDs only) per stored row, created after the tenant's transaction commits. Step 2.2's job only confirms the row; processing is step 2.4 |
 | Inbound types handled | text, interactive button reply, image, document, audio, location |
 | Status updates | sent, delivered, read, failed → `messages.status`, failures → action error |
 | Click-to-WhatsApp referral | `referral` object on the first message: `source_id`, `source_type`, `source_url`, `headline`, `ctwa_clid` → `ad_referrals`; `ctwa_clid` stored for Conversions API matching |
@@ -216,6 +241,8 @@ Staging and production never share credentials, and staging uses only provider t
 
 **Platform secrets** (Northstar's own app secrets, signing keys, database roles) live in DigitalOcean App Platform encrypted environment variables, never in the repo, each set only on the component that reads it. The one exception is the deploy token (`DIGITALOCEAN_ACCESS_TOKEN`: custom scopes app read/update and registry read/update/delete, 90-day expiry), a GitHub environment secret per environment that only `main` may use. Staging email uses Resend's shared test sender until a staging sub-domain is verified; it delivers only to the Resend account owner (`docs/staging-runbook.md`). **Tenant secrets** (business tokens, refresh tokens, Razorpay keys) live encrypted in `secrets.integration_credentials`, decrypted only inside the worker at call time. Rotation: platform secrets every 90 days or on staff change; tenant tokens refreshed per provider rules.
 
+**WhatsApp webhook secrets** (step 2.2): `NORTHSTAR_WHATSAPP_APP_SECRET` (the Meta app's App Secret, which signs every delivery) and `NORTHSTAR_WHATSAPP_VERIFY_TOKEN` (32+ random characters, for the subscription handshake), each 32 to 512 printable characters, encrypted variables on the api component only. The endpoints are active whenever both are set, whatever `NORTHSTAR_WORKER_ENABLED` says (local development runs one process with the worker on that also serves the API). A process with the worker off (an API container) refuses to start if either is missing, naming the setting, never the value; a process with the worker on and either missing starts and answers 503 `webhooks_not_configured` on the webhook paths. A malformed value refuses startup everywhere.
+
 **Tenant credential storage** (decided 19 Nov 2026, step 2.1; built in 2.1b):
 
 - **Who can read them:** only `secrets_user`, a database login whose password is set only on the worker component. Its private pool is created only when `NORTHSTAR_WORKER_ENABLED=true` and is not a Spring bean. No other role can use the `secrets` schema, so the API process can read neither the plaintext nor the ciphertext. The credential store also refuses any tenant context that is not the system actor.
@@ -238,4 +265,8 @@ Staging and production never share credentials, and staging uses only provider t
 - [Razorpay: Payment Links webhooks](https://razorpay.com/docs/payments/payment-links/subscribe-to-webhooks.md)
 - [Razorpay: all webhook events](https://razorpay.com/docs/webhooks/all)
 
-WhatsApp Cloud API and Google API details are from general platform knowledge; confirm endpoints, scopes and quotas against current provider docs during build.
+- [Meta: Graph API webhooks, getting started](https://developers.facebook.com/docs/graph-api/webhooks/getting-started) (verification request, `X-Hub-Signature-256`, batching of up to 1000 updates, deduplication; checked 19 Nov 2026 for step 2.2)
+- [Meta: WhatsApp Cloud API, set up webhooks](https://developers.facebook.com/docs/whatsapp/cloud-api/guides/set-up-webhooks) (retries of non-200 deliveries for up to 7 days, payloads up to 3 MB, mTLS rather than IP allowlists)
+- [Meta: WhatsApp webhook components](https://developers.facebook.com/docs/whatsapp/cloud-api/webhooks/components) (`entry`, `changes`, `value.metadata.phone_number_id`, `messages[].id`, `statuses[]`, `errors`)
+
+Google API details are from general platform knowledge; confirm endpoints, scopes and quotas against current provider docs during build.

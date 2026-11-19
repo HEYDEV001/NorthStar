@@ -59,15 +59,7 @@ class JobsConfiguration {
             throw new IllegalStateException(
                     "The JobRunr database URL must not carry a password; set JOBRUNR_DB_PASSWORD");
         }
-        HikariConfig config = new HikariConfig();
-        config.setPoolName("jobrunr");
-        config.setJdbcUrl(url);
-        config.setUsername(username);
-        config.setPassword(password);
-        config.setMaximumPoolSize(poolSize);
-        config.setMinimumIdle(1);
-        config.addDataSourceProperty("prepareThreshold", 0);
-        HikariDataSource pool = new HikariDataSource(config);
+        HikariDataSource pool = jobRunrPool(url, username, password, poolSize);
         try {
             JobRunrStorage storage = new JobRunrStorage(pool);
             storage.setJobMapper(new JobMapper(jsonMapper));
@@ -76,6 +68,25 @@ class JobsConfiguration {
             pool.close();
             throw e;
         }
+    }
+
+    /**
+     * JobRunr's private pool. Errors carry Postgres's primary message only (logServerErrorDetail=false), never the
+     * detail that can quote row values, as every Northstar pool does (application.properties).
+     */
+    static HikariDataSource jobRunrPool(String url, String username, String password, int poolSize) {
+        HikariConfig config = new HikariConfig();
+        config.setPoolName("jobrunr");
+        config.setJdbcUrl(url);
+        config.setUsername(username);
+        config.setPassword(password);
+        config.setMaximumPoolSize(poolSize);
+        config.setMinimumIdle(1);
+        // Strings, not numbers or booleans: Hikari hands these to the driver as Properties, and the driver reads only
+        // String values (a non-String value is silently ignored).
+        config.addDataSourceProperty("prepareThreshold", "0");
+        config.addDataSourceProperty("logServerErrorDetail", "false");
+        return new HikariDataSource(config);
     }
 
     @Bean

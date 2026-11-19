@@ -38,7 +38,7 @@ final class InviteEmailMessage {
         return switch (role) {
             case ADMIN -> "Admin";
             case STAFF -> "Staff";
-            case SYSTEM -> throw new IllegalArgumentException("Invites are for members");
+            case SYSTEM, WEBHOOK -> throw new IllegalArgumentException("Invites are for members");
         };
     }
 }

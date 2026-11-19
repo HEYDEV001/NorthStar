@@ -10,7 +10,7 @@ public interface TenantDirectory {
     /** Whether the current scope's tenant exists. Requires a tenant scope; RLS shows only that tenant's own row. */
     boolean currentTenantExists();
 
-    /** The current member's active membership in the scope's tenant; empty for the system actor. */
+    /** The current member's active membership in the scope's tenant; empty for the system and webhook actors. */
     Optional<UUID> currentMembershipId();
 
     /**

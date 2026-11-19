@@ -10,7 +10,8 @@ interface TenantGuardedConnection extends Connection {
 
     /**
      * Sets app.tenant_id, app.user_id and app.role for the current transaction on this connection, with bind
-     * parameters, and allows statements until the transaction ends.
+     * parameters, and allows statements until the transaction ends. In a webhook context the only statement allowed is
+     * {@link com.northstar.tenancy.WebhookRouting#INSERT_WEBHOOK_EVENT}.
      */
     void beginTenantTransaction(TenantContext context) throws SQLException;
 
@@ -31,4 +32,16 @@ interface TenantGuardedConnection extends Connection {
      * which starts without a tenant; it returns tenant IDs only.
      */
     void beginDueActionScan() throws SQLException;
+
+    /**
+     * Sets no context and allows exactly one statement, the WhatsApp routing lookup (step 2.2). Used for an inbound
+     * webhook before its tenant is known; it returns phone number IDs and tenant IDs only.
+     */
+    void beginWhatsAppRouting() throws SQLException;
+
+    /** Sets no context and allows exactly one statement, parking a delivery with a bad signature (P15). */
+    void beginInvalidSignatureParking() throws SQLException;
+
+    /** Sets no context and allows exactly one statement, parking a delivery for an unknown account (P16). */
+    void beginUnknownAccountParking() throws SQLException;
 }

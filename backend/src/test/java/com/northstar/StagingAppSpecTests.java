@@ -26,10 +26,14 @@ class StagingAppSpecTests {
     private static final Set<String> APP_VARIABLES =
             Set.of("DB_URL", "DB_USER", "DB_PASSWORD", "JOBRUNR_DB_USER", "JOBRUNR_DB_PASSWORD", "SUPABASE_URL");
 
+    /** The WhatsApp webhook's platform secrets (step 2.2): only where the webhook is served. */
+    private static final Set<String> WEBHOOK_VARIABLES =
+            Set.of("NORTHSTAR_WHATSAPP_APP_SECRET", "NORTHSTAR_WHATSAPP_VERIFY_TOKEN");
+
     /** What each component reads, exactly: nothing more reaches it. */
     private static final Map<String, Set<String>> VARIABLES = Map.of(
             "api",
-            APP_VARIABLES,
+            union(APP_VARIABLES, WEBHOOK_VARIABLES),
             "worker",
             union(
                     APP_VARIABLES,
@@ -54,7 +58,9 @@ class StagingAppSpecTests {
             "RESEND_API_KEY",
             "NORTHSTAR_INVITE_TOKEN_KEY",
             "SECRETS_DB_PASSWORD",
-            "NORTHSTAR_CREDENTIAL_KEYS");
+            "NORTHSTAR_CREDENTIAL_KEYS",
+            "NORTHSTAR_WHATSAPP_APP_SECRET",
+            "NORTHSTAR_WHATSAPP_VERIFY_TOKEN");
 
     /** Tenant credentials are read only in the worker (step 2.1b): its login to them, and the keys that decrypt them. */
     private static final Set<String> CREDENTIAL_VARIABLES = Set.of(
@@ -110,6 +116,23 @@ class StagingAppSpecTests {
         assertThat(worker.get("SECRETS_DB_PASSWORD"))
                 .containsEntry("type", "SECRET")
                 .doesNotContainKey("value");
+    }
+
+    @Test
+    void onlyTheApiHoldsTheWebhookSecrets() {
+        components().forEach((name, component) -> {
+            Set<String> present = new TreeSet<>(variables(component).keySet());
+            present.retainAll(WEBHOOK_VARIABLES);
+            if (name.equals("api")) {
+                assertThat(present).as("the api").containsExactlyInAnyOrderElementsOf(WEBHOOK_VARIABLES);
+                WEBHOOK_VARIABLES.forEach(key -> assertThat(variables(component).get(key))
+                        .as(key)
+                        .containsEntry("type", "SECRET")
+                        .doesNotContainKey("value"));
+            } else {
+                assertThat(present).as(name + ": only the api serves webhooks").isEmpty();
+            }
+        });
     }
 
     @Test

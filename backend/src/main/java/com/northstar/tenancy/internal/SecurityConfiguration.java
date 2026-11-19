@@ -13,6 +13,7 @@ import java.util.Map;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
+import org.springframework.core.annotation.Order;
 import org.springframework.http.HttpMethod;
 import org.springframework.http.HttpStatus;
 import org.springframework.http.client.SimpleClientHttpRequestFactory;
@@ -34,9 +35,15 @@ import org.springframework.security.web.util.matcher.RequestMatcher;
 import org.springframework.web.client.RestTemplate;
 
 /**
- * Supabase login (step 1.5). Every request except health needs a valid Supabase access token, verified against
- * Supabase's public signing keys with asymmetric algorithms only; then {@link TenantContextFilter} runs it as the
- * user's active membership. Stateless: no sessions, cookies, form login or CSRF.
+ * Supabase login (step 1.5). Every request except health and the provider webhooks needs a valid Supabase access token,
+ * verified against Supabase's public signing keys with asymmetric algorithms only; then {@link TenantContextFilter} runs
+ * it as the user's active membership. Stateless: no sessions, cookies, form login or CSRF.
+ *
+ * <p>Provider webhooks (step 2.2) have their own chain, checked first, that matches exactly the listed method and path
+ * pairs and nothing else. It permits them without a token: the provider proves itself with a body signature, which the
+ * webhook controller checks before anything else, and the tenant comes from the routing lookup. A bearer token sent to
+ * a webhook is ignored, never verified. Every other path, a different method on a webhook path included, stays on the
+ * authenticated chain.
  */
 @Configuration(proxyBeanMethods = false)
 class SecurityConfiguration {
@@ -53,7 +60,27 @@ class SecurityConfiguration {
             PathPatternRequestMatcher.withDefaults().matcher(HttpMethod.GET, "/api/v1/me"),
             PathPatternRequestMatcher.withDefaults().matcher(HttpMethod.POST, "/api/v1/invites/accept"));
 
+    /** The webhook endpoints: exact method and path pairs (integration-specs.md section 1), outside /api/v1. */
+    static final RequestMatcher WEBHOOK_PATHS = new OrRequestMatcher(
+            PathPatternRequestMatcher.withDefaults().matcher(HttpMethod.GET, "/webhooks/whatsapp"),
+            PathPatternRequestMatcher.withDefaults().matcher(HttpMethod.POST, "/webhooks/whatsapp"));
+
     @Bean
+    @Order(1)
+    SecurityFilterChain webhooks(HttpSecurity http) throws Exception {
+        http.securityMatcher(WEBHOOK_PATHS)
+                .csrf(csrf -> csrf.disable())
+                .sessionManagement(sessions -> sessions.sessionCreationPolicy(SessionCreationPolicy.STATELESS))
+                .httpBasic(basic -> basic.disable())
+                .formLogin(form -> form.disable())
+                .logout(logout -> logout.disable())
+                .requestCache(cache -> cache.disable())
+                .authorizeHttpRequests(requests -> requests.anyRequest().permitAll());
+        return http.build();
+    }
+
+    @Bean
+    @Order(2)
     SecurityFilterChain api(HttpSecurity http, MembershipLookup lookup, ApiErrorMapper errors, ApiErrorWriter writer)
             throws Exception {
         AuthenticationEntryPoint unauthorized =

@@ -2,6 +2,7 @@ package com.northstar.tenancy.internal;
 
 import com.northstar.tenancy.MissingTenantContextException;
 import com.northstar.tenancy.TenantContext;
+import com.northstar.tenancy.WebhookRouting;
 import java.lang.reflect.InvocationHandler;
 import java.lang.reflect.InvocationTargetException;
 import java.lang.reflect.Method;
@@ -43,6 +44,12 @@ import org.springframework.jdbc.datasource.DelegatingDataSource;
  * Accepting an invite works the same way: {@link InviteAcceptance} allows only {@link #INVITE_ACCEPTANCE}. The job
  * sweeper's scan for tenants with due actions sets no context at all and allows only {@link #DUE_ACTION_TENANTS}.
  *
+ * <p>Webhooks (step 2.2) arrive with no token and no tenant. Routing a WhatsApp delivery sets no context and allows only
+ * {@link #WHATSAPP_ROUTING}; parking an unroutable delivery allows only {@link #PARK_INVALID_SIGNATURE} or
+ * {@link #PARK_UNKNOWN_ACCOUNT}, each in its own mode. Storing a routed delivery is a tenant transaction in a webhook
+ * context ({@link TenantContext#isWebhook}): the full context is set, but the only statement allowed is
+ * {@link WebhookRouting#INSERT_WEBHOOK_EVENT}, so a webhook can never read or change anything else in its tenant.
+ *
  * <p>This guards only the app_user datasource. The app_admin datasource (Phase 8) is a separate bean with its own rules.
  */
 public final class TenantGuardDataSource extends DelegatingDataSource {
@@ -61,13 +68,29 @@ public final class TenantGuardDataSource extends DelegatingDataSource {
     /** The one statement allowed in due-action scan mode, calling the allowlisted SECURITY DEFINER function. */
     static final String DUE_ACTION_TENANTS = "select tenant_id from northstar.tenants_with_due_actions()";
 
+    /** The one statement allowed in WhatsApp routing mode: phone number IDs to tenant IDs, nothing else (step 2.2). */
+    static final String WHATSAPP_ROUTING = "select phone_number_id, tenant_id from northstar.whatsapp_tenants(?)";
+
+    /** The one statement allowed in invalid-signature parking mode (P15): metadata only, no payload parameter. */
+    static final String PARK_INVALID_SIGNATURE =
+            "select outcome, unrouted_id from northstar.park_invalid_signature(?, ?)";
+
+    /** The one statement allowed in unknown-account parking mode (P16). */
+    static final String PARK_UNKNOWN_ACCOUNT =
+            "select outcome, unrouted_id from northstar.park_unknown_account(?, ?, ?, ?, cast(? as jsonb))";
+
     /** What the current transaction on a connection may do. */
     private enum Mode {
         NONE(null),
         TENANT(null),
         MEMBERSHIP_LOOKUP(TenantGuardDataSource.MEMBERSHIP_LOOKUP),
         INVITE_ACCEPTANCE(TenantGuardDataSource.INVITE_ACCEPTANCE),
-        DUE_ACTION_SCAN(TenantGuardDataSource.DUE_ACTION_TENANTS);
+        DUE_ACTION_SCAN(TenantGuardDataSource.DUE_ACTION_TENANTS),
+        WHATSAPP_ROUTING(TenantGuardDataSource.WHATSAPP_ROUTING),
+        INVALID_SIGNATURE_PARKING(TenantGuardDataSource.PARK_INVALID_SIGNATURE),
+        UNKNOWN_ACCOUNT_PARKING(TenantGuardDataSource.PARK_UNKNOWN_ACCOUNT),
+        /** A tenant transaction in a webhook context: the full context is set, and only the insert may run. */
+        WEBHOOK_EVENT_INSERT(WebhookRouting.INSERT_WEBHOOK_EVENT);
 
         /** For the single-statement modes: the one statement allowed. */
         private final String onlyStatement;
@@ -147,10 +170,19 @@ public final class TenantGuardDataSource extends DelegatingDataSource {
                     return null;
                 }
                 case "beginDueActionScan" -> {
-                    if (target.getAutoCommit()) {
-                        throw new IllegalStateException("A due-action scan can only run inside a transaction");
-                    }
-                    mode = Mode.DUE_ACTION_SCAN;
+                    beginWithoutContext(Mode.DUE_ACTION_SCAN);
+                    return null;
+                }
+                case "beginWhatsAppRouting" -> {
+                    beginWithoutContext(Mode.WHATSAPP_ROUTING);
+                    return null;
+                }
+                case "beginInvalidSignatureParking" -> {
+                    beginWithoutContext(Mode.INVALID_SIGNATURE_PARKING);
+                    return null;
+                }
+                case "beginUnknownAccountParking" -> {
+                    beginWithoutContext(Mode.UNKNOWN_ACCOUNT_PARKING);
                     return null;
                 }
                 case "prepareStatement" -> {
@@ -187,9 +219,12 @@ public final class TenantGuardDataSource extends DelegatingDataSource {
         }
 
         private void requireTenantTransaction(String what) {
-            if (mode != Mode.TENANT && !isStartupThreadInWindow()) {
-                throw new MissingTenantContextException(what + " refused: no tenant transaction on this connection");
+            if (mode == Mode.TENANT || isStartupThreadInWindow()) return;
+            if (mode == Mode.WEBHOOK_EVENT_INSERT) {
+                throw new MissingTenantContextException(
+                        what + " refused: a webhook context may only store webhook events");
             }
+            throw new MissingTenantContextException(what + " refused: no tenant transaction on this connection");
         }
 
         /**
@@ -277,7 +312,15 @@ public final class TenantGuardDataSource extends DelegatingDataSource {
                 statement.setString(3, context.role().databaseValue());
                 statement.executeQuery().close();
             }
-            mode = Mode.TENANT;
+            mode = context.isWebhook() ? Mode.WEBHOOK_EVENT_INSERT : Mode.TENANT;
+        }
+
+        /** The single-statement modes that set no context at all: routing, parking and the due-action scan. */
+        private void beginWithoutContext(Mode withoutContext) throws SQLException {
+            if (target.getAutoCommit()) {
+                throw new IllegalStateException("A context-free call can only run inside a transaction");
+            }
+            mode = withoutContext;
         }
 
         private void beginUserOnly(UUID userId, Mode userOnlyMode) throws SQLException {
