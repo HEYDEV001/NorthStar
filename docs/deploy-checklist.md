@@ -56,6 +56,12 @@ and rotate secrets on staging: `docs/staging-runbook.md`.
 
 - [ ] Deploys come only from the `deploy-staging` CI job after `backend` and `cross-tenant` pass on `main`; App
       Platform's auto-deploy is off on every component.
+- [ ] The deploy is opt-in: the repository variable `STAGING_DEPLOY_ENABLED` is `true` only while the app exists.
+      Unset, `deploy-staging` is skipped and the required checks still run (`DeployWorkflowTests`). It is a repository
+      variable, not an environment one, because the job's condition is decided before it joins its environment.
+- [ ] Staging, 19 November 2026: hosting paused for budget, switch unset. Verified so far: `roles.sql` and
+      `verify.sql` (18 PASS), pooler logins for `migrator`, `app_user` and `jobrunr_user`, and the deploy token's
+      registry login and image push. Resume with `docs/staging-runbook.md`, First deploy, step 7.
 - [ ] The GitHub environment (`staging`) allows only the `main` branch, and holds `DIGITALOCEAN_ACCESS_TOKEN`: a
       custom-scoped token (app read and update, registry read, update and delete), 90-day expiry, rotated before it
       expires.
