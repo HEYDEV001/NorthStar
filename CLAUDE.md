@@ -71,7 +71,8 @@ docker exec -i supabase_db_NorthStar psql -U postgres -d postgres -v ON_ERROR_ST
 cd backend && ./mvnw initialize flyway:migrate   # as migrator, against the DB in .env.local (initialize loads it)
 docker exec -i supabase_db_NorthStar psql -U postgres -d postgres < db/bootstrap/verify.sql   # PASS/FAIL per check
 
-# staging deploys: only the deploy-staging CI job, after backend and cross-tenant pass on main (docs/staging-runbook.md)
+# staging deploys: only the deploy-staging CI job, after backend and cross-tenant pass on main, and only while the
+# repository variable STAGING_DEPLOY_ENABLED is 'true' (paused for budget; docs/staging-runbook.md)
 
 # end to end (staging)
 cd frontend && npm run e2e                 # Playwright

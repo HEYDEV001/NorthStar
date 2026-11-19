@@ -76,10 +76,13 @@ jobs:
   # successful deploy it deletes every image tag but the deployed one and the one that ran before, starts registry
   # garbage collection and reports storage (the Starter registry holds 500 MiB). The DigitalOcean token is a secret of
   # the staging environment, which only main may use.
+  # Opt-in: it runs only while the repository variable STAGING_DEPLOY_ENABLED is 'true'. Unset (staging hosting is
+  # paused), the job shows as skipped. A repository variable, not one on the staging environment: this `if` is decided
+  # before the job joins its environment. DeployWorkflowTests requires every one of these conditions.
   deploy-staging:
     name: deploy-staging
     needs: [backend, cross-tenant]
-    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main' && vars.STAGING_DEPLOY_ENABLED == 'true'
     runs-on: ubuntu-latest
     timeout-minutes: 30
     environment: staging

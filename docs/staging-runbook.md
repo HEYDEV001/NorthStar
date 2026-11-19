@@ -3,6 +3,28 @@
 How Northstar's staging backend is deployed, rolled back and kept secret (step 1.15). Settings every environment must
 have: `docs/deploy-checklist.md`. Database roles: `db/bootstrap/README.md`.
 
+## Status (19 November 2026)
+
+**Staging hosting is paused for budget.** The pipeline is built and verified up to the first deploy; the App Platform
+app has not been created, and `deploy-staging` is switched off (`STAGING_DEPLOY_ENABLED` unset), so on `main` it shows
+as skipped. `backend` and `cross-tenant` run on every pull request and push as before.
+
+Verified on the real staging accounts (First deploy, steps 1 to 6):
+
+- `roles.sql` ran on the Supabase staging project, and `verify.sql` printed 18 PASS lines and no FAIL;
+- `migrator`, `app_user` and `jobrunr_user` each logged in through the pooler;
+- the deploy token logged in to the container registry and pushed an image.
+
+Not yet verified, because they need the app: the pre-deploy job and a failed deploy leaving the old version running,
+registry tag deletion and garbage collection with the token's scopes, and everything from step 7 on.
+
+**To resume:** First deploy, step 7. Before it:
+
+- set `STAGING_DEPLOY_ENABLED` to `true` (step 4);
+- check that the deploy token has not expired (90 days from creation); if it has, rotate it first (Rotating secrets);
+- step 7 needs an `app-<sha>` tag in the registry. If the one pushed in step 6 is gone, or you want a current commit,
+  repeat step 6 first.
+
 ## What runs where
 
 | Piece | Where | Notes |
@@ -12,7 +34,7 @@ have: `docs/deploy-checklist.md`. Database roles: `db/bootstrap/README.md`.
 | `worker` | Same app, 1 × 1 vCPU / 1 GiB | `NORTHSTAR_WORKER_ENABLED=true`; no public route |
 | `migrate` pre-deploy job | Same app, 1 vCPU / 512 MiB, about a minute per deploy | Applies `db/migrations` as `migrator` before the new version starts |
 | Image | DigitalOcean Container Registry, Starter plan (500 MiB, 1 repository), repository `northstar`, tags `app-<commit sha>` | One image for all three components; the deploy keeps 2 tags |
-| Deploy | GitHub Actions job `deploy-staging` | Only on `main`, only after `backend` and `cross-tenant` pass |
+| Deploy | GitHub Actions job `deploy-staging` | Only on `main`, only after `backend` and `cross-tenant` pass, only while the repository variable `STAGING_DEPLOY_ENABLED` is `true` |
 
 The components and their variables are declared in `.do/staging.app.yaml`; `StagingAppSpecTests` checks the rules, and
 the deploy job fails if the live app drifts from the file.
@@ -77,9 +99,15 @@ and nothing is paused. To invite other people, verify a staging sub-domain in Re
    - Deployment branches and tags: Selected branches → add `main`.
    - Environment secret `DIGITALOCEAN_ACCESS_TOKEN`: paste the token.
    - Environment variables: `DO_REGISTRY` = the registry's name, `DO_APP_NAME` = `northstar-staging`.
+   - **Turn deploys on** (do this before step 6): repo Settings → Secrets and variables → Actions → Variables → New
+     repository variable `STAGING_DEPLOY_ENABLED` = `true`. Without it, `deploy-staging` shows as skipped and nothing is
+     deployed. It must be a repository variable, not one on the `staging` environment: the job's condition is decided
+     before the job joins its environment, so GitHub does not promise that an environment's variables are visible to
+     it.
 5. **Resend:** create the account and an API key with Sending access. Copy it once, into step 7.
-6. **Merge the pull request.** On `main`, `deploy-staging` pushes the image `app-<sha>` and then fails with "App
-   northstar-staging does not exist yet". That is expected once. Note the `<sha>` from the job.
+6. **Run the deploy job once.** With the switch on, push to `main` (or Actions → the latest CI run on `main` → Re-run
+   all jobs). `deploy-staging` pushes the image `app-<sha>` and then fails with "App northstar-staging does not exist
+   yet". That is expected once. Note the `<sha>` from the job.
 7. **Create the app.** DigitalOcean → Create → App Platform → Container image → DigitalOcean Container Registry →
    repository `northstar`, tag `app-<sha>`; region Bangalore; project `Northstar`. Then in the app: Settings → App Spec
    → Edit, paste `.do/staging.app.yaml` with every `app-placeholder` replaced by `app-<sha>`, and Save. If the editor
@@ -98,7 +126,7 @@ and nothing is paused. To invite other people, verify a staging sub-domain in Re
 
 ## Deploying
 
-Merge to `main`. When `backend` and `cross-tenant` pass, `deploy-staging`:
+Merge to `main`. When `backend` and `cross-tenant` pass, and while `STAGING_DEPLOY_ENABLED` is `true`, `deploy-staging`:
 
 1. waits for any registry garbage collection to finish (the registry is read-only while one runs);
 2. builds the image from that commit and pushes it as `app-<sha>`;
@@ -221,3 +249,11 @@ in DigitalOcean or GitHub uses it.
 - **Frontend phase:** `NORTHSTAR_APP_URL` becomes the staging frontend's address; Supabase Auth's Site URL and Redirect
   URLs, custom SMTP and the backend's CORS origin are set then (`docs/deploy-checklist.md`).
 - **Production:** its own Supabase project, app, registry tags, token and secrets; nothing is shared with staging.
+
+## Pausing staging
+
+To stop deploying (for example to save cost), delete the repository variable `STAGING_DEPLOY_ENABLED` or set it to
+anything but `true`: `deploy-staging` then shows as skipped, and `backend` and `cross-tenant` are unaffected. To stop
+paying for the app too, destroy it in DigitalOcean (App → Settings → Destroy); the Supabase project, the registry and
+the GitHub environment can stay. Resuming starts again at First deploy, step 6 (or step 7 if a recent image is in the
+registry).
