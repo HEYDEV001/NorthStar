@@ -50,7 +50,8 @@ class BootstrapVerifyTests {
         for (String[] wrong : new String[][] {
             {"alter role migrator nobypassrls", "migrator has BYPASSRLS"},
             {"alter role app_user bypassrls", "app_user does not have BYPASSRLS"},
-            {"alter role jobrunr_user bypassrls", "jobrunr_user does not have BYPASSRLS"}
+            {"alter role jobrunr_user bypassrls", "jobrunr_user does not have BYPASSRLS"},
+            {"alter role secrets_user bypassrls", "secrets_user does not have BYPASSRLS"}
         }) {
             Function<JdbcClient, List<Line>> verifyAfterwards = jdbc -> {
                 jdbc.sql(wrong[0]).update();

@@ -23,7 +23,12 @@ registry tag deletion and garbage collection with the token's scopes, and everyt
 - set `STAGING_DEPLOY_ENABLED` to `true` (step 4);
 - check that the deploy token has not expired (90 days from creation); if it has, rotate it first (Rotating secrets);
 - step 7 needs an `app-<sha>` tag in the registry. If the one pushed in step 6 is gone, or you want a current commit,
-  repeat step 6 first.
+  repeat step 6 first;
+- re-run `roles.sql` and then `verify.sql` on the staging project (`db/bootstrap/README.md`, Commands (hosted)).
+  Since step 2.1a they also create and check the `secrets_user` role and the `secrets` and `ingest` schemas, which the
+  migrations need; the 18 PASS lines above predate them. In the same session, turn on `secrets_user`'s login and set
+  its password with `\password secrets_user`, then store it as the worker's encrypted variable (step 2.1b adds the
+  variable to `.do/staging.app.yaml`).
 
 ## What runs where
 

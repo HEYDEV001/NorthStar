@@ -29,6 +29,8 @@ and rotate secrets on staging: `docs/staging-runbook.md`.
       does. Passwords go in `DB_PASSWORD`, `JOBRUNR_DB_PASSWORD` and `FLYWAY_PASSWORD`.
 - [ ] Production: `sslmode=verify-full` with Supabase's CA certificate, once it is confirmed to validate the pooler.
 - [ ] `jobrunr_user` has a login and its own generated password (`JOBRUNR_DB_USER`, `JOBRUNR_DB_PASSWORD`); JobRunr also uses the transaction pooler (it keeps no session state).
+- [ ] `secrets_user` has a login and its own generated password, set only on the worker (never on the api or the
+      migrate job). It is the only role that can read tenant credentials (`data-model.md` section 9).
 - [ ] Connections fit the plan's pooler client limit: every container opens up to 10 app connections (Hikari's default) plus up to 5 for JobRunr, so 15 per container; at launch (2 API + 1 worker) that is 45, plus Flyway's and operators' sessions. Staging (1 API + 1 worker) uses up to 30.
 - [ ] Migrations run only in the deploy's pre-deploy job (`migrate`), as `migrator`. The migrator's credentials are
       set on that job only, never on the api or worker.

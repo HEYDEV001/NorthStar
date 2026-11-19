@@ -230,10 +230,11 @@ class MigrationRunnerTests {
         return DriverManager.getConnection(urlOf(database), postgres.getUsername(), postgres.getPassword());
     }
 
-    /** Everything in the northstar and jobrunr schemas that migrations create, one sorted line per object. */
+    /** Everything in the schemas that migrations build (northstar, jobrunr, secrets, ingest), one line per object. */
     private List<String> schemaOf(String database) throws SQLException {
         return lines(database, """
-                with s as (select oid, nspname from pg_namespace where nspname in ('northstar', 'jobrunr'))
+                with s as (select oid, nspname from pg_namespace
+                           where nspname in ('northstar', 'jobrunr', 'secrets', 'ingest'))
                 select 'schema ' || n.nspname || ' owner=' || pg_get_userbyid(n.nspowner)
                        || ' acl=' || coalesce(n.nspacl::text, '')
                 from pg_namespace n join s on s.oid = n.oid
@@ -263,7 +264,7 @@ class MigrationRunnerTests {
                 select 'policy ' || schemaname || '.' || tablename || '.' || policyname || ' ' || permissive
                        || ' ' || roles::text || ' ' || cmd || ' using=' || coalesce(qual, '')
                        || ' check=' || coalesce(with_check, '')
-                from pg_policies where schemaname in ('northstar', 'jobrunr')
+                from pg_policies where schemaname in ('northstar', 'jobrunr', 'secrets', 'ingest')
                 union all
                 select 'function ' || s.nspname || '.' || p.proname || '(' || pg_get_function_identity_arguments(p.oid)
                        || ') owner=' || pg_get_userbyid(p.proowner) || ' secdef=' || p.prosecdef

@@ -14,6 +14,7 @@ import org.junit.jupiter.api.BeforeAll;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.TestInstance;
 import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.beans.factory.annotation.Qualifier;
 import org.springframework.boot.test.context.SpringBootTest;
 import org.springframework.context.annotation.Import;
 import org.springframework.jdbc.core.simple.JdbcClient;
@@ -21,8 +22,9 @@ import org.springframework.jdbc.core.simple.JdbcClient;
 /**
  * The cross-tenant release gate (data-model.md section 12, step 1.14): two tenants, one row of every tenant table each,
  * and for every role (admin, staff, the system actor, and no context at all) tenant A sees nothing of tenant B and can
- * change nothing of it, through the real app_user login with RLS. Driven by the catalogue: every table with tenant_id
- * in the gate's schemas is checked, and a table without a fixture fails the suite by name.
+ * change nothing of it, through the real login with RLS: app_user, or for a table in an isolated schema that schema's
+ * own login (secrets_user for secrets, step 2.1a). Driven by the catalogue: every table with tenant_id in the gate's
+ * schemas is checked, and a table without a fixture fails the suite by name.
  */
 @SpringBootTest
 @Import(TestcontainersConfiguration.class)
@@ -32,6 +34,7 @@ class CrossTenantLeakTests {
     private final PostgresAdmin postgres;
     private final JdbcClient admin;
     private final AppUserDatabase app;
+    private final AppUserDatabase secretsUser;
     private final TestData data;
 
     private TenantFixtures.Side a;
@@ -39,10 +42,14 @@ class CrossTenantLeakTests {
     private final Map<String, UUID> rowsOfA = new HashMap<>();
     private final Map<String, UUID> rowsOfB = new HashMap<>();
 
-    CrossTenantLeakTests(@Autowired PostgresAdmin postgres, @Autowired AppUserDatabase app) {
+    CrossTenantLeakTests(
+            @Autowired PostgresAdmin postgres,
+            @Autowired AppUserDatabase app,
+            @Autowired @Qualifier("secretsUserDatabase") AppUserDatabase secretsUser) {
         this.postgres = postgres;
         this.admin = postgres.jdbc();
         this.app = app;
+        this.secretsUser = secretsUser;
         this.data = new TestData(postgres);
     }
 
@@ -92,11 +99,12 @@ class CrossTenantLeakTests {
     void P10_withoutAnyContextNoTenantTableShowsOrChangesAnything() {
         List<String> leaks = new ArrayList<>();
         for (String table : seededTables()) {
-            long visible = app.withoutContext(jdbc -> count(jdbc, "select count(*) from " + table));
+            AppUserDatabase login = loginFor(table);
+            long visible = login.withoutContext(jdbc -> count(jdbc, "select count(*) from " + table));
             if (visible != 0) leaks.add(table + ": " + visible + " rows visible without a tenant context");
-            String write = attemptWrites(table, app::withoutContext, "true");
+            String write = attemptWrites(table, login::withoutContext, "true");
             if (write != null) leaks.add(table + " without context: " + write);
-            String insert = attemptInsertIntoB(table, app::withoutContext);
+            String insert = attemptInsertIntoB(table, login::withoutContext);
             if (insert != null) leaks.add(table + " without context: " + insert);
         }
         long tenants = app.withoutContext(jdbc -> count(jdbc, "select count(*) from northstar.tenants"));
@@ -160,21 +168,24 @@ class CrossTenantLeakTests {
         for (String table : seededTables()) {
             String who = table + " as " + actor.role() + ": ";
             long own = asA(
+                    table,
                     actor,
                     jdbc -> count(jdbc, "select count(*) from " + table + " where id = '" + rowsOfA.get(table) + "'"));
             if (own != 1) leaks.add(who + "cannot see its own tenant's row (positive control: is RLS evaluating?)");
             long foreign = asA(
+                    table,
                     actor,
                     jdbc -> count(
                             jdbc, "select count(*) from " + table + " where tenant_id <> '" + a.tenantId() + "'"));
             if (foreign != 0) leaks.add(who + "sees " + foreign + " rows of other tenants");
             long bRow = asA(
+                    table,
                     actor,
                     jdbc -> count(jdbc, "select count(*) from " + table + " where id = '" + rowsOfB.get(table) + "'"));
             if (bRow != 0) leaks.add(who + "sees tenant B's row");
-            String write = attemptWrites(table, work -> asA(actor, work), "tenant_id = '" + b.tenantId() + "'");
+            String write = attemptWrites(table, work -> asA(table, actor, work), "tenant_id = '" + b.tenantId() + "'");
             if (write != null) leaks.add(who + write);
-            String insert = attemptInsertIntoB(table, work -> asA(actor, work));
+            String insert = attemptInsertIntoB(table, work -> asA(table, actor, work));
             if (insert != null) leaks.add(who + insert);
         }
         return leaks;
@@ -235,6 +246,19 @@ class CrossTenantLeakTests {
         return app.as(a.tenantId(), actor.user(), actor.role(), work);
     }
 
+    /** As {@link #asA(Actor, Function)}, through the login that may use this table's schema. */
+    private <T> T asA(String table, Actor actor, Function<JdbcClient, T> work) {
+        return loginFor(table).as(a.tenantId(), actor.user(), actor.role(), work);
+    }
+
+    /** secrets_user for the secrets schema, app_user for every other (the gate's isolated-schema roles). */
+    private AppUserDatabase loginFor(String table) {
+        String role = RlsReleaseGate.NORTHSTAR.tenantRole(table);
+        if (role.equals(app.login())) return app;
+        if (role.equals(secretsUser.login())) return secretsUser;
+        throw new IllegalStateException(table + ": no test login for " + role);
+    }
+
     private List<Actor> actors() {
         return List.of(
                 new Actor("admin", a.adminUser()),
@@ -261,14 +285,15 @@ class CrossTenantLeakTests {
         return tenantTables().stream().filter(rowsOfA::containsKey).toList();
     }
 
-    /** A column app_user may update, or null if none (then the update is refused outright). */
+    /** A column the table's login may update, or null if none (then the update is refused outright). */
     private String updatableColumn(String table) {
         return admin.sql("""
                         select attname from pg_attribute
                         where attrelid = cast(:table as regclass) and attnum > 0 and not attisdropped
-                          and has_column_privilege('app_user', attrelid, attname, 'UPDATE')
+                          and has_column_privilege(:role, attrelid, attname, 'UPDATE')
                         order by attnum limit 1""")
                 .param("table", table)
+                .param("role", RlsReleaseGate.NORTHSTAR.tenantRole(table))
                 .query(String.class)
                 .optional()
                 .orElse(null);

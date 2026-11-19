@@ -20,9 +20,10 @@ final class TenantFixtures {
     record Side(UUID tenantId, UUID adminUser, UUID adminMembership, UUID staffUser, UUID staffMembership) {}
 
     /** Table name → seed one row for this side, returning its id. */
-    static final Map<String, BiFunction<Side, Seeding, UUID>> FIXTURES = Map.of(
-            "northstar.memberships", (side, seed) -> side.staffMembership(),
-            "northstar.invites",
+    static final Map<String, BiFunction<Side, Seeding, UUID>> FIXTURES = Map.ofEntries(
+            Map.entry("northstar.memberships", (side, seed) -> side.staffMembership()),
+            Map.entry(
+                    "northstar.invites",
                     (side, seed) -> seed.returningId(
                             """
                     insert into northstar.invites (tenant_id, email, role, token_hash, invited_by)
@@ -31,36 +32,58 @@ final class TenantFixtures {
                                     "t", side.tenantId(),
                                     "email", "fixture-" + UUID.randomUUID() + "@example.com",
                                     "hash", (UUID.randomUUID().toString() + UUID.randomUUID()).replace("-", ""),
-                                    "by", side.adminMembership())),
-            "northstar.audit_log",
+                                    "by", side.adminMembership()))),
+            Map.entry(
+                    "northstar.audit_log",
                     (side, seed) -> seed.returningId("""
                     insert into northstar.audit_log (tenant_id, actor_user_id, action)
-                    values (:t, :actor, 'fixture.seeded') returning id""", Map.of("t", side.tenantId(), "actor", side.adminUser())),
-            "northstar.staff_skills",
+                    values (:t, :actor, 'fixture.seeded') returning id""", Map.of("t", side.tenantId(), "actor", side.adminUser()))),
+            Map.entry(
+                    "northstar.staff_skills",
                     (side, seed) -> seed.returningId("""
                     insert into northstar.staff_skills (tenant_id, membership_id, skill)
-                    values (:t, :m, 'drone') returning id""", Map.of("t", side.tenantId(), "m", side.staffMembership())),
-            "northstar.staff_leave",
+                    values (:t, :m, 'drone') returning id""", Map.of("t", side.tenantId(), "m", side.staffMembership()))),
+            Map.entry(
+                    "northstar.staff_leave",
                     (side, seed) -> seed.returningId(
                             """
                     insert into northstar.staff_leave (tenant_id, membership_id, starts_on, ends_on, created_by)
                     values (:t, :m, current_date, current_date + 1, :by) returning id""",
-                            Map.of("t", side.tenantId(), "m", side.staffMembership(), "by", side.adminMembership())),
-            "northstar.actions",
+                            Map.of("t", side.tenantId(), "m", side.staffMembership(), "by", side.adminMembership()))),
+            Map.entry(
+                    "northstar.actions",
                     (side, seed) ->
                             seed.returningId("""
                     insert into northstar.actions (tenant_id, type, status, idempotency_key, mode, next_attempt_at)
-                    values (:t, 'test.fake', 'pending', :key, 'automatic', now() + interval '1 day') returning id""", Map.of("t", side.tenantId(), "key", "fixture:" + UUID.randomUUID())),
-            "northstar.contacts", (side, seed) -> seed.data().contact(side.tenantId()),
-            "northstar.workflows", (side, seed) -> seed.returningId("""
-                    insert into northstar.workflows (tenant_id, name) values (:t, 'Fixture workflow') returning id""", Map.of("t", side.tenantId())),
-            "northstar.workflow_versions", (side, seed) -> seed.data().workflowVersion(side.tenantId()),
-            "northstar.leads",
+                    values (:t, 'test.fake', 'pending', :key, 'automatic', now() + interval '1 day') returning id""", Map.of("t", side.tenantId(), "key", "fixture:" + UUID.randomUUID()))),
+            Map.entry("northstar.contacts", (side, seed) -> seed.data().contact(side.tenantId())),
+            Map.entry("northstar.workflows", (side, seed) -> seed.returningId("""
+                    insert into northstar.workflows (tenant_id, name) values (:t, 'Fixture workflow') returning id""", Map.of("t", side.tenantId()))),
+            Map.entry("northstar.workflow_versions", (side, seed) -> seed.data().workflowVersion(side.tenantId())),
+            Map.entry(
+                    "northstar.leads",
                     (side, seed) -> seed.data()
                             .lead(
                                     side.tenantId(),
                                     seed.data().workflowVersion(side.tenantId()),
-                                    side.staffMembership()));
+                                    side.staffMembership())),
+            // Step 2.1a. The credential is checked through secrets_user, the only login that may use its schema.
+            Map.entry(
+                    "secrets.integration_credentials",
+                    (side, seed) -> seed.data().credential(side.tenantId())),
+            Map.entry(
+                    "northstar.integrations",
+                    (side, seed) -> seed.returningId(
+                            """
+                    insert into northstar.integrations (tenant_id, provider, status, credential_id)
+                    values (:t, 'whatsapp', 'connected', :c) returning id""", Map.of("t", side.tenantId(), "c", seed.data().credential(side.tenantId())))),
+            Map.entry("northstar.whatsapp_accounts", (side, seed) -> seed.data().whatsAppAccount(side.tenantId())),
+            Map.entry(
+                    "northstar.webhook_events",
+                    (side, seed) -> seed.returningId(
+                            """
+                    insert into northstar.webhook_events (tenant_id, provider, provider_event_id, payload)
+                    values (:t, 'whatsapp', :event, '{}') returning id""", Map.of("t", side.tenantId(), "event", "wamid.fixture-" + UUID.randomUUID()))));
 
     /** What a fixture seeds with: admin SQL (bypassing RLS) and the shared test data helpers. */
     record Seeding(JdbcClient admin, TestData data) {

@@ -9,6 +9,7 @@ import org.springframework.boot.flyway.autoconfigure.FlywayMigrationStrategy;
 import org.springframework.boot.jdbc.autoconfigure.JdbcConnectionDetails;
 import org.springframework.boot.test.context.TestConfiguration;
 import org.springframework.context.annotation.Bean;
+import org.springframework.context.annotation.Primary;
 import org.springframework.test.context.DynamicPropertyRegistrar;
 import org.testcontainers.postgresql.PostgreSQLContainer;
 import org.testcontainers.utility.DockerImageName;
@@ -51,12 +52,14 @@ public class TestcontainersConfiguration {
         };
     }
 
-    /** Throwaway passwords for this test run's migrator, app_user and jobrunr_user logins. */
-    record TestLogins(String migratorPassword, String appUserPassword, String jobRunrPassword) {}
+    /** Throwaway passwords for this test run's migrator, app_user, jobrunr_user and secrets_user logins. */
+    record TestLogins(
+            String migratorPassword, String appUserPassword, String jobRunrPassword, String secretsUserPassword) {}
 
     @Bean
     TestLogins testLogins() {
         return new TestLogins(
+                UUID.randomUUID().toString(),
                 UUID.randomUUID().toString(),
                 UUID.randomUUID().toString(),
                 UUID.randomUUID().toString());
@@ -99,6 +102,7 @@ public class TestcontainersConfiguration {
                 DatabaseBootstrap.enableLogin(admin, "migrator", logins.migratorPassword());
                 DatabaseBootstrap.enableLogin(admin, "app_user", logins.appUserPassword());
                 DatabaseBootstrap.enableLogin(admin, "jobrunr_user", logins.jobRunrPassword());
+                DatabaseBootstrap.enableLogin(admin, "secrets_user", logins.secretsUserPassword());
             } catch (SQLException e) {
                 throw new IllegalStateException("Database bootstrap failed", e);
             }
@@ -111,8 +115,18 @@ public class TestcontainersConfiguration {
     }
 
     @Bean
+    @Primary
     AppUserDatabase appUserDatabase(PostgreSQLContainer postgres, TestLogins logins) {
-        return new AppUserDatabase(postgres, logins.appUserPassword());
+        return new AppUserDatabase(postgres, "app_user", logins.appUserPassword());
+    }
+
+    /**
+     * The worker's credential login (step 2.1a), the only role that may use the secrets schema. Inject it with
+     * {@code @Qualifier("secretsUserDatabase")}.
+     */
+    @Bean
+    AppUserDatabase secretsUserDatabase(PostgreSQLContainer postgres, TestLogins logins) {
+        return new AppUserDatabase(postgres, "secrets_user", logins.secretsUserPassword());
     }
 
     @Bean

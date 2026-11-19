@@ -84,6 +84,34 @@ public final class TestData {
         return version;
     }
 
+    /**
+     * A stored credential in the secrets schema (step 2.1a). The bytes are random, not a real ciphertext: the schema only
+     * sees bytes and a key ID, and the cipher arrives in step 2.1b.
+     */
+    public UUID credential(UUID tenant) {
+        byte[] notARealSecret = new byte[48];
+        new java.security.SecureRandom().nextBytes(notARealSecret);
+        return admin.sql("""
+                        insert into secrets.integration_credentials (tenant_id, provider, encrypted_secret, key_id)
+                        values (:tenant, 'whatsapp', :bytes, 'test-key') returning id""")
+                .param("tenant", tenant)
+                .param("bytes", notARealSecret)
+                .query(UUID.class)
+                .single();
+    }
+
+    /** A WhatsApp account with a random phone number ID, which is unique across tenants. */
+    public UUID whatsAppAccount(UUID tenant) {
+        return admin.sql("""
+                        insert into northstar.whatsapp_accounts (tenant_id, waba_id, phone_number_id)
+                        values (:tenant, :waba, :phone) returning id""")
+                .param("tenant", tenant)
+                .param("waba", "waba-" + UUID.randomUUID())
+                .param("phone", "pn-" + UUID.randomUUID())
+                .query(UUID.class)
+                .single();
+    }
+
     /** An open lead for a new contact on the given version, assigned to the membership (null: unassigned). */
     public UUID lead(UUID tenant, UUID version, UUID assignedMembership) {
         return admin.sql("""

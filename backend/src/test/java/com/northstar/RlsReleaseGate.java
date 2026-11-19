@@ -22,16 +22,19 @@ record RlsReleaseGate(
         Map<String, Set<String>> lifecycleTables,
         Map<String, Set<String>> columnRestrictedUpdates,
         Set<String> securityDefinerFunctions,
-        Map<String, String> isolatedSchemas) {
+        Map<String, String> isolatedSchemas,
+        Set<String> adminReadSchemas) {
 
     static final RlsReleaseGate NORTHSTAR = new RlsReleaseGate(
-            // Schemas the gate scans. Add ingest and secrets here if Phase 2 adopts them.
-            List.of("northstar", "jobrunr"),
+            // Schemas the gate scans: Northstar's own, JobRunr's, tenant credentials and unrouted webhooks (step 2.1a).
+            List.of("northstar", "jobrunr", "secrets", "ingest"),
             // Platform-wide tables with no tenant_id, each with its exact RLS policies (see policy(...) for the
             // format). An empty set means no policies: the app roles have no access. plans joins when created.
-            // JobRunr's tables have no RLS; only jobrunr_user may use them (see isolatedSchemas below).
+            // JobRunr's tables have no RLS; only jobrunr_user may use them (see isolatedSchemas below). Unrouted
+            // webhooks have no tenant; only app_admin may read them (see adminReadSchemas below).
             Map.of(
                     "northstar.flyway_schema_history", Set.of(),
+                    "ingest.unrouted_webhooks", Set.of(),
                     "jobrunr.jobrunr_migrations", Set.of(),
                     "jobrunr.jobrunr_jobs", Set.of(),
                     "jobrunr.jobrunr_recurring_jobs", Set.of(),
@@ -103,7 +106,7 @@ record RlsReleaseGate(
                                     "last_error_code",
                                     "approver_membership_id",
                                     "approved_at"),
-                    "northstar.webhook_events", Set.of(),
+                    "northstar.webhook_events", Set.of("processed_at", "error"),
                     "northstar.payments", Set.of(),
                     "northstar.invoices", Set.of(),
                     "northstar.refunds", Set.of()),
@@ -125,7 +128,23 @@ record RlsReleaseGate(
                                     "billing_address",
                                     "approval_mode",
                                     "quiet_hours"),
-                    "northstar.user_profiles", Set.of("full_name", "phone", "avatar_path")),
+                    "northstar.user_profiles", Set.of("full_name", "phone", "avatar_path"),
+                    "northstar.integrations",
+                            Set.of(
+                                    "status",
+                                    "account_label",
+                                    "scopes",
+                                    "credential_id",
+                                    "last_success_at",
+                                    "last_error_code",
+                                    "last_error_at"),
+                    "northstar.whatsapp_accounts",
+                            Set.of(
+                                    "display_phone",
+                                    "display_name",
+                                    "quality_rating",
+                                    "messaging_limit",
+                                    "verified_at")),
             // SECURITY DEFINER functions, as "schema.name(argument types)". Each must also pin search_path and be
             // executable by app_user only.
             Set.of(
@@ -135,12 +154,16 @@ record RlsReleaseGate(
                     "northstar.tenants_with_due_actions()",
                     "northstar.set_invite_token(p_invite_id uuid, p_token_hash text)"),
             // Schemas that belong to one login role: no other app or browser role may use the schema or anything in
-            // it, and that role may use no other scanned schema.
-            Map.of("jobrunr", "jobrunr_user"));
+            // it, and that role may use no other scanned schema. A tenant table in one has its tenant_isolation policy
+            // for that role instead of app_user.
+            Map.of("jobrunr", "jobrunr_user", "secrets", "secrets_user"),
+            // Schemas only app_admin may read: it has usage and select, nothing more, and every other app or browser
+            // role has nothing at all (writes go through allowlisted SECURITY DEFINER functions).
+            Set.of("ingest"));
 
-    /** Every role that must stay out of a schema it does not own (see isolatedSchemas). */
+    /** Every role that must stay out of a schema it does not own (see isolatedSchemas and adminReadSchemas). */
     private static final List<String> APP_AND_BROWSER_ROLES =
-            List.of("app_user", "app_admin", "jobrunr_user", "anon", "authenticated", "public");
+            List.of("app_user", "app_admin", "jobrunr_user", "secrets_user", "anon", "authenticated", "public");
 
     /** The tenant_isolation expression exactly as Postgres stores it for the policy in data-model.md section 12. */
     static final String TENANT_ISOLATION_EXPRESSION =
@@ -193,6 +216,7 @@ record RlsReleaseGate(
         checkColumnRestrictedTables(jdbc, violations);
         checkSecurityDefinerFunctions(jdbc, violations);
         checkIsolatedSchemas(jdbc, violations);
+        checkAdminReadSchemas(jdbc, violations);
         return new ArrayList<>(violations);
     }
 
@@ -221,12 +245,13 @@ record RlsReleaseGate(
         Set<String> declared = tenantTablePolicies.getOrDefault(table, Set.of());
         Set<String> found = new TreeSet<>();
         boolean tenantIsolationFound = false;
+        String tenantRole = tenantRole(table);
         for (Map<String, Object> policy : policies(jdbc, table)) {
             if ("tenant_isolation".equals(policy.get("policyname"))) {
                 tenantIsolationFound = true;
                 boolean exact = "PERMISSIVE".equals(policy.get("permissive"))
                         && "ALL".equals(policy.get("cmd"))
-                        && "{app_user}".equals(policy.get("roles"))
+                        && ("{" + tenantRole + "}").equals(policy.get("roles"))
                         && TENANT_ISOLATION_EXPRESSION.equals(policy.get("qual"))
                         && TENANT_ISOLATION_EXPRESSION.equals(policy.get("with_check"));
                 if (!exact) violations.add(table + ": tenant_isolation policy differs from data-model.md section 12");
@@ -242,6 +267,11 @@ record RlsReleaseGate(
         for (String policy : declared) {
             if (!found.contains(policy)) violations.add(table + ": declared policy missing: " + policy);
         }
+    }
+
+    /** The role a tenant table's tenant_isolation policy is for: its isolated schema's role, or app_user. */
+    String tenantRole(String table) {
+        return isolatedSchemas.getOrDefault(table.substring(0, table.indexOf('.')), "app_user");
     }
 
     private void checkTablesWithoutTenantId(JdbcClient jdbc, Set<String> violations) {
@@ -435,6 +465,32 @@ record RlsReleaseGate(
                 if (!other.equals(schema)) checkNoAccess(jdbc, owner, other, violations);
             }
         });
+    }
+
+    /**
+     * An admin-read schema is read only by app_admin: it may use the schema and select from its tables, with no other
+     * privilege on either, and every other app or browser role has none at all.
+     */
+    private void checkAdminReadSchemas(JdbcClient jdbc, Set<String> violations) {
+        for (String schema : adminReadSchemas) {
+            for (String role : APP_AND_BROWSER_ROLES) {
+                if (!role.equals("app_admin")) checkNoAccess(jdbc, role, schema, violations);
+            }
+            boolean creates = jdbc.sql("select has_schema_privilege('app_admin', :schema, 'CREATE')")
+                    .param("schema", schema)
+                    .query(Boolean.class)
+                    .single();
+            if (creates) violations.add(schema + ": app_admin may create objects in this schema");
+            jdbc.sql("""
+                            select n.nspname || '.' || c.relname || ': app_admin has ' || p
+                            from pg_class c
+                            join pg_namespace n on n.oid = c.relnamespace
+                            cross join unnest(array['INSERT', 'UPDATE', 'DELETE', 'TRUNCATE', 'REFERENCES', 'TRIGGER']) p
+                            where n.nspname = :schema and c.relkind in ('r', 'p', 'v', 'm')
+                              and (has_table_privilege('app_admin', c.oid, p)
+                                   or (p in ('INSERT', 'UPDATE', 'REFERENCES')
+                                       and has_any_column_privilege('app_admin', c.oid, p)))""").param("schema", schema).query(String.class).list().forEach(violations::add);
+        }
     }
 
     private static void checkNoAccess(JdbcClient jdbc, String role, String schema, Set<String> violations) {

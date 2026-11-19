@@ -6,7 +6,9 @@ Flyway owns the schema. The Supabase CLI's own migrations are turned off (`supab
 
 - One file per change: `V{yyyyMMddHHmm}__{snake_description}.sql`, e.g. `V202611051030__create_tenants.sql`.
 - Never edit a migration that has been merged. Write a new one.
-- Every table goes in the `northstar` schema (`data-model.md` section 1).
+- Every table goes in the `northstar` schema (`data-model.md` section 1), except in the private schemas: tenant
+  credentials in `secrets` (only `secrets_user`) and unrouted webhooks in `ingest` (only `app_admin`, select). Those
+  schemas have no default privileges, so their migrations grant exactly what the one role needs.
 - A table with `tenant_id` gets RLS enabled, forced, and the `tenant_isolation` policy in the same file
   (`data-model.md` section 12). The CI check fails if one is missing.
 - A tenant table references another tenant table by `(tenant_id, x_id)` → parent `(tenant_id, id)`, and every
@@ -26,7 +28,9 @@ every build. Update its declarations in the same pull request:
 - A lifecycle table: revoke table-level update from `app_user`, grant update on the status and processing columns
   only, and list exactly those columns in the gate.
 - A `SECURITY DEFINER` function: add it to the allowlist, with a reason in the migration.
-- A new schema: add it to the gate's schema list.
+- A new schema: create it in `db/bootstrap/roles.sql` (owned by `migrator`, closed to `public`) and add it to the
+  gate's schema list; a schema for one login role also goes in the gate's isolated schemas, where its tenant tables'
+  `tenant_isolation` policy is for that role instead of `app_user`.
 - Views use `with (security_invoker = true)`. No materialized views.
 
 ## Who runs them

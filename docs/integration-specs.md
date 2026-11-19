@@ -9,10 +9,13 @@ Every external service sits behind one Java interface in the `integrations` modu
 **Inbound (webhooks)**
 
 1. Endpoint per provider: `POST /webhooks/{provider}`.
-2. Verify signature first; invalid → 401, stored with `signature_valid = false`.
-3. Insert into `webhook_events` (unique on provider event ID); duplicate → 200 and stop.
-4. Resolve tenant (from phone number ID, account ID or reference ID), queue a job, return 200 within a few hundred milliseconds.
-5. The worker normalises the payload into an engine event (`events` table) and processes it.
+2. Verify signature first; invalid → 401, parked in `ingest.unrouted_webhooks` with `signature_valid = false` and metadata only (provider, provider event ID if parseable, body size, time); the payload is not kept (P15).
+3. Resolve the tenant (from phone number ID, account ID or reference ID). Unknown → parked in `ingest.unrouted_webhooks` as `unknown_account` with its payload (bodies over 64 KB are kept without it), Northstar admin alerted, 200, nothing processed (P16).
+4. In that tenant's scope, insert into `webhook_events` (unique on provider event ID); duplicate → 200 and stop, and the second copy is not stored (P1).
+5. Queue a job and return 200 within a few hundred milliseconds.
+6. The worker normalises the payload into an engine event (`events` table) and processes it.
+
+Anyone can POST to a webhook URL, so the unrouted write path is rate-limited (step 2.2). Unrouted rows are never processed or copied into a tenant table, and are deleted after 30 days (`data-model.md` section 14).
 
 **Outbound (actions)**
 
@@ -211,7 +214,15 @@ Staging and production never share credentials, and staging uses only provider t
 | LLM | Separate API key with a low budget | Production key with per-tenant budgets |
 | Email | Sandbox or test domain | Verified sending domain |
 
-**Platform secrets** (Northstar's own app secrets, signing keys, database roles) live in DigitalOcean App Platform encrypted environment variables, never in the repo, each set only on the component that reads it. The one exception is the deploy token (`DIGITALOCEAN_ACCESS_TOKEN`: custom scopes app read/update and registry read/update/delete, 90-day expiry), a GitHub environment secret per environment that only `main` may use. Staging email uses Resend's shared test sender until a staging sub-domain is verified; it delivers only to the Resend account owner (`docs/staging-runbook.md`). **Tenant secrets** (business tokens, refresh tokens, Razorpay keys) live encrypted in `integration_credentials`, decrypted only inside the worker at call time. Rotation: platform secrets every 90 days or on staff change; tenant tokens refreshed per provider rules.
+**Platform secrets** (Northstar's own app secrets, signing keys, database roles) live in DigitalOcean App Platform encrypted environment variables, never in the repo, each set only on the component that reads it. The one exception is the deploy token (`DIGITALOCEAN_ACCESS_TOKEN`: custom scopes app read/update and registry read/update/delete, 90-day expiry), a GitHub environment secret per environment that only `main` may use. Staging email uses Resend's shared test sender until a staging sub-domain is verified; it delivers only to the Resend account owner (`docs/staging-runbook.md`). **Tenant secrets** (business tokens, refresh tokens, Razorpay keys) live encrypted in `secrets.integration_credentials`, decrypted only inside the worker at call time. Rotation: platform secrets every 90 days or on staff change; tenant tokens refreshed per provider rules.
+
+**Tenant credential storage** (decided 19 Nov 2026, step 2.1; built in 2.1b):
+
+- **Who can read them:** only `secrets_user`, a database login whose password is set only on the worker component. Its private pool is created only when `NORTHSTAR_WORKER_ENABLED=true` and is not a Spring bean. No other role can use the `secrets` schema, so the API process can read neither the plaintext nor the ciphertext. The credential store also refuses any tenant context that is not the system actor.
+- **Encryption:** AES-256-GCM from the JDK (no new dependency), a fresh random 96-bit nonce from `SecureRandom` per value and a 128-bit tag. `encrypted_secret` is a format byte (`0x01`), the nonce, then ciphertext and tag; `key_id` names the key. The associated data is `credential:v1|tenant_id|credential_id|provider|key_id`, so a value copied to another row, tenant or provider fails authentication.
+- **The key:** only in the worker's environment, as DigitalOcean encrypted variables: `NORTHSTAR_CREDENTIAL_KEYS` (comma-separated `keyId:base64` entries, each exactly 32 random bytes) and `NORTHSTAR_CREDENTIAL_ACTIVE_KEY` (the key ID new values use). A missing or malformed key stops the worker at startup with an error naming the setting or key ID, never the value. Keep an offline copy of every key: losing all of them means every business reconnects its integrations.
+- **Rotation:** add a new key and make it active; new values and refreshed tokens use it, and older values still decrypt by their `key_id`. Re-encrypt every tenant's rows under the active key, then remove the old key once no row names it.
+- **Never in logs, errors or the database:** plaintext is held in a type whose `toString()` is redacted and wiped after use; decryption failures name the credential and key IDs only; the keys are never logged; only ciphertext is ever sent to the database.
 
 ## 8. Open questions
 

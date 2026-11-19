@@ -137,9 +137,15 @@ Phase 10 (pilot) needs the frontend and is planned after it.
 **Specs:** `integration-specs.md` §1, §2, §7; `workflow-spec.md` §6, §12; `data-model.md` §4, §9.
 **Modules:** `integrations`, `contacts`, `crm`.
 
-- [ ] 2.1 Integration schema: `integrations`, `integration_credentials` (encrypted, decrypted only in the worker), `whatsapp_accounts`, `webhook_events`
-  - `webhook_events` is a lifecycle table; declare its updatable columns in the gate. Its nullable `tenant_id` fails the gate as specified, so settle that open question here. Any new schema (`ingest`, `secrets`) joins the gate's schema list.
-- [ ] 2.2 `POST /webhooks/whatsapp`: verify signature (P15) → store → dedupe (P1) → resolve tenant by phone number ID (P16) → queue → 200
+- [ ] 2.1a Integration schema: `integrations`, `secrets.integration_credentials`, `whatsapp_accounts`, `webhook_events`, `ingest.unrouted_webhooks`; the `secrets_user` role and the `secrets` and `ingest` schemas
+  - Decided 19 Nov 2026 (the Phase 2 questions): webhooks are routed before they are stored, so `webhook_events.tenant_id` is not null and unroutable deliveries are parked in the platform-wide `ingest.unrouted_webhooks`, readable only by `app_admin`; `integration_credentials` lives in the `secrets` schema, which only the worker's own login `secrets_user` can use; the encryption key lives only in the worker (`integration-specs.md` section 7).
+  - Built as: `roles.sql` creates `secrets_user` (no BYPASSRLS) and the `secrets` and `ingest` schemas, owned by `migrator` and closed to `public`; `verify.sql` checks them. Five migrations, each table with `unique (tenant_id, id)`, RLS forced and `tenant_isolation` (for `secrets_user` in `secrets`), composite foreign keys, and column-level update grants: `integrations` (status, account_label, scopes, credential_id, last_success_at, last_error_code, last_error_at), `whatsapp_accounts` (display and quality columns only; `phone_number_id` unique across tenants), `webhook_events` (lifecycle: processed_at and error only; `unique (provider, provider_event_id)` across tenants), and `secrets.integration_credentials` (granted only to `secrets_user`). `ingest.unrouted_webhooks` has no tenant_id; its checks keep no payload or routing key for a bad signature and no payload over 64 KB for an unknown account, with a partial unique on verified provider event IDs; only `app_admin` may select from it. The RLS release gate scans the four schemas, checks `secrets` as isolated to `secrets_user` (including the role of its `tenant_isolation`) and `ingest` as admin-read only, and declares the new lifecycle and column-restricted tables. `TenantFixtures` covers the four tenant tables, and the cross-tenant suite checks the `secrets` table through `secrets_user`. JPA entities `Integration`, `WhatsAppAccount` and `WebhookEvent` in `integrations.internal`; the credentials table has no entity (2.1b reads it on its own pool).
+- [ ] 2.1b Credential encryption: AES-256-GCM cipher, keyring, worker-only credential store on its own `secrets_user` pool, staging variables (`integration-specs.md` section 7)
+  - Re-encryption under the active key is a store method with a test; the job that runs it for every tenant, and its runbook steps, come later.
+  - Deploy checklist: an offline copy of every credential key, and `secrets_user`'s login and password on the worker only.
+- [ ] 2.2 `POST /webhooks/whatsapp`: verify signature (P15) → resolve tenant by phone number ID (P16) → store in the tenant's scope and dedupe (P1) → queue → 200
+  - Bad signatures and unknown phone number IDs go to `ingest.unrouted_webhooks` through one allowlisted `SECURITY DEFINER` function in a narrow guard mode (as the membership lookup does). Anyone can POST to the webhook URL, so this unrouted write path needs rate limiting; decide the limits in this step's plan.
+  - Resolving the tenant before it is known needs its own allowlisted lookup on `whatsapp_accounts.phone_number_id`.
   - Extend the cross-tenant suite: a webhook routed to tenant A never reads or writes tenant B, named `P9_`/`P10_` so the `cross-tenant` job runs it. `webhook_events` and every new tenant table need a `TenantFixtures` entry.
 - [ ] 2.2a Resend webhooks: bounces and complaints recorded through the webhook pipeline (verify, store, dedupe, queue); repeated bounces mark the address invalid (`integration-specs.md` §6). Decide the table for invalid addresses in `data-model.md` first.
 - [ ] 2.3 Conversation schema: `contact_sources`, `conversations`, `messages`, `message_templates`
@@ -150,10 +156,11 @@ Phase 10 (pilot) needs the frontend and is planned after it.
 - [ ] 2.6 Send action: WhatsApp adapter (real and fake), 24-hour window, templates only outside it (W33)
 - [ ] 2.7 Delivery status webhooks update messages
 - [ ] 2.8 Template sync and status; rejected or paused templates fail dependent actions visibly (W34)
+  - Define the allowed values of `whatsapp_accounts.quality_rating` and `messaging_limit` (unchecked text since 2.1a) and add their checks.
 - [ ] 2.9 Inbox API: conversations, messages, staff reply, take over and hand back (pause automation per conversation)
 - [ ] 2.10 Manual lead entry with E.164 validation (P4)
 
-**Needs answers:** whether `webhook_events.tenant_id` may be null for unrouted events, given the "no exceptions" rule; which database role reads and decrypts `integration_credentials`; where the encryption key lives.
+**Decided (19 Nov 2026, step 2.1):** `webhook_events.tenant_id` stays not null, with unroutable deliveries in `ingest.unrouted_webhooks`; only `secrets_user` reads `integration_credentials`; the key lives only in the worker's environment.
 **External:** Meta developer app and a WhatsApp test number.
 
 ## Phase 3 — Workflow engine
@@ -268,6 +275,7 @@ Phase 10 (pilot) needs the frontend and is planned after it.
 - [ ] 8.4 Plans, subscriptions, usage alerts at 70 / 90 / 100% (P20)
 - [ ] 8.5 Subscription end: grace period, then read-only with automation paused (P8)
 - [ ] 8.6 Retention jobs (`data-model.md` §14)
+  - Includes deleting `ingest.unrouted_webhooks` rows after 30 days, and clearing `webhook_events.payload` after 30 days (it is not null and not updatable since 2.1a, so this needs a migration or a narrow function).
 
 **Needs answers:** grace period and read-only rules; plan limits; retention periods.
 

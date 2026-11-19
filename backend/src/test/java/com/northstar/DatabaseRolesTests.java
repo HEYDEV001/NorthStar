@@ -11,7 +11,7 @@ import org.springframework.boot.test.context.SpringBootTest;
 import org.springframework.context.annotation.Import;
 import org.springframework.jdbc.core.simple.JdbcClient;
 
-/** Guards data-model.md section 12: the three roles, who owns northstar, and the default privileges. */
+/** Guards data-model.md section 12: the roles, who owns the schemas, and the default privileges. */
 @SpringBootTest
 @Import(TestcontainersConfiguration.class)
 class DatabaseRolesTests {
@@ -20,7 +20,7 @@ class DatabaseRolesTests {
             select rolname || ' super=' || rolsuper || ' bypassrls=' || rolbypassrls
                    || ' createrole=' || rolcreaterole || ' createdb=' || rolcreatedb
             from pg_roles
-            where rolname in ('migrator', 'app_user', 'app_admin', 'jobrunr_user')
+            where rolname in ('migrator', 'app_user', 'app_admin', 'jobrunr_user', 'secrets_user')
             order by rolname""";
 
     private final PostgresAdmin postgres;
@@ -38,21 +38,35 @@ class DatabaseRolesTests {
                         "app_admin super=false bypassrls=true createrole=false createdb=false",
                         "app_user super=false bypassrls=false createrole=false createdb=false",
                         "jobrunr_user super=false bypassrls=false createrole=false createdb=false",
-                        "migrator super=false bypassrls=true createrole=false createdb=false");
+                        "migrator super=false bypassrls=true createrole=false createdb=false",
+                        "secrets_user super=false bypassrls=false createrole=false createdb=false");
     }
 
     @Test
-    void migratorOwnsTheSchemaAndEveryTableInIt() {
-        String schemaOwner = jdbc.sql("select nspowner::regrole::text from pg_namespace where nspname = 'northstar'")
-                .query(String.class)
-                .single();
-        List<String> tableOwners = jdbc.sql(
-                        "select distinct tableowner::text from pg_tables where schemaname = 'northstar'")
-                .query(String.class)
-                .list();
+    void migratorOwnsTheSchemasAndEveryTableInThem() {
+        List<String> schemaOwners = jdbc.sql("""
+                        select distinct nspowner::regrole::text from pg_namespace
+                        where nspname in ('northstar', 'secrets', 'ingest')""").query(String.class).list();
+        List<String> tableOwners = jdbc.sql("""
+                        select distinct tableowner::text from pg_tables
+                        where schemaname in ('northstar', 'secrets', 'ingest')""").query(String.class).list();
 
-        assertThat(schemaOwner).isEqualTo("migrator");
+        assertThat(schemaOwners).containsExactly("migrator");
         assertThat(tableOwners).containsExactly("migrator");
+    }
+
+    @Test
+    void thePrivateSchemasHaveNoDefaultPrivileges() {
+        List<String> defaults = jdbc.sql("""
+                        select n.nspname || ' ' || d.defaclobjtype::text from pg_default_acl d
+                        join pg_namespace n on n.oid = d.defaclnamespace
+                        where n.nspname in ('secrets', 'ingest')""").query(String.class).list();
+        Boolean publicCanUse = jdbc.sql("""
+                        select bool_or(has_schema_privilege('public', s, 'USAGE') or has_schema_privilege('public', s, 'CREATE'))
+                        from unnest(array['secrets', 'ingest']) s""").query(Boolean.class).single();
+
+        assertThat(defaults).isEmpty();
+        assertThat(publicCanUse).isFalse();
     }
 
     @Test
@@ -105,10 +119,15 @@ class DatabaseRolesTests {
             DatabaseBootstrap.applyRoles(admin);
         }
 
-        assertThat(jdbc.sql(ROLE_POWERS).query(String.class).list()).hasSize(4);
+        assertThat(jdbc.sql(ROLE_POWERS).query(String.class).list()).hasSize(5);
         assertThat(jdbc.sql("""
                         select nspname || '=' || nspowner::regrole::text from pg_namespace
-                        where nspname in ('northstar', 'jobrunr') order by nspname""").query(String.class).list()).containsExactly("jobrunr=migrator", "northstar=migrator");
+                        where nspname in ('northstar', 'jobrunr', 'secrets', 'ingest') order by nspname""").query(String.class).list())
+                .containsExactly("ingest=migrator", "jobrunr=migrator", "northstar=migrator", "secrets=migrator");
+        // ...and the private schemas' own grants.
+        assertThat(jdbc.sql("""
+                        select has_table_privilege('secrets_user', 'secrets.integration_credentials', 'SELECT')
+                               and has_table_privilege('app_admin', 'ingest.unrouted_webhooks', 'SELECT')""").query(Boolean.class).single()).isTrue();
         // Running it again leaves JobRunr's own access in place.
         assertThat(jdbc.sql("select has_table_privilege('jobrunr_user', 'jobrunr.jobrunr_jobs', 'SELECT, DELETE')")
                         .query(Boolean.class)

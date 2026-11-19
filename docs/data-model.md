@@ -8,7 +8,7 @@ The schema runs on Supabase Postgres (Mumbai), managed by Flyway migrations in `
 
 | Topic | Rule |
 | --- | --- |
-| Schema | All Northstar tables, and Flyway's `flyway_schema_history`, live in the `northstar` schema. It is not listed in Supabase's Data API schemas, and `anon` and `authenticated` have no access to it, so no table is reachable with the publishable key. Integration secrets use a separate private schema (section 9) |
+| Schema | All Northstar tables, and Flyway's `flyway_schema_history`, live in the `northstar` schema. It is not listed in Supabase's Data API schemas, and `anon` and `authenticated` have no access to it, so no table is reachable with the publishable key. Two private schemas sit beside it (section 9): `secrets` holds tenant credentials and only the worker's own login, `secrets_user`, can use it; `ingest` holds webhooks that could not be routed to a tenant and only `app_admin` can read it |
 | Primary keys | `id uuid primary key default gen_random_uuid()` |
 | Tenant scope | Every business-owned table has `tenant_id uuid not null references tenants(id)`, including join and history tables |
 | Tenant foreign keys | A row in a tenant table references another tenant table by `(tenant_id, x_id)` → parent `(tenant_id, id)`, so it can never point at another tenant's row; every parent has `unique (tenant_id, id)`. Foreign keys to platform-wide tables (`tenants`, `user_profiles`) are plain. The RLS release gate (section 12) fails on any other foreign key between tenant tables |
@@ -30,7 +30,7 @@ About 60 tables in nine groups; the lead sits at the centre and every group link
 
 &#91;embedded content: table groups · 9 groups around the lead\]
 
-Tenancy links to everything through tenant\_id; webhook\_events is the one table whose tenant is resolved after arrival.
+Tenancy links to everything through tenant\_id. A webhook is routed to its tenant before it is stored; deliveries that cannot be routed are parked in the platform-wide `ingest.unrouted_webhooks` and never processed.
 
 ### Full entity-relationship diagram
 
@@ -123,7 +123,7 @@ erDiagram
   tenants ||--o{ sync_outbox : queues
   tenants ||--o{ sheet_conflicts : reviews
   leads ||--o{ meta_events : reports
-  tenants |o--o{ webhook_events : "resolved to"
+  tenants ||--o{ webhook_events : receives
 
   %% Timeline and audit
   leads ||--o{ timeline_events : records
@@ -229,18 +229,19 @@ Staff leave lives in `staff_leave` (section 3).
 
 ## 9. Integrations, sync and webhooks
 
-Credentials sit in a server-only table that tenants can never read; everything leaving the platform for Sheets or Meta goes through an outbox.
+Credentials sit in a private schema that only the worker's own database login can read; everything leaving the platform for Sheets or Meta goes through an outbox. Decided 19 Nov 2026 (step 2.1): webhooks are routed before they are stored, credentials are read only by `secrets_user`, and the key lives only in the worker (`integration-specs.md` section 7).
 
 | Table | Columns (type) | Constraints / notes |
 | --- | --- | --- |
-| `integrations` | id, tenant\_id, provider (text), status (text), account\_label, scopes (text\[\]), credential\_id, last\_success\_at, last\_error, last\_error\_at, created\_at, updated\_at | unique (tenant\_id, provider) except calendars; provider in ('whatsapp','razorpay','google','meta\_ads','meta\_capi') |
-| `integration_credentials` | id, tenant\_id, provider, encrypted\_secret (bytea), key\_id (text), expires\_at, rotated\_at | **Private schema**, no RLS access for app users; read only by the backend service role; encrypted with a managed key |
-| `whatsapp_accounts` | id, tenant\_id, waba\_id, phone\_number\_id, display\_phone, display\_name, quality\_rating, messaging\_limit, verified\_at | unique (phone\_number\_id) platform-wide; routes inbound webhooks to the tenant |
+| `integrations` | id, tenant\_id, provider (text), status (text), account\_label, scopes (text\[\]), credential\_id, last\_success\_at, last\_error\_code, last\_error\_at, created\_at, updated\_at | unique (tenant\_id, provider) (staff calendars connect per member in `calendar_connections`, section 8); unique (tenant\_id, id); provider in ('whatsapp','razorpay','google','meta\_ads','meta\_capi'); status in ('connected','error','disconnected'); last\_error\_code is a fixed code with the same check as `actions.last_error_code`, never provider message text, and is set together with last\_error\_at; credential\_id references `secrets.integration_credentials (tenant_id, id)`. `app_user` may update only status, account\_label, scopes, credential\_id, last\_success\_at, last\_error\_code and last\_error\_at; no delete |
+| `integration_credentials` | id, tenant\_id, provider, encrypted\_secret (bytea), key\_id (text), expires\_at, rotated\_at, created\_at | **Private schema `secrets`.** Only `secrets_user`, the worker's own login, may use it (select, insert, update; no delete until disconnect is decided in step 7.5); `app_user`, `app_admin` and `jobrunr_user` have no access, so the API cannot read even the ciphertext. RLS forced, with `tenant_isolation` for `secrets_user`. unique (tenant\_id, id); provider as in `integrations`. Encrypted in the worker with AES-256-GCM under the key named by key\_id (`integration-specs.md` section 7); rotated\_at is when encrypted\_secret was last replaced (new token or re-encryption). `secrets_user` may update only encrypted\_secret, key\_id, expires\_at and rotated\_at. Never use Supabase's `service_role` for it |
+| `whatsapp_accounts` | id, tenant\_id, waba\_id, phone\_number\_id, display\_phone, display\_name, quality\_rating, messaging\_limit, verified\_at, created\_at, updated\_at | unique (phone\_number\_id) platform-wide; unique (tenant\_id, id); routes inbound webhooks to the tenant. quality\_rating and messaging\_limit are unchecked text until step 2.8 defines their values. `app_user` may update only display\_phone, display\_name, quality\_rating, messaging\_limit and verified\_at (waba\_id and phone\_number\_id never change); no delete |
 | `sheet_mappings` | id, tenant\_id, spreadsheet\_id, tab (text), entity (text), field\_map (jsonb), inbound\_fields (text\[\]), last\_synced\_at, status | entity in ('leads','payments') |
 | `sync_outbox` | id, tenant\_id, target (text), entity, entity\_id, operation (text), payload (jsonb), status (text), attempts, next\_attempt\_at, last\_error, created\_at | target in ('sheets','meta\_capi'); processed in batches by the worker |
 | `sheet_conflicts` | id, tenant\_id, entity\_id, field, sheet\_value, platform\_value, detected\_at, resolved\_by, resolved\_at | Review list for protected-field edits |
 | `meta_events` | id, tenant\_id, lead\_id, event\_name (text), event\_id (text), value\_paise, ctwa\_click\_id, sent\_at, response (jsonb), status | unique (tenant\_id, lead\_id, event\_name); Meta does not deduplicate business-messaging events, so Northstar sends each once |
-| `webhook_events` | id, provider, provider\_event\_id, tenant\_id (nullable until resolved), signature\_valid (bool), payload (jsonb), received\_at, processed\_at, error | unique (provider, provider\_event\_id); append-only; tenant resolved from phone\_number\_id / account |
+| `webhook_events` | id, tenant\_id, provider, provider\_event\_id, payload (jsonb), received\_at, processed\_at, error | Routed events only: the handler verifies the signature and resolves the tenant before inserting (`integration-specs.md` section 1), so tenant\_id is never null and every row is verified. unique (provider, provider\_event\_id) across tenants, as provider event IDs are globally unique; a duplicate is not stored (P1). unique (tenant\_id, id). provider in ('whatsapp','razorpay','resend'). Lifecycle table: `app_user` may update only processed\_at and error, and never deletes; error is a fixed code with the same check as `actions.last_error_code` |
+| `ingest.unrouted_webhooks` | id, provider, provider\_event\_id, signature\_valid (bool), reason (text), routing\_key (text), body\_bytes (int), payload (jsonb), payload\_too\_large (bool), received\_at | **Platform-wide, private schema `ingest`, no tenant\_id** (the tenant is unknown). Deliveries with a bad signature (P15) or an unknown phone number or account ID (P16); never processed and never copied into a tenant table (a provider retry after the business connects is routed normally). provider as in `webhook_events`; reason in ('invalid\_signature','unknown\_account'), and invalid\_signature exactly when not signature\_valid. An invalid-signature row keeps metadata only: provider, provider\_event\_id if parseable, body\_bytes and received\_at; payload and routing\_key are null (checks). An unknown-account row keeps routing\_key and the payload when the body is at most 64 KB (65,536 bytes); a larger body is stored with payload null and payload\_too\_large true (checks). Partial unique (provider, provider\_event\_id) where signature\_valid, so provider retries are stored once. Only `app_admin` may read it (select only, Phase 8, audited); `app_user` writes only through an allowlisted, rate-limited `SECURITY DEFINER` function (step 2.2); no other role has access. Rows are deleted after 30 days by the retention job (step 8.6, section 14) |
 
 ## 10. Timeline, audit and usage
 
@@ -277,13 +278,15 @@ The React app never queries tables directly; Spring Boot connects as a restricte
 | `app_admin` | Northstar admin panel queries across tenants (separate code path, audited) | Yes, read-mostly |
 | `migrator` | Flyway only | Yes |
 | `jobrunr_user` | JobRunr's private connection pool; may use only the `jobrunr` schema, nothing in `northstar` | No |
+| `secrets_user` | The worker's private credential pool (step 2.1b); may use only the `secrets` schema, nothing in `northstar`, `jobrunr` or `ingest`. Its password is set only on the worker | No |
 | Supabase `service_role` key | Never in the app runtime; kept for emergencies | Yes |
 
 **Role setup and privileges**
 
-- The four roles are created once per environment by `db/bootstrap/roles.sql`, run as `postgres`, because Flyway must log in as `migrator` and roles belong to the whole database server. Logins and passwords are set per environment with psql's `\password`; no password is stored in the repo.
+- The five roles are created once per environment by `db/bootstrap/roles.sql`, run as `postgres`, because Flyway must log in as `migrator` and roles belong to the whole database server. Logins and passwords are set per environment with psql's `\password`; no password is stored in the repo.
 - `migrator` owns the `northstar` and `jobrunr` schemas and every object in them, and every Flyway migration runs as `migrator` in every environment, tests included.
 - Default privileges on new tables: `app_user` gets select, insert and update; `app_admin` gets select. Delete is never a default: a table that allows hard deletes grants it to `app_user` in its own migration, and financial records and append-only tables never do. JobRunr's tables are outside these defaults: only `jobrunr_user` has privileges on them (full DML, as JobRunr deletes its own finished jobs), and `app_user` and `app_admin` have none. The RLS release gate checks both directions.
+- `migrator` also owns the `secrets` and `ingest` schemas, which have no default privileges: each table's migration grants exactly what its one role needs (`secrets_user` in `secrets`; `app_admin` select in `ingest`). The RLS release gate checks that no other role can use them.
 - Neither app role can read or change `flyway_schema_history`.
 
 **Per-transaction context** (set by a Spring interceptor from the verified Supabase token and membership lookup; workers set it from the job's tenant\_id):
@@ -319,6 +322,8 @@ create policy tenant_isolation on leads
   with check (tenant_id = current_setting('app.tenant_id', true)::uuid);
 ```
 
+The one difference is in an isolated schema, where the policy is for that schema's own login: `secrets.integration_credentials` has `tenant_isolation ... for all to secrets_user` with the same two expressions, and the worker's credential pool sets `app.tenant_id` the same way.
+
 **Staff visibility** (staff see only their own leads and appointments) is enforced in the service layer from the membership role, with an additional policy on `leads`, `appointments`, `conversations` checking `assigned_membership_id` when `app.role = 'staff'`. The policy on `leads` (step 1.13) is restrictive, so it only narrows `tenant_isolation`, and the RLS release gate holds its exact text; `conversations` and `appointments` get the same pattern:
 
 ```sql
@@ -339,8 +344,9 @@ Admins and the system actor see the tenant's leads. Staff see and change only le
 
 **Release gates**
 
-- A CI test (the RLS release gate) scans a declared list of Northstar schemas (`northstar`, plus any schema a later phase adopts) and fails the build if:
-  - a table with `tenant_id` has it nullable or not `uuid`, has RLS not enabled or not forced, or lacks the `tenant_isolation` policy exactly as written above;
+- A CI test (the RLS release gate) scans a declared list of Northstar schemas (`northstar`, `jobrunr`, `secrets` and `ingest`, plus any schema a later phase adopts) and fails the build if:
+  - a table with `tenant_id` has it nullable or not `uuid`, has RLS not enabled or not forced, or lacks the `tenant_isolation` policy exactly as written above (in an isolated schema such as `secrets`, the same policy is for that schema's own role instead of `app_user`);
+  - an isolated schema (`jobrunr`, `secrets`) can be used by any role but its own, or its role can use another scanned schema; or an admin-read schema (`ingest`) gives any role but `app_admin` access, or `app_admin` more than select;
   - any other policy on a tenant table is permissive, or is not declared with its exact text (extra policies, such as the admin-only write policies and the staff policy, must be restrictive, because permissive policies combine with OR);
   - a table without `tenant_id` is not declared platform-wide (for example `tenants`, `user_profiles`, `plans`, JobRunr's tables);
   - a view lacks `security_invoker`, or a materialized view exists (both would read with the owner's rights);
@@ -349,20 +355,22 @@ Admins and the system actor see the tenant's leads. Staff see and change only le
 - Append-only tables come in two tiers:
   - **Insert-only** (`workflow_versions`, `timeline_events`, `audit_log`, `lead_score_history`, `credit_notes`): `app_user` has no update, delete or truncate.
   - **Lifecycle** (`webhook_events`, `payments`, `invoices`, `refunds`): no delete or truncate, and no table-level update. The table's migration revokes table-level update first, then grants column-level update on a declared list of status and processing columns only; the gate fails if any other column is updatable. Amounts, numbers, lines and parties never change.
-- A cross-tenant test creates two tenants and asserts zero rows leak through API, jobs, exports and webhooks. Since step 1.14 it is the CI job `cross-tenant`: every tenant table from the catalogue (each needs a fixture in `TenantFixtures`) under admin, staff, the system actor and no context; every endpoint taking an ID; and every P9, P10 and P11 test. Exports and webhooks join it in Phase 8 and step 2.2.
+- A cross-tenant test creates two tenants and asserts zero rows leak through API, jobs, exports and webhooks. Since step 1.14 it is the CI job `cross-tenant`: every tenant table from the catalogue (each needs a fixture in `TenantFixtures`) under admin, staff, the system actor and no context, through the login that may use its schema (`secrets_user` for `secrets`, `app_user` otherwise); every endpoint taking an ID; and every P9, P10 and P11 test. Exports and webhooks join it in Phase 8 and step 2.2.
 - No missing `app.tenant_id` ever returns rows: `current_setting(..., true)` returns null, so the policy matches nothing.
 
 **Storage:** private buckets; object paths start with `tenant_id/`; files served only through short-lived signed URLs created by the backend.
 
 ## 13. Key indexes and constraints
 
-Every index starts with `tenant_id`; the unique constraints below are what make webhooks, jobs and payments duplicate-safe.
+Every index starts with `tenant_id`, except the few marked below that span tenants by design; the unique constraints below are what make webhooks, jobs and payments duplicate-safe.
 
 **Duplicate-safety constraints**
 
 | Constraint | Prevents |
 | --- | --- |
-| `webhook_events (provider, provider_event_id)` unique | Same webhook processed twice |
+| `webhook_events (provider, provider_event_id)` unique (spans tenants: provider event IDs are globally unique) | Same webhook processed twice (P1) |
+| `ingest.unrouted_webhooks (provider, provider_event_id) where signature_valid` partial unique (platform-wide table) | A provider retrying an unroutable event fills the table |
+| `whatsapp_accounts (phone_number_id)` unique (spans tenants) | Two businesses claiming one number; webhooks routed to the wrong tenant |
 | `messages (tenant_id, provider_message_id)` unique | Duplicate stored message |
 | `contacts (tenant_id, normalized_phone)` unique | Duplicate contact |
 | `events (tenant_id, dedupe_key)` unique | Same engine event applied twice |
@@ -397,6 +405,7 @@ These are proposed defaults to confirm with legal and tax advisers; a nightly jo
 | --- | --- | --- |
 | Message bodies and media | 12 months after last activity on the conversation | Body and media removed; metadata kept for reporting |
 | Raw webhook payloads | 30 days | Payload removed; row with IDs kept for dedupe |
+| Unrouted webhooks (`ingest.unrouted_webhooks`) | 30 days | Row deleted (step 8.6) |
 | Leads, timeline, quotes, appointments | Life of the subscription | Exported and deleted on tenant closure after a 90-day grace |
 | Invoices, credit notes, payments, refunds | As required by GST record-keeping rules (commonly 72 months; CA to confirm) | Archived read-only; never hard-deleted before the period ends |
 | Audit log | 3 years | Deleted |
