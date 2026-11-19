@@ -195,7 +195,8 @@ class RlsReleaseGateTests {
                             northstar.lifecycleTables(),
                             northstar.columnRestrictedUpdates(),
                             northstar.securityDefinerFunctions(),
-                            northstar.isolatedSchemas())
+                            northstar.isolatedSchemas(),
+                            northstar.adminReadSchemas())
                     .violations(jdbc);
         }
 
@@ -312,7 +313,8 @@ class RlsReleaseGateTests {
                                     Map.of(),
                                     Map.of(),
                                     Set.of(),
-                                    Map.of())
+                                    Map.of(),
+                                    Set.of())
                             .violations(jdbc))
                     .contains("gate_other.t: no tenant_id and not declared platform-wide");
         }
@@ -335,6 +337,106 @@ class RlsReleaseGateTests {
                     .containsExactly(
                             "northstar.tenants: jobrunr_user has privileges here",
                             "northstar: jobrunr_user may use this schema");
+        }
+    }
+
+    /** The private schemas of step 2.1a: secrets belongs to secrets_user alone, and only app_admin may read ingest. */
+    @Nested
+    class PrivateSchemas {
+
+        private static final String SECRETS_PROBE = "secrets.gate_probe";
+
+        @BeforeEach
+        void actAsMigrator() {
+            sql("set local role migrator");
+        }
+
+        @Test
+        void tenantTableInSecretsWithItsPolicyForSecretsUserPasses() {
+            createSecretsProbe("secrets_user");
+            assertThat(RlsReleaseGate.NORTHSTAR.violations(jdbc)).isEmpty();
+        }
+
+        @Test
+        void tenantTableInSecretsWithItsPolicyForAppUserFails() {
+            createSecretsProbe("app_user");
+            assertThat(RlsReleaseGate.NORTHSTAR.violations(jdbc))
+                    .containsExactly(SECRETS_PROBE + ": tenant_isolation policy differs from data-model.md section 12");
+        }
+
+        @Test
+        void tenantTableInSecretsWithoutForcedRlsFails() {
+            createSecretsProbe("secrets_user");
+            sql("alter table " + SECRETS_PROBE + " no force row level security");
+            assertThat(RlsReleaseGate.NORTHSTAR.violations(jdbc)).containsExactly(SECRETS_PROBE + ": RLS not forced");
+        }
+
+        @Test
+        void appRolesOnSecretsFail() {
+            sql("grant usage on schema secrets to app_user");
+            sql("grant select on secrets.integration_credentials to app_admin");
+            assertThat(RlsReleaseGate.NORTHSTAR.violations(jdbc))
+                    .containsExactly(
+                            "secrets.integration_credentials: app_admin has privileges here",
+                            "secrets: app_user may use this schema");
+        }
+
+        @Test
+        void secretsUserOutsideSecretsFails() {
+            sql("grant select on northstar.tenants to secrets_user");
+            sql("grant usage on schema ingest to secrets_user");
+            assertThat(RlsReleaseGate.NORTHSTAR.violations(jdbc))
+                    .containsExactly(
+                            "ingest: secrets_user may use this schema",
+                            "northstar.tenants: secrets_user has privileges here");
+        }
+
+        @Test
+        void anyRoleButAppAdminOnIngestFails() {
+            sql("grant usage on schema ingest to app_user");
+            sql("grant select on ingest.unrouted_webhooks to jobrunr_user");
+            assertThat(RlsReleaseGate.NORTHSTAR.violations(jdbc))
+                    .contains(
+                            "ingest: app_user may use this schema",
+                            "ingest.unrouted_webhooks: jobrunr_user has privileges here");
+        }
+
+        @Test
+        void appAdminWritingToIngestFails() {
+            sql("grant insert on ingest.unrouted_webhooks to app_admin");
+            sql("grant update (payload) on ingest.unrouted_webhooks to app_admin");
+            sql("grant create on schema ingest to app_admin");
+            assertThat(RlsReleaseGate.NORTHSTAR.violations(jdbc))
+                    .containsExactly(
+                            "ingest.unrouted_webhooks: app_admin has INSERT",
+                            "ingest.unrouted_webhooks: app_admin has UPDATE",
+                            "ingest: app_admin may create objects in this schema");
+        }
+
+        @Test
+        void aWebhookEventsPayloadThatCanBeUpdatedFails() {
+            sql("grant update (payload) on northstar.webhook_events to app_user");
+            assertThat(RlsReleaseGate.NORTHSTAR.violations(jdbc))
+                    .containsExactly("northstar.webhook_events: column payload is updatable but not declared");
+        }
+
+        @Test
+        void anIntegrationsProviderThatCanBeUpdatedFails() {
+            sql("grant update (provider) on northstar.integrations to app_user");
+            sql("grant update (phone_number_id) on northstar.whatsapp_accounts to app_user");
+            assertThat(RlsReleaseGate.NORTHSTAR.violations(jdbc))
+                    .containsExactly(
+                            "northstar.integrations: column provider is updatable but not declared",
+                            "northstar.whatsapp_accounts: column phone_number_id is updatable but not declared");
+        }
+
+        private void createSecretsProbe(String policyRole) {
+            sql("create table " + SECRETS_PROBE + " (id int, tenant_id uuid not null)");
+            sql("alter table " + SECRETS_PROBE + " enable row level security");
+            sql("alter table " + SECRETS_PROBE + " force row level security");
+            sql("create policy tenant_isolation on " + SECRETS_PROBE + " for all to " + policyRole
+                    + " using (tenant_id = current_setting('app.tenant_id', true)::uuid)"
+                    + " with check (tenant_id = current_setting('app.tenant_id', true)::uuid)");
         }
     }
 
@@ -550,7 +652,8 @@ class RlsReleaseGateTests {
                             northstar.lifecycleTables(),
                             restricted,
                             northstar.securityDefinerFunctions(),
-                            northstar.isolatedSchemas())
+                            northstar.isolatedSchemas(),
+                            northstar.adminReadSchemas())
                     .violations(jdbc);
         }
 
@@ -580,7 +683,8 @@ class RlsReleaseGateTests {
                         lifecycleTables,
                         RlsReleaseGate.NORTHSTAR.columnRestrictedUpdates(),
                         allSecurityDefinerFunctions,
-                        RlsReleaseGate.NORTHSTAR.isolatedSchemas())
+                        RlsReleaseGate.NORTHSTAR.isolatedSchemas(),
+                        RlsReleaseGate.NORTHSTAR.adminReadSchemas())
                 .violations(jdbc);
     }
 

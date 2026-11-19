@@ -10,20 +10,27 @@ import org.springframework.transaction.support.TransactionTemplate;
 import org.testcontainers.postgresql.PostgreSQLContainer;
 
 /**
- * Test access through the real app_user login, so tests see exactly what RLS and column privileges allow. Each call
- * runs in its own transaction with app.tenant_id, app.user_id and app.role set locally, as every app transaction does
- * (data-model.md section 12).
+ * Test access through a real login, app_user unless the bean says otherwise (the secretsUserDatabase bean logs in as
+ * secrets_user), so tests see exactly what RLS and column privileges allow. Each call runs in its own transaction with
+ * app.tenant_id, app.user_id and app.role set locally, as every app transaction does (data-model.md section 12).
  */
 public final class AppUserDatabase {
 
     private final PostgreSQLContainer postgres;
+    private final String login;
     private final String password;
     private JdbcClient jdbc;
     private TransactionTemplate transactions;
 
-    AppUserDatabase(PostgreSQLContainer postgres, String password) {
+    AppUserDatabase(PostgreSQLContainer postgres, String login, String password) {
         this.postgres = postgres;
+        this.login = login;
         this.password = password;
+    }
+
+    /** The database role this connects as. */
+    public String login() {
+        return login;
     }
 
     public <T> T as(UUID tenantId, UUID userId, String role, Function<JdbcClient, T> work) {
@@ -61,7 +68,7 @@ public final class AppUserDatabase {
     // The container's port is known only once it has started, so connect on first use.
     private synchronized void connect() {
         if (jdbc != null) return;
-        DriverManagerDataSource dataSource = new DriverManagerDataSource(postgres.getJdbcUrl(), "app_user", password);
+        DriverManagerDataSource dataSource = new DriverManagerDataSource(postgres.getJdbcUrl(), login, password);
         jdbc = JdbcClient.create(dataSource);
         transactions = new TransactionTemplate(new DataSourceTransactionManager(dataSource));
     }

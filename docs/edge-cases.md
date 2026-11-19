@@ -10,7 +10,7 @@ Every case below has a defined behaviour and an automated test before launch; th
 
 | # | Situation | Expected behaviour | Phase |
 | --- | --- | --- | --- |
-| P1 | Same lead webhook arrives twice | `webhook_events` unique on provider event ID; second copy stored as duplicate, no new contact, lead or message | 2 |
+| P1 | Same lead webhook arrives twice | `webhook_events` unique on provider event ID; the second copy returns 200, is not stored and does nothing else: no new contact, lead or message | 2 |
 | P2 | Meta authorisation expires or is revoked | Integration status → error; banner in dashboard with Reconnect; dependent actions pause (not fail) and resume after reconnect | 7 |
 | P3 | Server fails while saving a lead | Webhook event already stored before processing; job retries; no lost lead, no partial lead (single transaction) | 2 |
 | P4 | Phone number missing | WhatsApp leads always have one; manual lead entry rejected without a valid E.164 phone | 2 |
@@ -24,8 +24,8 @@ Every case below has a defined behaviour and an automated test before launch; th
 | P12 | Invite link used after expiry or revocation | Clear expired message; admin can resend; token single-use | 1 |
 | P13 | Staff member deactivated while logged in | Session invalid on next request; open leads and future appointments flagged for reassignment | 1 |
 | P14 | Last admin tries to remove themselves or downgrade to staff | Refused; a workspace always keeps at least one active admin | 1 |
-| P15 | Webhook with invalid signature | Rejected with 401; stored with `signature_valid = false` for investigation; no processing | 2 |
-| P16 | Webhook for an unknown WhatsApp phone number ID | Stored unrouted; Northstar admin alerted; nothing processed | 2 |
+| P15 | Webhook with invalid signature | Rejected with 401; parked in `ingest.unrouted_webhooks` with `signature_valid = false` and metadata only (no payload) for investigation; no processing | 2 |
+| P16 | Webhook for an unknown WhatsApp phone number ID | Parked in `ingest.unrouted_webhooks` as `unknown_account` (payload kept up to 64 KB); Northstar admin alerted; nothing processed | 2 |
 | P17 | Google Sheets quota exceeded | Outbox batches back off and retry; integration shows delayed sync with last success time; no data lost | 7 |
 | P18 | Business deletes the connected spreadsheet or tab | Sync marked error; prompt to reconnect or create a new sheet; full resync on reconnect | 7 |
 | P19 | Staff disconnects Google Calendar | Excluded from auto-assignment until reconnected (no free/busy); admin notified | 6 |

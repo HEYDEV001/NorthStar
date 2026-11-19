@@ -109,8 +109,9 @@ Run the formatter and the relevant tests before every commit. Update this sectio
 - Every external call (WhatsApp send, Razorpay link, Calendar write, Sheets row, Meta event, PDF, LLM) is an
   `actions` row executed by the worker, with an idempotency key. Never call a provider inline in a request
   or webhook handler.
-- Webhook handlers: verify signature → insert into `webhook_events` (unique on provider event ID) → queue a
-  job → return 200 fast. Duplicates return 200 and do nothing else.
+- Webhook handlers: verify signature → resolve the tenant → insert into `webhook_events` in that tenant's scope
+  (unique on provider event ID) → queue a job → return 200 fast. Duplicates return 200 and do nothing else.
+  A bad signature or an unknown account is parked in `ingest.unrouted_webhooks` (rate-limited) and never processed.
 - Every handler, job and action must be safe to run twice. Write the test that proves it.
 - Failures are classified retryable / permanent / auth and follow the retry table in
   `docs/workflow-spec.md` section 10. Nothing fails silently: final failure → Failed Actions + alert.
@@ -136,7 +137,8 @@ Run the formatter and the relevant tests before every commit. Update this sectio
 
 ### Secrets and data
 - No secrets in the repo, in logs, or in test fixtures. Platform secrets come from environment variables;
-  tenant credentials live encrypted in `integration_credentials` and are decrypted only inside the worker.
+  tenant credentials live encrypted in `secrets.integration_credentials`, which only the worker's own database login
+  `secrets_user` can read, and are decrypted only inside the worker.
 - Logs carry IDs and status codes only. Never message bodies, tokens, phone numbers in full, or payment details.
 - Storage paths start with `tenant_id/`; files are served only through short-lived signed URLs.
 

@@ -1,7 +1,7 @@
 # Database bootstrap
 
-`roles.sql` creates Northstar's four database roles and makes `migrator` the owner of the `northstar` and `jobrunr`
-schemas (`data-model.md` section 12). Run it once per environment as `postgres`, before the first Flyway migration. It is
+`roles.sql` creates Northstar's five database roles and makes `migrator` the owner of the `northstar`, `jobrunr`,
+`secrets` and `ingest` schemas (`data-model.md` section 12). Run it once per environment as `postgres`, before the first Flyway migration. It is
 safe to run again, and it puts back any role attribute changed by hand.
 
 | Role | Login used by | Bypasses RLS |
@@ -10,6 +10,11 @@ safe to run again, and it puts back any role attribute changed by hand.
 | `app_user` | Spring Boot API and worker (`DB_USER`) | No |
 | `app_admin` | Northstar admin module, from Phase 8 | Yes, read-only by default |
 | `jobrunr_user` | JobRunr's private pool, step 1.10 (`JOBRUNR_DB_USER`) | No; may use only the `jobrunr` schema |
+| `secrets_user` | The worker's credential pool, step 2.1b; its login is set only on the worker | No; may use only the `secrets` schema |
+
+`secrets` holds tenant credentials, which only `secrets_user` may read. `ingest` holds webhooks that could not be
+routed to a tenant, which only `app_admin` may read. Neither schema has default privileges: each migration grants
+exactly what its one role needs.
 
 The roles are created without login. Passwords never go in the repo, in this script or in a migration.
 
@@ -29,12 +34,15 @@ docker exec -it supabase_db_NorthStar psql -U postgres -d postgres
   \password app_user
   alter role jobrunr_user login;
   \password jobrunr_user
+  alter role secrets_user login;
+  \password secrets_user
   \q
 ```
 
 Then in `.env.local`: `FLYWAY_USER=migrator`, `FLYWAY_PASSWORD=` the migrator password, `DB_USER=app_user`,
 `DB_PASSWORD=` the app_user password, `JOBRUNR_DB_USER=jobrunr_user`, `JOBRUNR_DB_PASSWORD=` the jobrunr_user
-password. Run `cd backend && ./mvnw initialize flyway:migrate`.
+password. `secrets_user`'s password goes in `.env.local` with step 2.1b, which adds its variables. Run
+`cd backend && ./mvnw initialize flyway:migrate`.
 
 `\password` sends only a hash of the password to the server, so the password itself never appears in database logs.
 Do not use `alter role ... password '...'` with a plain-text password.
@@ -45,11 +53,12 @@ Do not use `alter role ... password '...'` with a plain-text password.
 superuser, so check that the script runs cleanly there and that `verify.sql` passes. `verify.sql` is read-only and
 prints one `PASS` or `FAIL` line per check, then a summary line. It checks:
 
-- `migrator` and `app_admin` have `BYPASSRLS`; `app_user` and `jobrunr_user` do not;
+- `migrator` and `app_admin` have `BYPASSRLS`; `app_user`, `jobrunr_user` and `secrets_user` do not;
 - no Northstar role is a superuser or can create roles or databases;
-- `migrator`, `app_user` and `jobrunr_user` can log in, `app_admin` not yet;
-- `app_user` and `jobrunr_user` are members of no other role, and `postgres` can act as `migrator`;
-- `migrator` owns both schemas, `jobrunr_user` cannot reach `northstar` and `app_user` cannot reach `jobrunr`;
+- `migrator`, `app_user`, `jobrunr_user` and `secrets_user` can log in, `app_admin` not yet;
+- `app_user`, `jobrunr_user` and `secrets_user` are members of no other role, and `postgres` can act as `migrator`;
+- `migrator` owns all four schemas; `jobrunr_user` and `secrets_user` cannot reach `northstar`, and `app_user` cannot
+  reach `jobrunr`, `secrets` or `ingest`;
 - the two findings from the local image that Phase 1 relies on: `migrator` cannot use schema `auth` (so `user_profiles`
   has no foreign key to `auth.users` and the service enforces it), and `citext` is available but not installed (so
   `invites.email` is plain text with a `lower(email)` index).
@@ -75,9 +84,11 @@ docker run --rm -it -v "$PWD/db/bootstrap:/bootstrap:ro" postgres:17-alpine \
 alter role migrator login;
 alter role app_user login;
 alter role jobrunr_user login;
+alter role secrets_user login;
 \password migrator
 \password app_user
 \password jobrunr_user
+\password secrets_user
 \q
 
 # 3. Verify (same command as step 1 with -f /bootstrap/verify.sql); every line must say PASS
@@ -89,5 +100,6 @@ DigitalOcean variable (`docs/staging-runbook.md`), then clear the clipboard with
 time. Before starting, turn off any clipboard-history app (Raycast, Alfred, Maccy, Paste and the like) or pause its
 history, so no password is kept in it.
 
-Leave `app_admin` without a login until Phase 8. Then run `verify.sql` again after the first deploy has migrated the
+Run `roles.sql` before `verify.sql` after pulling a change to it: `verify.sql` names every role and schema, and stops
+with an error rather than a FAIL line if one does not exist yet. Leave `app_admin` without a login until Phase 8. Then run `verify.sql` again after the first deploy has migrated the
 database. Only after it passes does Flyway run as `migrator`, through the deploy's pre-deploy job.
