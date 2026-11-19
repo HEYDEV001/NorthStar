@@ -5,6 +5,8 @@ import com.zaxxer.hikari.HikariDataSource;
 import java.time.Duration;
 import java.util.List;
 import java.util.Locale;
+import java.util.regex.Matcher;
+import java.util.regex.Pattern;
 import org.jobrunr.jobs.filters.RetryFilter;
 import org.jobrunr.jobs.mappers.JobMapper;
 import org.jobrunr.scheduling.JobRequestScheduler;
@@ -39,6 +41,8 @@ import org.springframework.context.annotation.Configuration;
  */
 @Configuration(proxyBeanMethods = false)
 class JobsConfiguration {
+
+    private static final Pattern PERCENT_ESCAPE = Pattern.compile("%([0-9a-fA-F]{2})");
 
     static final String TABLE_PREFIX = "jobrunr.";
 
@@ -123,13 +127,32 @@ class JobsConfiguration {
      * a URL that logs or error messages may print.
      */
     static boolean carriesPassword(String url) {
-        String lower = url.toLowerCase(Locale.ROOT);
+        String lower = withoutPercentEscapes(url).toLowerCase(Locale.ROOT);
         int authorityStart = lower.indexOf("//");
         int authorityEnd = authorityStart < 0 ? -1 : lower.indexOf('/', authorityStart + 2);
         String authority = authorityStart < 0
                 ? ""
                 : lower.substring(authorityStart + 2, authorityEnd < 0 ? lower.length() : authorityEnd);
         return lower.contains("password") || authority.contains("@");
+    }
+
+    /**
+     * The URL with %XX escapes undone, repeatedly (so %2577 counts as w). The driver decodes parameter values but not
+     * names, so {@code pass%77ord=...} is no password to it, yet the secret would still sit in a URL that logs print.
+     * The same rule is in every copy of this check (DatabaseUrlCheck, JobsConfiguration, CredentialsConfiguration and
+     * the migration runner); UrlPasswordChecksTests runs the same cases against all of them.
+     */
+    private static String withoutPercentEscapes(String url) {
+        String current = url;
+        for (int pass = 0; pass < 5; pass++) {
+            String decoded = PERCENT_ESCAPE
+                    .matcher(current)
+                    .replaceAll(escape ->
+                            Matcher.quoteReplacement(String.valueOf((char) Integer.parseInt(escape.group(1), 16))));
+            if (decoded.equals(current)) return decoded;
+            current = decoded;
+        }
+        return current;
     }
 
     /** JobRunr's Postgres storage on the private pool, which it closes when Spring closes the storage. */

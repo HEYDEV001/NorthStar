@@ -53,7 +53,7 @@ public class TestcontainersConfiguration {
     }
 
     /** Throwaway passwords for this test run's migrator, app_user, jobrunr_user and secrets_user logins. */
-    record TestLogins(
+    public record TestLogins(
             String migratorPassword, String appUserPassword, String jobRunrPassword, String secretsUserPassword) {}
 
     @Bean
@@ -89,6 +89,24 @@ public class TestcontainersConfiguration {
             registry.add("northstar.jobs.database.url", postgres::getJdbcUrl);
             registry.add("northstar.jobs.database.username", () -> "jobrunr_user");
             registry.add("northstar.jobs.database.password", logins::jobRunrPassword);
+        };
+    }
+
+    /**
+     * The worker's credential pool connects as secrets_user (step 2.1b), with a random key per run (never real). Only
+     * contexts with the worker on build the credential store; the rest never read these.
+     */
+    @Bean
+    DynamicPropertyRegistrar credentialsConnection(PostgreSQLContainer postgres, TestLogins logins) {
+        byte[] key = new byte[32];
+        new java.security.SecureRandom().nextBytes(key);
+        String keys = "test-1:" + java.util.Base64.getEncoder().encodeToString(key);
+        return registry -> {
+            registry.add("northstar.credentials.database.url", postgres::getJdbcUrl);
+            registry.add("northstar.credentials.database.username", () -> "secrets_user");
+            registry.add("northstar.credentials.database.password", logins::secretsUserPassword);
+            registry.add("northstar.credentials.keys", () -> keys);
+            registry.add("northstar.credentials.active-key", () -> "test-1");
         };
     }
 

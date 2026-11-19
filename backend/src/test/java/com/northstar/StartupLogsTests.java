@@ -9,6 +9,7 @@ import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.test.context.SpringBootTest;
 import org.springframework.boot.test.system.CapturedOutput;
 import org.springframework.boot.test.system.OutputCaptureExtension;
+import org.springframework.context.ApplicationContext;
 import org.springframework.context.annotation.Import;
 import org.springframework.core.env.Environment;
 
@@ -24,10 +25,15 @@ class StartupLogsTests {
 
     private final Environment environment;
     private final TestcontainersConfiguration.TestLogins logins;
+    private final ApplicationContext context;
 
-    StartupLogsTests(@Autowired Environment environment, @Autowired TestcontainersConfiguration.TestLogins logins) {
+    StartupLogsTests(
+            @Autowired Environment environment,
+            @Autowired TestcontainersConfiguration.TestLogins logins,
+            @Autowired ApplicationContext context) {
         this.environment = environment;
         this.logins = logins;
+        this.context = context;
     }
 
     @Test
@@ -37,9 +43,15 @@ class StartupLogsTests {
                 environment.getRequiredProperty("northstar.invites.token-key"),
                 environment.getRequiredProperty("northstar.jobs.database.password"),
                 logins.appUserPassword(),
-                logins.migratorPassword());
+                logins.migratorPassword(),
+                logins.secretsUserPassword(),
+                // The credential key, without its ID: the base64 of the 32 bytes.
+                environment.getRequiredProperty("northstar.credentials.keys").substring("test-1:".length()));
 
         assertThat(output).as("the capture covers the startup").contains("Started ");
+        assertThat(context.getBeanNamesForType(com.northstar.integrations.internal.CredentialStoreProbe.storeType()))
+                .as("the worker built its credential store, connecting as secrets_user")
+                .hasSize(1);
         for (String secret : secrets) {
             assertThat(secret).hasSizeGreaterThan(16);
             assertThat(output.getAll()).doesNotContain(secret);

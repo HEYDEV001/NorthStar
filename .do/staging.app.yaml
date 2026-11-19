@@ -6,7 +6,7 @@
 #
 # Values: only the fixed, non-secret ones are in this file. Everything else is typed into the DigitalOcean dashboard,
 # secrets with Encrypt ticked. Variables are declared per component, never app-wide, so the migrator's credentials
-# reach only the migrate job, and the email and invite secrets only the worker. All are runtime-only: nothing reaches a
+# reach only the migrate job, and the email, invite and tenant-credential secrets only the worker. All are runtime-only: nothing reaches a
 # build. StagingAppSpecTests checks these rules; the deploy job fails if the live app's components or variables drift
 # from this file.
 name: northstar-staging
@@ -117,6 +117,21 @@ workers:
       - key: NORTHSTAR_INVITE_TOKEN_KEY
         scope: RUN_TIME
         type: SECRET
+      # secrets_user.<project-ref>: the only role that can read tenant credentials (step 2.1b). Never on api or migrate.
+      - key: SECRETS_DB_USER
+        scope: RUN_TIME
+        type: GENERAL
+      - key: SECRETS_DB_PASSWORD
+        scope: RUN_TIME
+        type: SECRET
+      # Comma-separated keyId:base64 entries, each 32 random bytes; keep an offline copy (docs/staging-runbook.md).
+      - key: NORTHSTAR_CREDENTIAL_KEYS
+        scope: RUN_TIME
+        type: SECRET
+      # The key ID that encrypts new values, e.g. stg-2026-11 (an ID, not a key).
+      - key: NORTHSTAR_CREDENTIAL_ACTIVE_KEY
+        scope: RUN_TIME
+        type: GENERAL
       # No staging frontend before the frontend phase; change it then (roadmap 1.15 note).
       - key: NORTHSTAR_APP_URL
         scope: RUN_TIME
