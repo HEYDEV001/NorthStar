@@ -154,6 +154,9 @@ Run the formatter and the relevant tests before every commit. Update this sectio
 - Edge-case tests are named with their case ID first, e.g. `W18_duplicateRazorpayWebhookCreatesOnePayment`.
   A phase is done only when every case for that phase passes.
 - Backend integration tests run against real Postgres with RLS on (Testcontainers), never H2.
+- Tests never read `.env.local`: the test classpath turns the app's import of it off, so a test behaves the same on a
+  developer's machine as in CI (`LocalEnvFileTests`). `spring-boot:run`, `spring-boot:test-run` and `initialize` still
+  read it.
 - External providers are faked through the adapter interfaces; fakes must be able to simulate duplicates,
   delays, timeouts, 429s and auth failures.
 - The cross-tenant isolation tests (P9, P10, P11) run on every pull request and block the merge: the `cross-tenant`

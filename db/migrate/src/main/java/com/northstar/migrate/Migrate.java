@@ -7,6 +7,8 @@ import java.util.List;
 import java.util.Locale;
 import java.util.Map;
 import java.util.Set;
+import java.util.regex.Matcher;
+import java.util.regex.Pattern;
 import org.flywaydb.core.Flyway;
 import org.flywaydb.core.api.FlywayException;
 import org.flywaydb.core.api.MigrationInfo;
@@ -28,6 +30,8 @@ import org.flywaydb.core.api.output.MigrateResult;
  * only: never the password, a URL carrying credentials, or the SQL a migration runs (see {@link MigrationLog}).
  */
 public final class Migrate {
+
+    private static final Pattern PERCENT_ESCAPE = Pattern.compile("%([0-9a-fA-F]{2})");
 
     /** Where the image puts db/migrations; the runner reads nothing else. */
     static final Path MIGRATIONS = Path.of("/opt/northstar/migrations");
@@ -94,13 +98,32 @@ public final class Migrate {
 
     /** A password belongs in FLYWAY_PASSWORD, never in the URL, where logs and error messages may show it. */
     static boolean carriesCredentials(String url) {
-        String lower = url.toLowerCase(Locale.ROOT);
+        String lower = withoutPercentEscapes(url).toLowerCase(Locale.ROOT);
         int authorityStart = lower.indexOf("//");
         int authorityEnd = authorityStart < 0 ? -1 : lower.indexOf('/', authorityStart + 2);
         String authority = authorityStart < 0
                 ? ""
                 : lower.substring(authorityStart + 2, authorityEnd < 0 ? lower.length() : authorityEnd);
         return lower.contains("password") || authority.contains("@");
+    }
+
+    /**
+     * The URL with %XX escapes undone, repeatedly (so %2577 counts as w). The driver decodes parameter values but not
+     * names, so {@code pass%77ord=...} is no password to it, yet the secret would still sit in a URL that logs print.
+     * The same rule is in every copy of this check (DatabaseUrlCheck, JobsConfiguration, CredentialsConfiguration and
+     * the migration runner); UrlPasswordChecksTests runs the same cases against all of them.
+     */
+    private static String withoutPercentEscapes(String url) {
+        String current = url;
+        for (int pass = 0; pass < 5; pass++) {
+            String decoded = PERCENT_ESCAPE
+                    .matcher(current)
+                    .replaceAll(escape ->
+                            Matcher.quoteReplacement(String.valueOf((char) Integer.parseInt(escape.group(1), 16))));
+            if (decoded.equals(current)) return decoded;
+            current = decoded;
+        }
+        return current;
     }
 
     /** After a failed validation, the migrations that caused it: version, state and whether the checksum matches. */
