@@ -112,6 +112,19 @@ public final class TestData {
                 .single();
     }
 
+    /** A WhatsApp account for the tenant, returning its random phone number ID: the key webhooks are routed by. */
+    public String whatsAppNumber(UUID tenant) {
+        String phoneNumberId = "pn-" + UUID.randomUUID();
+        admin.sql("""
+                        insert into northstar.whatsapp_accounts (tenant_id, waba_id, phone_number_id)
+                        values (:tenant, :waba, :phone)""")
+                .param("tenant", tenant)
+                .param("waba", "waba-" + UUID.randomUUID())
+                .param("phone", phoneNumberId)
+                .update();
+        return phoneNumberId;
+    }
+
     /** An open lead for a new contact on the given version, assigned to the membership (null: unassigned). */
     public UUID lead(UUID tenant, UUID version, UUID assignedMembership) {
         return admin.sql("""

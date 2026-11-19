@@ -45,6 +45,8 @@ class StartupLogsTests {
                 logins.appUserPassword(),
                 logins.migratorPassword(),
                 logins.secretsUserPassword(),
+                environment.getRequiredProperty("northstar.webhooks.whatsapp.app-secret"),
+                environment.getRequiredProperty("northstar.webhooks.whatsapp.verify-token"),
                 // The credential key, without its ID: the base64 of the 32 bytes.
                 environment.getRequiredProperty("northstar.credentials.keys").substring("test-1:".length()));
 

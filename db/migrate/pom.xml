@@ -36,10 +36,10 @@
       <groupId>org.flywaydb</groupId>
       <artifactId>flyway-database-postgresql</artifactId>
     </dependency>
+    <!-- Compile scope: Migrate builds its connection as a PGSimpleDataSource, to turn off logServerErrorDetail. -->
     <dependency>
       <groupId>org.postgresql</groupId>
       <artifactId>postgresql</artifactId>
-      <scope>runtime</scope>
     </dependency>
   </dependencies>
 

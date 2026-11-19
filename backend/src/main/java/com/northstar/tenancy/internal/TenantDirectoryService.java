@@ -53,7 +53,7 @@ class TenantDirectoryService implements TenantDirectory {
     @Override
     public Optional<UUID> currentMembershipId() {
         TenantContext context = TenantScope.require();
-        if (context.isSystem()) return Optional.empty();
+        if (!context.hasUser()) return Optional.empty();
         return readOnly.execute(status -> memberships.findByUserId(context.userId()).stream()
                 .filter(membership -> Members.ACTIVE.equals(membership.getStatus()))
                 .map(Membership::getId)

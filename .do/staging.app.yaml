@@ -6,7 +6,8 @@
 #
 # Values: only the fixed, non-secret ones are in this file. Everything else is typed into the DigitalOcean dashboard,
 # secrets with Encrypt ticked. Variables are declared per component, never app-wide, so the migrator's credentials
-# reach only the migrate job, and the email, invite and tenant-credential secrets only the worker. All are runtime-only: nothing reaches a
+# reach only the migrate job, the email, invite and tenant-credential secrets only the worker, and the WhatsApp webhook
+# secrets only the api. All are runtime-only: nothing reaches a
 # build. StagingAppSpecTests checks these rules; the deploy job fails if the live app's components or variables drift
 # from this file.
 name: northstar-staging
@@ -66,6 +67,15 @@ services:
       - key: SUPABASE_URL
         scope: RUN_TIME
         type: GENERAL
+      # WhatsApp webhooks (step 2.2): the staging Meta test app's App Secret (App settings > Basic), which signs every
+      # delivery, and the verify token typed into its Webhooks settings (32+ random characters). API only: the worker
+      # serves no webhooks. Without either the API refuses to start (docs/staging-runbook.md).
+      - key: NORTHSTAR_WHATSAPP_APP_SECRET
+        scope: RUN_TIME
+        type: SECRET
+      - key: NORTHSTAR_WHATSAPP_VERIFY_TOKEN
+        scope: RUN_TIME
+        type: SECRET
 
 workers:
   - name: worker

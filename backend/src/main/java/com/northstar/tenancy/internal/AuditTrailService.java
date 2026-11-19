@@ -26,9 +26,12 @@ class AuditTrailService implements AuditTrail {
         auditLog.save(AuditLogEntry.change(actor(), action, targetTable, targetId, from, to));
     }
 
-    /** The system actor has no profile, so its entries name no user (actor_user_id references user_profiles). */
+    /**
+     * The system and webhook actors have no profile, so their entries name no user (actor_user_id references
+     * user_profiles).
+     */
     private static UUID actor() {
         TenantContext context = TenantScope.require();
-        return context.isSystem() ? null : context.userId();
+        return context.hasUser() ? context.userId() : null;
     }
 }

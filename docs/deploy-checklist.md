@@ -27,6 +27,9 @@ and rotate secrets on staging: `docs/staging-runbook.md`.
       `DB_URL` on port 6543, both with `?sslmode=require`, and pooler user names of the form `<role>.<project-ref>`.
 - [ ] No database URL carries a password: the app, JobRunr's pool and the migration runner each refuse to start if one
       does. Passwords go in `DB_PASSWORD`, `JOBRUNR_DB_PASSWORD`, `SECRETS_DB_PASSWORD` and `FLYWAY_PASSWORD`.
+- [ ] Every pool sets `logServerErrorDetail=false` (database errors keep their SQL state and primary message, never row
+      values) and the transaction-pooler pools `prepareThreshold=0`; Hikari data-source properties are given as
+      strings, or the driver ignores them (`DatabaseErrorDetailTests`).
 - [ ] Production: `sslmode=verify-full` with Supabase's CA certificate, once it is confirmed to validate the pooler.
 - [ ] `jobrunr_user` has a login and its own generated password (`JOBRUNR_DB_USER`, `JOBRUNR_DB_PASSWORD`); JobRunr also uses the transaction pooler (it keeps no session state).
 - [ ] `secrets_user` has a login and its own generated password, set only on the worker (never on the api or the
@@ -54,6 +57,17 @@ and rotate secrets on staging: `docs/staging-runbook.md`.
 - [ ] `RESEND_API_KEY` is set in the worker container (sending access only), separate per environment; `NORTHSTAR_EMAIL_FROM` is an address on the verified sub-domain.
 - [ ] `NORTHSTAR_EMAIL_PROVIDER` is unset or `resend`; `mailpit` is for local development only and refuses any host but localhost.
 - [ ] `NORTHSTAR_INVITE_TOKEN_KEY` is 32+ random bytes (base64), generated per environment, in the worker container only. Rotating it affects only invite emails still being retried at that moment: their retries fail with an alert, and the admin resends those invites. Already-sent links keep working.
+
+## WhatsApp webhooks
+
+- [ ] `NORTHSTAR_WHATSAPP_APP_SECRET` is the App Secret of this environment's own Meta app (staging: the separate test
+      app), and `NORTHSTAR_WHATSAPP_VERIFY_TOKEN` is 32+ random characters generated for this environment
+      (`openssl rand -hex 32`). Both are encrypted variables on the api component only; the API refuses to start
+      without either (a worker-on process answers 503 on the webhook paths instead).
+- [ ] Meta's webhook Callback URL is `https://<api host>/webhooks/whatsapp` and its Verify and save passed.
+- [ ] Until step 2.8, only the `messages` webhook field is subscribed.
+- [ ] Only `GET` and `POST /webhooks/whatsapp` are public; every other path still needs a Supabase token
+      (`SecurityConfiguration`).
 
 ## App configuration
 

@@ -45,6 +45,15 @@ class CredentialsConfiguration {
         if (password.isBlank()) {
             throw new IllegalStateException("SECRETS_DB_PASSWORD is required when the worker is on");
         }
+        return new CredentialStore(credentialsPool(url, username, password, poolSize), new CredentialCipher(keyring));
+    }
+
+    /**
+     * The credential store's private pool, as secrets_user. Errors carry Postgres's primary message only
+     * (logServerErrorDetail=false), never the detail that can quote row values, as every Northstar pool does
+     * (application.properties).
+     */
+    static HikariDataSource credentialsPool(String url, String username, String password, int poolSize) {
         HikariConfig config = new HikariConfig();
         config.setPoolName("credentials");
         config.setJdbcUrl(url);
@@ -52,9 +61,11 @@ class CredentialsConfiguration {
         config.setPassword(password);
         config.setMaximumPoolSize(poolSize);
         config.setMinimumIdle(1);
-        config.addDataSourceProperty("prepareThreshold", 0);
-        HikariDataSource pool = new HikariDataSource(config);
-        return new CredentialStore(pool, new CredentialCipher(keyring));
+        // Strings, not numbers or booleans: Hikari hands these to the driver as Properties, and the driver reads only
+        // String values (a non-String value is silently ignored).
+        config.addDataSourceProperty("prepareThreshold", "0");
+        config.addDataSourceProperty("logServerErrorDetail", "false");
+        return new HikariDataSource(config);
     }
 
     /**

@@ -1,5 +1,6 @@
 package com.northstar;
 
+import com.northstar.fakes.HmacSigner;
 import java.sql.Connection;
 import java.sql.DriverManager;
 import java.sql.SQLException;
@@ -79,6 +80,31 @@ public class TestcontainersConfiguration {
             registry.add("northstar.invites.token-key", () -> encodedTokenKey);
             registry.add("northstar.email.resend.api-key", () -> resendKey);
             registry.add("northstar.email.from", () -> "Northstar <invites@example.test>");
+        };
+    }
+
+    /**
+     * The WhatsApp webhook's secrets for this test run (step 2.2): Meta's app secret is the signer's own random secret,
+     * and the verify token is random too; neither is ever a fixture. Tests sign deliveries with {@link #signer()}.
+     */
+    public record WhatsAppTestSecrets(HmacSigner signer, String verifyToken) {}
+
+    @Bean
+    WhatsAppTestSecrets whatsAppTestSecrets() {
+        return new WhatsAppTestSecrets(
+                new HmacSigner("X-Hub-Signature-256", "sha256="), UUID.randomUUID() + "-" + UUID.randomUUID());
+    }
+
+    /**
+     * Registered under the environment variable names, which application.properties reads, rather than the
+     * northstar.webhooks.* keys: dynamic properties outrank a test's own properties, so this way a test can still blank
+     * the northstar.webhooks.* keys to see the app without them.
+     */
+    @Bean
+    DynamicPropertyRegistrar whatsAppWebhookSecrets(WhatsAppTestSecrets secrets) {
+        return registry -> {
+            registry.add("NORTHSTAR_WHATSAPP_APP_SECRET", () -> secrets.signer().secret());
+            registry.add("NORTHSTAR_WHATSAPP_VERIFY_TOKEN", secrets::verifyToken);
         };
     }
 

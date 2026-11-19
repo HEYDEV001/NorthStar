@@ -73,6 +73,8 @@ in the repo, a command line, a log or a chat.
 | `NORTHSTAR_INVITE_TOKEN_KEY` | DigitalOcean encrypted variable | `worker` only |
 | secrets_user password (`SECRETS_DB_PASSWORD`) | DigitalOcean encrypted variable | `worker` only |
 | `NORTHSTAR_CREDENTIAL_KEYS` (decrypts every business's tokens) | DigitalOcean encrypted variable, plus the offline copy | `worker` only |
+| `NORTHSTAR_WHATSAPP_APP_SECRET` (the staging Meta test app's App Secret) | DigitalOcean encrypted variable; Meta's App Dashboard | `api` only |
+| `NORTHSTAR_WHATSAPP_VERIFY_TOKEN` | DigitalOcean encrypted variable; Meta's webhook settings | `api` only |
 | `DIGITALOCEAN_ACCESS_TOKEN` | GitHub environment secret, environment `staging` | `deploy-staging` job only |
 
 Plain variables, typed in the dashboard (not secret, but kept out of the repo because they name the project):
@@ -112,6 +114,25 @@ address.** An invite to anyone else fails permanently as `sender_not_allowed`: i
 and nothing is paused. To invite other people, verify a staging sub-domain in Resend (SPF, DKIM), change
 `NORTHSTAR_EMAIL_FROM` in `.do/staging.app.yaml` and in the dashboard to an address on it, and deploy.
 
+## WhatsApp webhooks on staging
+
+Meta posts every WhatsApp delivery to `POST /webhooks/whatsapp` on the `api` component (step 2.2,
+`integration-specs.md` sections 1 and 2). Staging uses Meta's separate test app and test number, never the live app.
+The API refuses to start without both secrets; set them before the first deploy that includes step 2.2.
+
+1. **App secret:** Meta App Dashboard → the staging test app → App settings → Basic → App secret → Show. Copy it into
+   App → Settings → `api` → Environment Variables → `NORTHSTAR_WHATSAPP_APP_SECRET` (Encrypt ticked). Save.
+2. **Verify token:** `openssl rand -hex 32 | pbcopy` (hex, so it survives a URL unchanged). Paste into `api` →
+   `NORTHSTAR_WHATSAPP_VERIFY_TOKEN` (Encrypt ticked), Save, and keep it on the clipboard for step 3.
+3. **Subscribe, after the deploy is active:** Meta App Dashboard → WhatsApp → Configuration → Webhook → Edit. Callback
+   URL `https://<app>.ondigitalocean.app/webhooks/whatsapp`, Verify token: paste. Verify and save: Meta calls the GET
+   handshake, which echoes its challenge only for the right token. Then `pbcopy < /dev/null`.
+4. **Webhook fields:** subscribe to `messages` only. Template, quality and account updates are keyed by the WABA ID,
+   which step 2.8 routes; until then the API accepts them with a 200 and stores nothing.
+5. **Check:** App → Runtime Logs shows `webhook.verification provider=whatsapp status=200`. Send a message to the test
+   number: the logs show `webhook.received ... stored=1` once the number's `whatsapp_accounts` row exists, or
+   `webhook.unknown_account ... unrouted_id=<id>` before it does (parked, never processed).
+
 ## First deploy (once)
 
 1. **Supabase:** turn on Enforce SSL, then run `roles.sql`, set the four passwords (`migrator`, `app_user`,
@@ -147,6 +168,9 @@ and nothing is paused. To invite other people, verify a staging sub-domain in Re
 9. **Smoke test:**
    - `curl https://<app>.ondigitalocean.app/actuator/health` → `{"status":"UP"}`.
    - `curl -i https://<app>.ondigitalocean.app/api/v1/members` → 401 with an `X-Request-Id` header.
+   - `curl -i -X POST -H 'Content-Type: application/json' -d '{}' https://<app>.ondigitalocean.app/webhooks/whatsapp`
+     → 401 `invalid_signature` (an unsigned delivery is refused and parked as metadata only).
+   - The WhatsApp webhook handshake passes (WhatsApp webhooks on staging, step 3).
    - App → Runtime Logs: lines carry `request_id`, `tenant_id`, `user_id` and status codes only.
    - Run `verify.sql` again: every line PASS, now with the schema migrated.
 10. Tick `docs/deploy-checklist.md` for staging.
@@ -284,6 +308,15 @@ running uses it, so there is no gap.
 **`NORTHSTAR_INVITE_TOKEN_KEY`.** `openssl rand -base64 32 | pbcopy`, paste into `worker` →
 `NORTHSTAR_INVITE_TOKEN_KEY`, Save, clear the clipboard. Links already sent keep working; invite emails being retried
 at that moment fail with an alert, and the admin resends them.
+
+**`NORTHSTAR_WHATSAPP_APP_SECRET`.** Meta App Dashboard → App settings → Basic → App secret → Reset, copy the new one
+into `api` → `NORTHSTAR_WHATSAPP_APP_SECRET`, Save. Until the redeploy finishes, Meta's deliveries carry the new
+signature and the API answers 401 (each is parked as metadata only); Meta retries non-200 deliveries for up to 7 days,
+so they arrive once the new secret is live. Watch for `webhook.signature_invalid` lines stopping.
+
+**`NORTHSTAR_WHATSAPP_VERIFY_TOKEN`.** Used only for Meta's subscription handshake. `openssl rand -hex 32 | pbcopy`,
+paste into `api` → `NORTHSTAR_WHATSAPP_VERIFY_TOKEN`, Save; after the redeploy, paste the same value in Meta's webhook
+settings and Verify and save. Clear the clipboard.
 
 **`postgres` password.** Supabase → Project Settings → Database → Reset database password, generated as above. Nothing
 in DigitalOcean or GitHub uses it.

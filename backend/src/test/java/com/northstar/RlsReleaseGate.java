@@ -152,7 +152,11 @@ record RlsReleaseGate(
                     "northstar.slug_is_taken(candidate text)",
                     "northstar.accept_invite(p_token_hash text, p_email text)",
                     "northstar.tenants_with_due_actions()",
-                    "northstar.set_invite_token(p_invite_id uuid, p_token_hash text)"),
+                    "northstar.set_invite_token(p_invite_id uuid, p_token_hash text)",
+                    "northstar.whatsapp_tenants(p_phone_number_ids text[])",
+                    "northstar.park_invalid_signature(p_provider text, p_body_bytes integer)",
+                    "northstar.park_unknown_account(p_provider text, p_provider_event_id text, p_routing_key text,"
+                            + " p_body_bytes integer, p_payload jsonb)"),
             // Schemas that belong to one login role: no other app or browser role may use the schema or anything in
             // it, and that role may use no other scanned schema. A tenant table in one has its tenant_isolation policy
             // for that role instead of app_user.
