@@ -39,12 +39,26 @@ class StagingAppSpecTests {
                             "NORTHSTAR_EMAIL_FROM",
                             "RESEND_API_KEY",
                             "NORTHSTAR_INVITE_TOKEN_KEY",
-                            "NORTHSTAR_APP_URL")),
+                            "NORTHSTAR_APP_URL",
+                            "SECRETS_DB_USER",
+                            "SECRETS_DB_PASSWORD",
+                            "NORTHSTAR_CREDENTIAL_KEYS",
+                            "NORTHSTAR_CREDENTIAL_ACTIVE_KEY")),
             "migrate",
             Set.of("FLYWAY_URL", "FLYWAY_USER", "FLYWAY_PASSWORD"));
 
     private static final Set<String> SECRETS = Set.of(
-            "DB_PASSWORD", "JOBRUNR_DB_PASSWORD", "FLYWAY_PASSWORD", "RESEND_API_KEY", "NORTHSTAR_INVITE_TOKEN_KEY");
+            "DB_PASSWORD",
+            "JOBRUNR_DB_PASSWORD",
+            "FLYWAY_PASSWORD",
+            "RESEND_API_KEY",
+            "NORTHSTAR_INVITE_TOKEN_KEY",
+            "SECRETS_DB_PASSWORD",
+            "NORTHSTAR_CREDENTIAL_KEYS");
+
+    /** Tenant credentials are read only in the worker (step 2.1b): its login to them, and the keys that decrypt them. */
+    private static final Set<String> CREDENTIAL_VARIABLES = Set.of(
+            "SECRETS_DB_USER", "SECRETS_DB_PASSWORD", "NORTHSTAR_CREDENTIAL_KEYS", "NORTHSTAR_CREDENTIAL_ACTIVE_KEY");
 
     private final Map<String, Object> spec = load();
 
@@ -74,6 +88,28 @@ class StagingAppSpecTests {
                     }
                 }));
         assertThat(problems).isEmpty();
+    }
+
+    @Test
+    void onlyTheWorkerCanReadTenantCredentials() {
+        components().forEach((name, component) -> {
+            Set<String> present = new TreeSet<>(variables(component).keySet());
+            present.retainAll(CREDENTIAL_VARIABLES);
+            if (name.equals("worker")) {
+                assertThat(present).as("the worker").containsExactlyInAnyOrderElementsOf(CREDENTIAL_VARIABLES);
+            } else {
+                assertThat(present)
+                        .as(name + ": the API and the migrate job never read tenant credentials")
+                        .isEmpty();
+            }
+        });
+        Map<String, Map<String, Object>> worker = variables(components().get("worker"));
+        assertThat(worker.get("NORTHSTAR_CREDENTIAL_KEYS"))
+                .containsEntry("type", "SECRET")
+                .doesNotContainKey("value");
+        assertThat(worker.get("SECRETS_DB_PASSWORD"))
+                .containsEntry("type", "SECRET")
+                .doesNotContainKey("value");
     }
 
     @Test

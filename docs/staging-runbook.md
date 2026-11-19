@@ -27,8 +27,10 @@ registry tag deletion and garbage collection with the token's scopes, and everyt
 - re-run `roles.sql` and then `verify.sql` on the staging project (`db/bootstrap/README.md`, Commands (hosted)).
   Since step 2.1a they also create and check the `secrets_user` role and the `secrets` and `ingest` schemas, which the
   migrations need; the 18 PASS lines above predate them. In the same session, turn on `secrets_user`'s login and set
-  its password with `\password secrets_user`, then store it as the worker's encrypted variable (step 2.1b adds the
-  variable to `.do/staging.app.yaml`).
+  its password with `\password secrets_user`;
+- generate the credential key and keep its offline copy (Secrets, Generating the credential key). When the app is
+  created in step 7, `worker` needs `SECRETS_DB_USER`, `SECRETS_DB_PASSWORD`, `NORTHSTAR_CREDENTIAL_KEYS` and
+  `NORTHSTAR_CREDENTIAL_ACTIVE_KEY` (step 2.1b): the worker refuses to start without them.
 
 ## What runs where
 
@@ -69,12 +71,16 @@ in the repo, a command line, a log or a chat.
 | jobrunr_user password (`JOBRUNR_DB_PASSWORD`) | DigitalOcean encrypted variable | `api` (it queues jobs), `worker` |
 | `RESEND_API_KEY` (sending access only) | DigitalOcean encrypted variable | `worker` only |
 | `NORTHSTAR_INVITE_TOKEN_KEY` | DigitalOcean encrypted variable | `worker` only |
+| secrets_user password (`SECRETS_DB_PASSWORD`) | DigitalOcean encrypted variable | `worker` only |
+| `NORTHSTAR_CREDENTIAL_KEYS` (decrypts every business's tokens) | DigitalOcean encrypted variable, plus the offline copy | `worker` only |
 | `DIGITALOCEAN_ACCESS_TOKEN` | GitHub environment secret, environment `staging` | `deploy-staging` job only |
 
 Plain variables, typed in the dashboard (not secret, but kept out of the repo because they name the project):
 `FLYWAY_URL` (session pooler, port 5432) and `FLYWAY_USER` (`migrator.<project-ref>`) on `migrate`; `DB_URL`
 (transaction pooler, port 6543), `DB_USER` (`app_user.<project-ref>`), `JOBRUNR_DB_USER` (`jobrunr_user.<project-ref>`)
-and `SUPABASE_URL` on `api` and `worker`. Both URLs end in `?sslmode=require` and never carry a password. The fixed
+and `SUPABASE_URL` on `api` and `worker`; `SECRETS_DB_USER` (`secrets_user.<project-ref>`) and
+`NORTHSTAR_CREDENTIAL_ACTIVE_KEY` (the key ID, not the key) on `worker` only. Both URLs end in `?sslmode=require` and
+never carry a password. The fixed
 values (`NORTHSTAR_WORKER_ENABLED`, `NORTHSTAR_EMAIL_PROVIDER`, `NORTHSTAR_EMAIL_FROM`, `NORTHSTAR_APP_URL`) are in the
 spec file.
 
@@ -82,6 +88,21 @@ spec file.
 showing them. Paste where it goes, then clear the clipboard with `pbcopy < /dev/null`. Before any password step, turn
 off or pause every clipboard-history app (Raycast, Alfred, Maccy, Paste and the like), so no secret is kept in its
 history.
+
+**Generating the credential key** (`NORTHSTAR_CREDENTIAL_KEYS`, `integration-specs.md` section 7). It encrypts every
+business's WhatsApp, Razorpay, Google and Meta tokens. Each environment has its own; never reuse one between staging
+and production, or copy one to a laptop.
+
+1. Choose a key ID: the environment and the month, e.g. `stg-2026-11` (lowercase letters, digits and hyphens, at most
+   32 characters).
+2. `printf 'stg-2026-11:%s' "$(openssl rand -base64 32)" | pbcopy` puts the whole entry on the clipboard without
+   showing it.
+3. **Offline copy first.** Paste it into a new item in the team password manager's restricted vault (not the
+   DigitalOcean account, the repo, a chat or a ticket), named `Northstar <environment> credential key <key ID>`, with
+   the date. Losing every copy of a key means every business must reconnect its integrations.
+4. App → Settings → `worker` → Environment Variables: paste into `NORTHSTAR_CREDENTIAL_KEYS` (Encrypt ticked), and set
+   `NORTHSTAR_CREDENTIAL_ACTIVE_KEY` to the key ID. Save.
+5. `pbcopy < /dev/null`.
 
 ## Email on staging
 
@@ -93,8 +114,9 @@ and nothing is paused. To invite other people, verify a staging sub-domain in Re
 
 ## First deploy (once)
 
-1. **Supabase:** turn on Enforce SSL, then run `roles.sql`, set the three passwords and run `verify.sql`
-   (`db/bootstrap/README.md`). Every line must say PASS; on any FAIL, stop.
+1. **Supabase:** turn on Enforce SSL, then run `roles.sql`, set the four passwords (`migrator`, `app_user`,
+   `jobrunr_user`, `secrets_user`) and run `verify.sql` (`db/bootstrap/README.md`). Every line must say PASS; on any
+   FAIL, stop. Generate the credential key and its offline copy now too (Secrets).
 2. **Container registry:** DigitalOcean → Container Registry → Create: Starter plan, Bangalore if offered, a unique
    name. Turn on nothing else.
 3. **Deploy token:** DigitalOcean → API → Tokens → Generate New Token. Name `github-deploy-staging`, expiration 90 days,
@@ -235,6 +257,23 @@ finishes: expect a minute or two of errors on staging. If the pooler still refus
 redeploy, wait a few minutes and redeploy again (App → Actions → Force rebuild and deploy).
 
 **jobrunr_user password (`JOBRUNR_DB_PASSWORD`).** As above with `\password jobrunr_user`, set on `api` and `worker`.
+
+**secrets_user password (`SECRETS_DB_PASSWORD`).** As above with `\password secrets_user`, set on `worker` only. Until
+the redeploy, the worker cannot open new credential connections, so sends that need a token retry.
+
+**Credential key (`NORTHSTAR_CREDENTIAL_KEYS`).** Rotate every 90 days, when someone who could read it leaves, or at
+once if it may have leaked. Old values stay readable while their key is in the list, so a rotation never breaks a
+business's integrations:
+
+1. Generate a new entry with a new key ID and its offline copy (Secrets, Generating the credential key, steps 1 to 3).
+2. Worker → `NORTHSTAR_CREDENTIAL_KEYS`: append `,` and the new entry after the existing ones (paste the full list
+   from the password manager; the dashboard does not show encrypted values). Set `NORTHSTAR_CREDENTIAL_ACTIVE_KEY` to
+   the new key ID. Save. New and refreshed tokens now use the new key.
+3. **Keep the old key in the list.** Every value it made still needs it. Re-encrypting existing values under the new
+   key is a store method today (step 2.1b) without a job that runs it for every business; until that job and its
+   runbook steps exist, never remove a key. After a leak, rotate anyway (new values stop depending on the old key) and
+   ask every business to reconnect, which replaces its tokens.
+4. `pbcopy < /dev/null`.
 
 **migrator password (`FLYWAY_PASSWORD`).** As above with `\password migrator`, set on the `migrate` job only. Nothing
 running uses it, so there is no gap.

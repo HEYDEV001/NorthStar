@@ -26,12 +26,22 @@ and rotate secrets on staging: `docs/staging-runbook.md`.
       On App Platform both go through the pooler (its direct connection is IPv6 only): `FLYWAY_URL` on port 5432,
       `DB_URL` on port 6543, both with `?sslmode=require`, and pooler user names of the form `<role>.<project-ref>`.
 - [ ] No database URL carries a password: the app, JobRunr's pool and the migration runner each refuse to start if one
-      does. Passwords go in `DB_PASSWORD`, `JOBRUNR_DB_PASSWORD` and `FLYWAY_PASSWORD`.
+      does. Passwords go in `DB_PASSWORD`, `JOBRUNR_DB_PASSWORD`, `SECRETS_DB_PASSWORD` and `FLYWAY_PASSWORD`.
 - [ ] Production: `sslmode=verify-full` with Supabase's CA certificate, once it is confirmed to validate the pooler.
 - [ ] `jobrunr_user` has a login and its own generated password (`JOBRUNR_DB_USER`, `JOBRUNR_DB_PASSWORD`); JobRunr also uses the transaction pooler (it keeps no session state).
 - [ ] `secrets_user` has a login and its own generated password, set only on the worker (never on the api or the
       migrate job). It is the only role that can read tenant credentials (`data-model.md` section 9).
-- [ ] Connections fit the plan's pooler client limit: every container opens up to 10 app connections (Hikari's default) plus up to 5 for JobRunr, so 15 per container; at launch (2 API + 1 worker) that is 45, plus Flyway's and operators' sessions. Staging (1 API + 1 worker) uses up to 30.
+
+## Tenant credential key
+
+- [ ] `NORTHSTAR_CREDENTIAL_KEYS` was generated for this environment alone (`docs/staging-runbook.md`, Generating the
+      credential key): 32 random bytes per entry, never shared with another environment or kept on a laptop.
+- [ ] An offline copy of every key in the list is in the team password manager's restricted vault, named with the
+      environment and key ID. Losing every copy means every business reconnects its integrations.
+- [ ] `NORTHSTAR_CREDENTIAL_KEYS` and `SECRETS_DB_PASSWORD` are encrypted variables on the worker only, and
+      `NORTHSTAR_CREDENTIAL_ACTIVE_KEY` names a key in the list (the worker refuses to start otherwise).
+- [ ] No key has been removed from the list while values it made may remain (re-encryption job not built yet).
+- [ ] Connections fit the plan's pooler client limit: every container opens up to 10 app connections (Hikari's default) plus up to 5 for JobRunr, so 15 per container, and the worker 2 more for credentials (17); at launch (2 API + 1 worker) that is 47, plus Flyway's and operators' sessions. Staging (1 API + 1 worker) uses up to 32.
 - [ ] Migrations run only in the deploy's pre-deploy job (`migrate`), as `migrator`. The migrator's credentials are
       set on that job only, never on the api or worker.
 
