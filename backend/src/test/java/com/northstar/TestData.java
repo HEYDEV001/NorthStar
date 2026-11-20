@@ -168,6 +168,63 @@ public final class TestData {
                 .single();
     }
 
+    /** A contact with this E.164 phone number and name (null: none). */
+    public UUID contact(UUID tenant, String phone, String name) {
+        return admin.sql("""
+                        insert into northstar.contacts (tenant_id, normalized_phone, name)
+                        values (:tenant, :phone, :name) returning id""")
+                .param("tenant", tenant)
+                .param("phone", phone)
+                .param("name", name)
+                .query(UUID.class)
+                .single();
+    }
+
+    /**
+     * The contact's WhatsApp conversation on this business number, assigned to the membership (null: unassigned), with no
+     * inbound message yet.
+     */
+    public UUID conversation(UUID tenant, UUID contact, String phoneNumberId, UUID assignedMembership) {
+        return admin.sql("""
+                        insert into northstar.conversations
+                          (tenant_id, contact_id, channel, whatsapp_phone_number_id, assigned_membership_id)
+                        values (:tenant, :contact, 'whatsapp', :number, :assigned) returning id""")
+                .param("tenant", tenant)
+                .param("contact", contact)
+                .param("number", phoneNumberId)
+                .param("assigned", assignedMembership)
+                .query(UUID.class)
+                .single();
+    }
+
+    /**
+     * An open lead in 'qualifying' for this contact and conversation (null: none linked, as a lead entered by hand),
+     * assigned to the membership (null: unassigned).
+     */
+    public UUID lead(UUID tenant, UUID version, UUID contact, UUID conversation, UUID assignedMembership) {
+        return admin.sql("""
+                        insert into northstar.leads
+                          (tenant_id, contact_id, conversation_id, workflow_version_id, stage, origin,
+                           assigned_membership_id)
+                        values (:tenant, :contact, :conversation, :version, 'qualifying', 'direct', :assigned)
+                        returning id""")
+                .param("tenant", tenant)
+                .param("contact", contact)
+                .param("conversation", conversation)
+                .param("version", version)
+                .param("assigned", assignedMembership)
+                .query(UUID.class)
+                .single();
+    }
+
+    /** Moves the lead to a closing stage (lost, junk or completed), which sets closed_at (W2). */
+    public void closeLead(UUID lead, String stage) {
+        admin.sql("update northstar.leads set previous_stage = stage, stage = :stage, closed_at = now() where id = :id")
+                .param("stage", stage)
+                .param("id", lead)
+                .update();
+    }
+
     /** An open lead for a new contact on the given version, assigned to the membership (null: unassigned). */
     public UUID lead(UUID tenant, UUID version, UUID assignedMembership) {
         return admin.sql("""

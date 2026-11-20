@@ -55,6 +55,28 @@ How step 2.4a keeps stored webhooks from being stranded (decided 20 Nov 2026):
   admin view of webhook errors). A row with no failure recorded is never closed without an attempt.
 - **Logs:** counts, webhook event IDs and fixed error codes only.
 
+How step 2.4b processes a stored WhatsApp message (step 6; decided 20 Nov 2026):
+
+- **One transaction per webhook event, as the system actor in its tenant.** The event row is locked first, so runs of
+  one job wait for each other and a processed row is left alone (P1). Then: the message is read from the stored slice;
+  the contact is created if new and locked, so one contact's messages are processed one at a time (P3); its source
+  (`direct` until Phase 7); its open lead; its conversation (created on the receiving number with the open lead's
+  assignee); `last_inbound_at`, moved forward only; the message; the lead; one `message.received` engine event; and
+  `processed_at`. A failure anywhere rolls all of it back.
+- **The lead.** A contact's open lead is joined, and linked to the conversation if it had none (W1). Otherwise a new
+  lead opens in New on the tenant's one published workflow version, with the conversation's assignee (W2: a contact
+  whose lead closed gets a new lead on the same contact and conversation). Reactions and system messages never open a
+  lead. With no single published workflow, everything else is stored, no lead opens, and the row is closed as
+  `no_published_workflow` with a WARN line.
+- **A message already stored** (a replay with `processed_at` cleared) closes the row and writes nothing else, so an old
+  message never opens a lead. Status rows are left untouched (`processed_at` and `error` null) for step 2.7.
+- **Failures.** Retryable, with `processed_at` null and the sweep retrying: `database_unavailable`,
+  `database_conflict`, `database_timeout`, `processing_failed`. Permanent, with `processed_at` set and an ERROR line:
+  `payload_invalid` and `contact_phone_invalid` (a sender that is not an E.164 number, P4). A missing tenant context
+  fails the job loudly and is never recorded (P10).
+- **Logs:** webhook event, message and lead IDs, fixed codes and exception classes only; never message text, profile
+  names, phone numbers, wamids or phone number IDs, and never an exception's message.
+
 **Outbound (actions)**
 
 - Every call is an `actions` row executed by the worker with an idempotency key; provider idempotency headers used where offered.
@@ -92,9 +114,9 @@ Northstar operates as a Meta Tech Provider: each business connects its own Whats
 | Splitting | One delivery can carry several entries and changes, for several numbers and so several tenants, and Meta batches up to 1000 updates without guaranteeing the grouping. Each element of a change's `messages` or `statuses` is one item, stored as its own `webhook_events` row in its number's tenant (one transaction per tenant), with a Meta-shaped slice as payload: the envelope, the entry ID, one change with its `value` fields (metadata, contacts, messaging_product) and only that item. Items for unknown numbers are parked one by one with only their own slice. U+0000 and unpaired surrogates in the slice become U+FFFD (jsonb cannot hold them) |
 | Dedupe | Message ID for messages; message ID + status for status updates. Built as `provider_event_id` = `message:<wamid>` (`messages[].id`) and `status:<wamid>:<status>` (`statuses[].id`, the sent message's wamid, and `statuses[].status`); per item, so a retry batched differently still dedupes (P1). A duplicate is not stored and queues nothing |
 | Not stored (until step 2.8) | Changes whose `field` is not `messages` (template status, quality and account updates, keyed by the WABA ID in `entry.id`), value-level `errors` (no item ID), items without a usable ID and changes without a phone number ID: 200, counted as `ignored` in the log. Only the `messages` field is subscribed until 2.8 routes the rest by WABA |
-| Queueing | One `ProcessWhatsAppWebhook` job (IDs only) per stored row, created after the tenant's transaction commits. Step 2.2's job only confirms the row; processing is step 2.4b. Since step 2.4a the webhook sweep queues it again for a message row still unprocessed past the grace period (section 1) |
-| Inbound types handled | text, interactive button reply, image, document, audio, location |
-| Status updates | sent, delivered, read, failed → `messages.status`, failures → action error |
+| Queueing | One `ProcessWhatsAppWebhook` job (IDs only) per stored row, created after the tenant's transaction commits; it processes the row (step 2.4b, section 1). Since step 2.4a the webhook sweep queues it again for a message row still unprocessed past the grace period (section 1) |
+| Inbound types handled | Stored as (step 2.4b): text → `text`; interactive `button_reply` and `list_reply`, and a template's quick-reply `button` → `interactive`, body the reply's title or text (the button ID stays in the webhook payload for Phase 5); image and document → their type, body the caption; audio and location → their type, no body (media IDs and coordinates stay in the webhook payload, kept 30 days, for step 4.5); video, sticker, contacts, order, reaction, system and any other type → `unsupported`, no body. No media is downloaded yet. Reactions and system messages never open a lead on their own |
+| Status updates | sent, delivered, read, failed → `messages.status`, failures → action error (step 2.7; until then the job leaves status rows untouched) |
 | Click-to-WhatsApp referral | `referral` object on the first message: `source_id`, `source_type`, `source_url`, `headline`, `ctwa_clid` → `ad_referrals`; `ctwa_clid` stored for Conversions API matching |
 
 **Sending**

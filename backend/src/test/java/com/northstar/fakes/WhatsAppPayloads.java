@@ -107,6 +107,104 @@ public final class WhatsAppPayloads {
         return this;
     }
 
+    /**
+     * A delivery holding one inbound message built field by field (step 2.4b): by default a text message "Hello" from
+     * the fake customer 910000000001, profile name "Test Customer", with a random wamid and Meta's timestamp format.
+     */
+    public static Inbound inbound(String phoneNumberId) {
+        return new Inbound(phoneNumberId);
+    }
+
+    /** One inbound message of any type; a null field leaves it out, as Meta would for a field it does not send. */
+    public static final class Inbound {
+
+        private final String phoneNumberId;
+        private String wamid = WhatsAppPayloads.wamid();
+        private String from = "910000000001";
+        private String contactWaId;
+        private String profileName = "Test Customer";
+        private boolean contactsBlock = true;
+        private String timestamp = "1763550000";
+        private String type = "text";
+        private String contentJson = "{\"body\":\"Hello\"}";
+
+        private Inbound(String phoneNumberId) {
+            this.phoneNumberId = phoneNumberId;
+        }
+
+        public Inbound wamid(String wamid) {
+            this.wamid = wamid;
+            return this;
+        }
+
+        /** The sender, as WhatsApp sends it: digits without a plus sign. */
+        public Inbound from(String from) {
+            this.from = from;
+            return this;
+        }
+
+        /** The profile name on the sender's contacts entry; null sends the entry with no name. */
+        public Inbound profileName(String profileName) {
+            this.profileName = profileName;
+            return this;
+        }
+
+        /** The wa_id of the contacts entry, when it should differ from the sender. */
+        public Inbound contactWaId(String waId) {
+            this.contactWaId = waId;
+            return this;
+        }
+
+        /** Leaves out the contacts block entirely. */
+        public Inbound withoutContacts() {
+            this.contactsBlock = false;
+            return this;
+        }
+
+        /** Unix seconds as Meta sends them, a string of digits; null leaves it out. */
+        public Inbound timestamp(String timestamp) {
+            this.timestamp = timestamp;
+            return this;
+        }
+
+        public Inbound sentAt(java.time.Instant at) {
+            return timestamp(Long.toString(at.getEpochSecond()));
+        }
+
+        public Inbound text(String body) {
+            return typed("text", JSON.createObjectNode().put("body", body).toString());
+        }
+
+        /** Any type, with the JSON of its object (for example {@code {"caption":"x"}} for an image); null for none. */
+        public Inbound typed(String type, String contentJson) {
+            this.type = type;
+            this.contentJson = contentJson;
+            return this;
+        }
+
+        public String wamid() {
+            return wamid;
+        }
+
+        public String json() {
+            WhatsAppPayloads delivery = new WhatsAppPayloads();
+            ObjectNode value = delivery.messagesValue(phoneNumberId);
+            if (contactsBlock) {
+                ObjectNode contact = value.putArray("contacts").addObject();
+                contact.put("wa_id", contactWaId != null ? contactWaId : from);
+                ObjectNode profile = contact.putObject("profile");
+                if (profileName != null) profile.put("name", profileName);
+            }
+            ObjectNode message = value.putArray("messages").addObject();
+            if (from != null) message.put("from", from);
+            message.put("id", wamid);
+            if (timestamp != null) message.put("timestamp", timestamp);
+            if (type != null) message.put("type", type);
+            if (type != null && contentJson != null) message.set(type, JSON.readTree(contentJson));
+            return delivery.change("messages", value).json();
+        }
+    }
+
     /** Several changes in one entry, as Meta may batch them. */
     public WhatsAppPayloads inOneEntry() {
         if (entries.size() < 2) return this;
