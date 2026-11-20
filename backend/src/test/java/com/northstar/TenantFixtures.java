@@ -11,8 +11,9 @@ import org.springframework.jdbc.core.simple.JdbcClient;
  * every table with tenant_id from the catalogue and fails, naming the table, when one has no fixture or a fixture names
  * a table that no longer exists: a new tenant table is never silently left out.
  *
- * <p>Rows a staff member could be restricted from (leads) are assigned to the tenant's staff member, so every role has
- * a row of its own tenant to see.
+ * <p>Rows a staff member could be restricted from (leads, conversations and their messages, and contacts and their
+ * sources, which staff see through an assigned conversation) are assigned to the tenant's staff member, so every role
+ * has a row of its own tenant to see.
  */
 final class TenantFixtures {
 
@@ -56,7 +57,7 @@ final class TenantFixtures {
                             seed.returningId("""
                     insert into northstar.actions (tenant_id, type, status, idempotency_key, mode, next_attempt_at)
                     values (:t, 'test.fake', 'pending', :key, 'automatic', now() + interval '1 day') returning id""", Map.of("t", side.tenantId(), "key", "fixture:" + UUID.randomUUID()))),
-            Map.entry("northstar.contacts", (side, seed) -> seed.data().contact(side.tenantId())),
+            Map.entry("northstar.contacts", (side, seed) -> staffContact(side, seed)),
             Map.entry("northstar.workflows", (side, seed) -> seed.returningId("""
                     insert into northstar.workflows (tenant_id, name) values (:t, 'Fixture workflow') returning id""", Map.of("t", side.tenantId()))),
             Map.entry("northstar.workflow_versions", (side, seed) -> seed.data().workflowVersion(side.tenantId())),
@@ -83,7 +84,37 @@ final class TenantFixtures {
                     (side, seed) -> seed.returningId(
                             """
                     insert into northstar.webhook_events (tenant_id, provider, provider_event_id, payload)
-                    values (:t, 'whatsapp', :event, '{}') returning id""", Map.of("t", side.tenantId(), "event", "wamid.fixture-" + UUID.randomUUID()))));
+                    values (:t, 'whatsapp', :event, '{}') returning id""", Map.of("t", side.tenantId(), "event", "wamid.fixture-" + UUID.randomUUID()))),
+            // Step 2.3.
+            Map.entry(
+                    "northstar.conversations",
+                    (side, seed) -> seed.data()
+                            .conversation(
+                                    side.tenantId(), seed.data().contact(side.tenantId()), side.staffMembership())),
+            Map.entry(
+                    "northstar.messages",
+                    (side, seed) -> seed.data()
+                            .message(
+                                    side.tenantId(),
+                                    seed.data()
+                                            .conversation(
+                                                    side.tenantId(),
+                                                    seed.data().contact(side.tenantId()),
+                                                    side.staffMembership()))),
+            Map.entry("northstar.message_templates", (side, seed) -> seed.data().messageTemplate(side.tenantId())),
+            Map.entry(
+                    "northstar.contact_sources",
+                    (side, seed) ->
+                            seed.returningId("""
+                    insert into northstar.contact_sources (tenant_id, contact_id, source)
+                    values (:t, :contact, 'direct') returning id""", Map.of("t", side.tenantId(), "contact", staffContact(side, seed)))));
+
+    /** A contact the tenant's staff member sees: its conversation is assigned to them (step 2.3). */
+    private static UUID staffContact(Side side, Seeding seed) {
+        UUID contact = seed.data().contact(side.tenantId());
+        seed.data().conversation(side.tenantId(), contact, side.staffMembership());
+        return contact;
+    }
 
     /** What a fixture seeds with: admin SQL (bypassing RLS) and the shared test data helpers. */
     record Seeding(JdbcClient admin, TestData data) {

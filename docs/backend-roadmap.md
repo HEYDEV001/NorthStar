@@ -155,16 +155,23 @@ Phase 10 (pilot) needs the frontend and is planned after it.
 - [ ] 2.3 Conversation schema: `contact_sources`, `conversations`, `messages`, `message_templates`
   - Add the composite foreign key from `leads (tenant_id, conversation_id)` to `conversations`, unlinked since 1.13.
   - `conversations` gets the same restrictive staff policy pattern as `leads` (assigned membership; admins and the system actor see all), declared in the gate.
+  - Decided 19 Nov 2026 (this step's plan): staff see messages only through their assigned conversations, and contacts and contact sources only while one of the contact's leads (open or closed) or its conversation is assigned to them; templates are read by everyone in the business and written only by admins and the system actor. No column encryption for message bodies (`data-model.md` section 15); instead `app_admin` cannot select `messages.body` or `webhook_events.payload`. `window_expires_at` is a stored generated column. Column tiers: `messages` lifecycle, `conversations` and `message_templates` column-restricted, `contact_sources` insert-only. Clearing bodies for retention is 8.6. Statuses, message types, sources and the message checks as proposed in the plan.
+  - Built as: eight migrations. `whatsapp_accounts` gains unique (tenant_id, phone_number_id); `conversations` (one per contact and channel; composite FKs to contacts, the tenant's WhatsApp number and memberships; `window_expires_at` generated from `last_inbound_at` in UTC); `message_templates` (unique per name and language); `messages` (unique (tenant_id, provider_message_id), P1; the inbox index; checks tying direction, sender, template, status and provider ID together; `media_path` under `tenant_id/`; trigger `messages_set_once` keeps `provider_message_id` and `media_path` set once for every role, SQLSTATE NSM01); `contact_sources` (one row per distinct source, nulls not distinct); `leads_conversation_fk` on (tenant_id, contact_id, conversation_id), so a lead's conversation is its own contact's; `contacts_staff_assigned` and `contact_sources_staff_assigned` with the new `leads (tenant_id, contact_id)` index; and `app_admin`'s column grants on `webhook_events`. Every table has `unique (tenant_id, id)`, RLS forced, `tenant_isolation`, column grants for insert and update and no delete. The RLS release gate pins the five new staff and template policy sets and the tiers. No entities or repositories yet: 2.4, 2.6 and 2.8 map what they write. Tests: `ConversationSchemaTests` (references, keys, the window across a DST change, P1, set-once, the checks, grants, `app_admin`), `contacts.ConversationIsolationTests` (P11 for conversations, messages, reassignment, contacts and templates; P10 for the webhook role and unknown roles), gate probes, four new `TenantFixtures` entries (the contact fixture is the contact of the staff member's conversation), and `WebhookRoutingTests` probing the new tables. The cross-tenant suite leaves generated columns out of its copied-row insert.
 - [ ] 2.4 Inbound job: normalise to an `events` row; upsert contact by normalised phone; join the open lead's conversation (W1); lead created in one transaction (P3)
   - Replaces the body of `ProcessWhatsAppWebhookHandler` (since 2.2 it only confirms its row and logs `webhook.queued`), sets `processed_at` and `error`, and adds a sweep for `webhook_events` rows with `processed_at` still null past a grace period (an allowlisted tenants-with-unprocessed-webhooks function, like the action sweeper). The sweep picks up rows stored since 2.2 and any row whose job was lost between the commit and its creation.
+  - From 2.3: store messages with `insert ... on conflict (tenant_id, provider_message_id) do nothing` (P1). An inbound message's `sent_at` is WhatsApp's timestamp, and `conversations.last_inbound_at` is set from it and only moves forward (`greatest(last_inbound_at, :sent_at)`), so a late or redelivered webhook never stretches the window past Meta's. `contact_sources.first_seen_at` may be set from the same timestamp. A new lead's `assigned_membership_id` and its conversation's are set in the same transaction (they are separate columns, each with its own staff policy). `timeline_events` rows for messages never copy the message text (it is insert-only and could not be cleared for retention); they reference the message by ID.
 - [ ] 2.5 Opt-out checked first on every inbound message; cancels all scheduled outbound actions (W32)
 - [ ] 2.6 Send action: WhatsApp adapter (real and fake), 24-hour window, templates only outside it (W33)
+  - From 2.3: an outbound message is stored as `queued` with no `provider_message_id`, and the send sets it once from Meta's response (`messages_set_once`). The action's payload carries the message ID, never the text, so retention can clear the text in one place. The window check reads `conversations.window_expires_at`.
 - [ ] 2.7 Delivery status webhooks update messages
+  - Statuses must only move forward when Meta's webhooks arrive out of order (`messages.status` is updatable since 2.3, with no order enforced yet): decide a trigger or a guarded update here.
 - [ ] 2.8 Template sync and status; rejected or paused templates fail dependent actions visibly (W34)
   - Define the allowed values of `whatsapp_accounts.quality_rating` and `messaging_limit` (unchecked text since 2.1a) and add their checks.
   - Route webhook changes that are not `messages` (template status, quality and account updates) by the WABA ID in `entry.id`, which needs its own allowlisted lookup on `whatsapp_accounts.waba_id`. Since 2.2 they get a 200 and are only counted as ignored; subscribe their webhook fields in Meta's dashboard only once this ships (`docs/staging-runbook.md`, WhatsApp webhooks on staging).
 - [ ] 2.9 Inbox API: conversations, messages, staff reply, take over and hand back (pause automation per conversation)
+  - Staff queries start from their conversations and join to messages: `messages_staff_assigned` costs one probe on `conversations` per message scanned, cheap for one thread, costly for a wide scan such as a search across every message. Reassigning a conversation changes its lead's `assigned_membership_id` in the same transaction (2.4, 3.9).
 - [ ] 2.10 Manual lead entry with E.164 validation (P4)
+  - Since 2.3 staff cannot insert contacts (`contacts_staff_assigned` checks writes too, and a new contact has no lead yet). Decide here how a staff member adds one: for example the contact and its assigned lead in one transaction with a split insert rule, or entry by the system actor on their behalf.
 
 **Decided (19 Nov 2026, step 2.1):** `webhook_events.tenant_id` stays not null, with unroutable deliveries in `ingest.unrouted_webhooks`; only `secrets_user` reads `integration_credentials`; the key lives only in the worker's environment.
 **External:** Meta developer app and a WhatsApp test number.
@@ -187,7 +194,7 @@ Phase 10 (pilot) needs the frontend and is planned after it.
   - Per-role approval rules per action type replace 1.10's admin-only `Actions.approve`.
 - [ ] 3.8 Failed actions API: list, retry, skip; alert on final failure; kill switches per business and platform-wide
 - [ ] 3.9 Leads API: reassign with history (P5), admin-only soft delete (P6), notes, tasks, request idempotency key (P21)
-  - Before any contacts endpoint exists, decide how staff access to contacts is limited (only the contacts of their assigned leads): contacts hold phone numbers, and `contacts` has no staff policy yet.
+  - Staff access to contacts was decided in 2.3 (`contacts_staff_assigned`: the contacts of their own leads and conversations). Reassigning a lead also reassigns its conversation in the same transaction (P5), or the previous assignee keeps the contact through the conversation.
 - [ ] 3.10 Contact from a Lost or Junk lead starts a new lead (W2)
 - [ ] 3.11 Versioning and migration (§16): in-flight leads keep their version (W36)
 - [ ] 3.12 End-to-end engine test on the Reelrr template with fake providers
@@ -204,6 +211,7 @@ Phase 10 (pilot) needs the frontend and is planned after it.
 - [ ] 4.3 Prompt assembly: customer text is data (W7); FAQ entries
 - [ ] 4.4 Qualifying conversation and field extraction with confidence; at most two clarifying questions, then Needs Human (W6)
 - [ ] 4.5 Voice notes, images, location pins (W4); reply language per tenant setting (W5)
+  - Media is stored under `tenant_id/` (a check on `messages.media_path` since 2.3) and `media_path` is set once.
 - [ ] 4.6 Filter rules → Junk with rule ID and reason (W9); AI score, reasons, history, bands
 - [ ] 4.7 Provider down: three retries, then Needs Human and one holding message (W8)
 - [ ] 4.8 Score dashboard API
@@ -256,7 +264,7 @@ Phase 10 (pilot) needs the frontend and is planned after it.
 **Modules:** `integrations`, `reporting`.
 
 - [ ] 7.1 Schema: `sheet_mappings`, `sync_outbox`, `sheet_conflicts`, `meta_events`, `chat_links`, `link_clicks`, `ad_referrals`, `ad_spend_daily`
-  - Add the composite foreign keys from `leads (tenant_id, ad_referral_id)` and `leads (tenant_id, chat_link_id)`, unlinked since 1.13.
+  - Add the composite foreign keys from `leads (tenant_id, ad_referral_id)` and `leads (tenant_id, chat_link_id)`, unlinked since 1.13, and from `contact_sources (tenant_id, chat_link_id)` and `contact_sources (tenant_id, ad_referral_id)`, unlinked since 2.3.
 - [ ] 7.2 Sheets sync from the outbox: upsert by ID in batches; quota backoff (P17); deleted sheet or tab (P18); protected-field edits restored and sent to review
 - [ ] 7.3 Meta Conversions API events at configured stages, matched on click ID
   - Meta does not deduplicate business-messaging events, so a lost response followed by a retry sends the event twice (`lostResponseWithoutProviderIdempotencyDuplicatesTheEffect` shows it). The send needs its own dedupe first, e.g. on `meta_events (tenant_id, lead_id, event_name)`, checked and recorded before the call.
@@ -279,10 +287,12 @@ Phase 10 (pilot) needs the frontend and is planned after it.
 - [ ] 8.3 Northstar admin over `app_admin`, every call audited: tenants, failed jobs, webhook errors, usage, pause a business
   - Unknown-account webhooks (P16) alert the Northstar admin here; since 2.2 the alert is a WARN line, `webhook.unknown_account ... unrouted_id=<id>`. The admin reads `ingest.unrouted_webhooks` (select only, audited).
   - `app_admin` gets its own datasource bean, separate from the guarded `dataSource`; the tenant guard wraps only `dataSource`, so this needs its own audited access rules, not a bypass of the guard.
+  - Since 2.3 `app_admin` cannot select `messages.body` or `webhook_events.payload` (no `select *` on either table); the webhook-errors view reads IDs, times and error codes.
 - [ ] 8.4 Plans, subscriptions, usage alerts at 70 / 90 / 100% (P20)
 - [ ] 8.5 Subscription end: grace period, then read-only with automation paused (P8)
 - [ ] 8.6 Retention jobs (`data-model.md` §14)
   - Includes deleting `ingest.unrouted_webhooks` rows after 30 days, and clearing `webhook_events.payload` after 30 days (it is not null and not updatable since 2.1a, so this needs a migration or a narrow function).
+  - Clearing `messages.body` and `media_path` 12 months after the conversation's last activity (and deleting the stored media): neither is updatable to null since 2.3 (`body` has no update grant; `messages_set_once` refuses changing `media_path`), so this needs a system-only grant or narrow function and a change to the trigger. Consider a `content_removed_at` marker.
 
 **Needs answers:** grace period and read-only rules; plan limits; retention periods.
 
