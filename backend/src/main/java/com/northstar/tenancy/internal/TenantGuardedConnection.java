@@ -34,6 +34,12 @@ interface TenantGuardedConnection extends Connection {
     void beginDueActionScan() throws SQLException;
 
     /**
+     * Sets no context and allows exactly one statement, the scan for tenants with webhook events still unprocessed past
+     * a grace period (step 2.4a). Used by the webhook sweep, which starts without a tenant; it returns tenant IDs only.
+     */
+    void beginUnprocessedWebhookScan() throws SQLException;
+
+    /**
      * Sets no context and allows exactly one statement, the WhatsApp routing lookup (step 2.2). Used for an inbound
      * webhook before its tenant is known; it returns phone number IDs and tenant IDs only.
      */

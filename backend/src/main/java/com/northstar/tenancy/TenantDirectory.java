@@ -1,5 +1,6 @@
 package com.northstar.tenancy;
 
+import java.time.Duration;
 import java.util.List;
 import java.util.Optional;
 import java.util.UUID;
@@ -18,4 +19,11 @@ public interface TenantDirectory {
      * without a tenant scope through the allowlisted northstar.tenants_with_due_actions(), which returns IDs only.
      */
     List<UUID> tenantsWithDueActions();
+
+    /**
+     * Tenants with webhook events still unprocessed more than {@code olderThan} after they were received, measured on
+     * the database's clock (step 2.4a). Runs without a tenant scope through the allowlisted
+     * northstar.tenants_with_unprocessed_webhooks(), which returns IDs only.
+     */
+    List<UUID> tenantsWithUnprocessedWebhooks(Duration olderThan);
 }
