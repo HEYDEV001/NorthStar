@@ -12,9 +12,10 @@ import org.springframework.transaction.support.TransactionTemplate;
  * The job for a stored WhatsApp webhook event, run by the worker as the system actor in the event's tenant.
  *
  * <p>Step 2.2 only confirms the row is there, in this tenant, and logs {@code webhook.queued}; processed_at stays null.
- * Step 2.4 replaces this with the processing itself (normalise to an engine event, contact, conversation, lead) and adds
- * a sweep for rows with processed_at still null, which also covers events stored before then and an event whose job
- * was lost between the commit and its creation.
+ * Since step 2.4a the webhook sweep ({@link TenantWebhookSweeper}) queues this job again for message rows still
+ * unprocessed past the grace period, under one job ID per retry step. Step 2.4b replaces this body with the processing
+ * itself (normalise to an engine event, contact, conversation, message, lead), which sets processed_at or a fixed error
+ * code.
  */
 @Component
 public class ProcessWhatsAppWebhookHandler extends TenantJobHandler<ProcessWhatsAppWebhook> {

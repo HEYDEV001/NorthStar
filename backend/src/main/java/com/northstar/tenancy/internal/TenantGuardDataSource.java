@@ -42,7 +42,9 @@ import org.springframework.jdbc.datasource.DelegatingDataSource;
  * <p>The membership lookup at login runs before any tenant is known. {@link MembershipLookup} puts a connection into
  * lookup mode: only app.user_id is set, and the exact {@link #MEMBERSHIP_LOOKUP} statement is the only one allowed.
  * Accepting an invite works the same way: {@link InviteAcceptance} allows only {@link #INVITE_ACCEPTANCE}. The job
- * sweeper's scan for tenants with due actions sets no context at all and allows only {@link #DUE_ACTION_TENANTS}.
+ * sweeper's scan for tenants with due actions sets no context at all and allows only {@link #DUE_ACTION_TENANTS}; the
+ * webhook sweep's scan for tenants with unprocessed webhook events likewise allows only
+ * {@link #UNPROCESSED_WEBHOOK_TENANTS} (step 2.4a).
  *
  * <p>Webhooks (step 2.2) arrive with no token and no tenant. Routing a WhatsApp delivery sets no context and allows only
  * {@link #WHATSAPP_ROUTING}; parking an unroutable delivery allows only {@link #PARK_INVALID_SIGNATURE} or
@@ -68,6 +70,13 @@ public final class TenantGuardDataSource extends DelegatingDataSource {
     /** The one statement allowed in due-action scan mode, calling the allowlisted SECURITY DEFINER function. */
     static final String DUE_ACTION_TENANTS = "select tenant_id from northstar.tenants_with_due_actions()";
 
+    /**
+     * The one statement allowed in unprocessed-webhook scan mode (step 2.4a): tenant IDs only. Its one parameter is the
+     * grace period as an ISO-8601 duration, measured on the database's clock.
+     */
+    static final String UNPROCESSED_WEBHOOK_TENANTS =
+            "select tenant_id from northstar.tenants_with_unprocessed_webhooks(cast(? as interval))";
+
     /** The one statement allowed in WhatsApp routing mode: phone number IDs to tenant IDs, nothing else (step 2.2). */
     static final String WHATSAPP_ROUTING = "select phone_number_id, tenant_id from northstar.whatsapp_tenants(?)";
 
@@ -86,6 +95,7 @@ public final class TenantGuardDataSource extends DelegatingDataSource {
         MEMBERSHIP_LOOKUP(TenantGuardDataSource.MEMBERSHIP_LOOKUP),
         INVITE_ACCEPTANCE(TenantGuardDataSource.INVITE_ACCEPTANCE),
         DUE_ACTION_SCAN(TenantGuardDataSource.DUE_ACTION_TENANTS),
+        UNPROCESSED_WEBHOOK_SCAN(TenantGuardDataSource.UNPROCESSED_WEBHOOK_TENANTS),
         WHATSAPP_ROUTING(TenantGuardDataSource.WHATSAPP_ROUTING),
         INVALID_SIGNATURE_PARKING(TenantGuardDataSource.PARK_INVALID_SIGNATURE),
         UNKNOWN_ACCOUNT_PARKING(TenantGuardDataSource.PARK_UNKNOWN_ACCOUNT),
@@ -171,6 +181,10 @@ public final class TenantGuardDataSource extends DelegatingDataSource {
                 }
                 case "beginDueActionScan" -> {
                     beginWithoutContext(Mode.DUE_ACTION_SCAN);
+                    return null;
+                }
+                case "beginUnprocessedWebhookScan" -> {
+                    beginWithoutContext(Mode.UNPROCESSED_WEBHOOK_SCAN);
                     return null;
                 }
                 case "beginWhatsAppRouting" -> {
@@ -315,7 +329,7 @@ public final class TenantGuardDataSource extends DelegatingDataSource {
             mode = context.isWebhook() ? Mode.WEBHOOK_EVENT_INSERT : Mode.TENANT;
         }
 
-        /** The single-statement modes that set no context at all: routing, parking and the due-action scan. */
+        /** The single-statement modes that set no context at all: routing, parking and the two tenant scans. */
         private void beginWithoutContext(Mode withoutContext) throws SQLException {
             if (target.getAutoCommit()) {
                 throw new IllegalStateException("A context-free call can only run inside a transaction");

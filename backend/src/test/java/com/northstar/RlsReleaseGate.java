@@ -86,6 +86,7 @@ record RlsReleaseGate(
                     "northstar.leads", Set.of(staffSeeAssigned("leads")),
                     "northstar.conversations", Set.of(staffSeeAssigned("conversations")),
                     "northstar.messages", Set.of(staffSeeMessagesOfAssignedConversations()),
+                    "northstar.events", Set.of(staffSeeEventsOfAssignedLeads()),
                     "northstar.contacts", Set.of(staffSeeContactsOfTheirWork("contacts", "id")),
                     "northstar.contact_sources", Set.of(staffSeeContactsOfTheirWork("contact_sources", "contact_id")),
                     "northstar.message_templates", adminOrSystemWrites("message_templates")),
@@ -113,6 +114,8 @@ record RlsReleaseGate(
                                     "approver_membership_id",
                                     "approved_at"),
                     "northstar.webhook_events", Set.of("processed_at", "error"),
+                    // The engine sets processed_at (Phase 3); everything else is written once (step 2.4a).
+                    "northstar.events", Set.of("processed_at"),
                     // provider_message_id and media_path are set once (trigger messages_set_once, SQLSTATE NSM01).
                     "northstar.messages",
                             Set.of(
@@ -169,6 +172,7 @@ record RlsReleaseGate(
                     "northstar.slug_is_taken(candidate text)",
                     "northstar.accept_invite(p_token_hash text, p_email text)",
                     "northstar.tenants_with_due_actions()",
+                    "northstar.tenants_with_unprocessed_webhooks(p_older_than interval)",
                     "northstar.set_invite_token(p_invite_id uuid, p_token_hash text)",
                     "northstar.whatsapp_tenants(p_phone_number_ids text[])",
                     "northstar.park_invalid_signature(p_provider text, p_body_bytes integer)",
@@ -230,6 +234,17 @@ record RlsReleaseGate(
                 + " northstar.conversations c WHERE ((c.tenant_id = messages.tenant_id) AND (c.id ="
                 + " messages.conversation_id) AND (c.assigned_membership_id = " + MY_ACTIVE_MEMBERSHIP + "))))))";
         return restrictivePolicy("messages_staff_assigned", "ALL", assigned, assigned);
+    }
+
+    /**
+     * The restrictive policy on events (step 2.4a): staff see only the events of leads assigned to them; an event with
+     * no lead is for admins and the system actor only.
+     */
+    private static String staffSeeEventsOfAssignedLeads() {
+        String assigned = "(" + ADMIN_OR_SYSTEM + " OR (" + STAFF + " AND (EXISTS ( SELECT FROM northstar.leads l"
+                + " WHERE ((l.tenant_id = events.tenant_id) AND (l.id = events.lead_id) AND"
+                + " (l.assigned_membership_id = " + MY_ACTIVE_MEMBERSHIP + "))))))";
+        return restrictivePolicy("events_staff_assigned", "ALL", assigned, assigned);
     }
 
     /**

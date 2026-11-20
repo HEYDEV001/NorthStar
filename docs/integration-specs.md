@@ -38,6 +38,23 @@ How step 2.2 builds this (decided 19 Nov 2026):
 - **Logs:** counts, status codes, webhook event IDs, unrouted row IDs and tenant IDs only; never a body, wamid, phone
   number ID, phone number, signature, secret or challenge.
 
+How step 2.4a keeps stored webhooks from being stranded (decided 20 Nov 2026):
+
+- **The sweep.** Every minute a platform job asks the allowlisted `northstar.tenants_with_unprocessed_webhooks()` which
+  tenants have rows still unprocessed 2 minutes (the grace period) after they were received, on the database's clock,
+  and queues one sweep per tenant. That sweep reads the tenant's oldest waiting rows (up to 2,000) in its own scope and
+  queues each row's processing job again. It covers a job lost between the commit and its creation, a worker that died
+  mid-job, a failure waiting for its retry, and rows stored before processing existed. WhatsApp message rows only until
+  step 2.7 adds status rows.
+- **Retries by age, not by count.** `webhook_events` holds only `processed_at` and `error`, so a row's age decides its
+  retry step: 2 min, 10 min, 1 h and 6 h. Each step is queued under its own job ID (JobRunr's retries are off and it
+  skips an ID it already has), and only within 10 minutes of reaching it; a step missed while the worker was down for
+  longer is skipped.
+- **Giving up.** A row whose processing has failed (`error` set) is closed at 24 hours: `processed_at` set, its last
+  error code kept, never retried again, and an ERROR line `webhook.failed ... final=true` (the alert, until Phase 8's
+  admin view of webhook errors). A row with no failure recorded is never closed without an attempt.
+- **Logs:** counts, webhook event IDs and fixed error codes only.
+
 **Outbound (actions)**
 
 - Every call is an `actions` row executed by the worker with an idempotency key; provider idempotency headers used where offered.
@@ -75,7 +92,7 @@ Northstar operates as a Meta Tech Provider: each business connects its own Whats
 | Splitting | One delivery can carry several entries and changes, for several numbers and so several tenants, and Meta batches up to 1000 updates without guaranteeing the grouping. Each element of a change's `messages` or `statuses` is one item, stored as its own `webhook_events` row in its number's tenant (one transaction per tenant), with a Meta-shaped slice as payload: the envelope, the entry ID, one change with its `value` fields (metadata, contacts, messaging_product) and only that item. Items for unknown numbers are parked one by one with only their own slice. U+0000 and unpaired surrogates in the slice become U+FFFD (jsonb cannot hold them) |
 | Dedupe | Message ID for messages; message ID + status for status updates. Built as `provider_event_id` = `message:<wamid>` (`messages[].id`) and `status:<wamid>:<status>` (`statuses[].id`, the sent message's wamid, and `statuses[].status`); per item, so a retry batched differently still dedupes (P1). A duplicate is not stored and queues nothing |
 | Not stored (until step 2.8) | Changes whose `field` is not `messages` (template status, quality and account updates, keyed by the WABA ID in `entry.id`), value-level `errors` (no item ID), items without a usable ID and changes without a phone number ID: 200, counted as `ignored` in the log. Only the `messages` field is subscribed until 2.8 routes the rest by WABA |
-| Queueing | One `ProcessWhatsAppWebhook` job (IDs only) per stored row, created after the tenant's transaction commits. Step 2.2's job only confirms the row; processing is step 2.4 |
+| Queueing | One `ProcessWhatsAppWebhook` job (IDs only) per stored row, created after the tenant's transaction commits. Step 2.2's job only confirms the row; processing is step 2.4b. Since step 2.4a the webhook sweep queues it again for a message row still unprocessed past the grace period (section 1) |
 | Inbound types handled | text, interactive button reply, image, document, audio, location |
 | Status updates | sent, delivered, read, failed → `messages.status`, failures → action error |
 | Click-to-WhatsApp referral | `referral` object on the first message: `source_id`, `source_type`, `source_url`, `headline`, `ctwa_clid` → `ad_referrals`; `ctwa_clid` stored for Conversions API matching |
@@ -258,6 +275,14 @@ Staging and production never share credentials, and staging uses only provider t
 - [ ] Should leads without a click ID be sent to Meta using hashed phone, given matching is limited?
 - [ ] Google Picker for existing sheets, or always create a new Northstar sheet?
 - [ ] First LLM provider and model, and per-tenant monthly token budget
+- [ ] **Before any live tenant traffic:** build `ad_referrals` capture (the first message's `referral` object with its
+  `ctwa_clid`, Phase 7). Until then step 2.4b tags every lead `direct`, and the webhook payload holding the referral is
+  kept only 30 days (`data-model.md` section 14), so ad attribution missed in that time cannot be recovered (noted 20 Nov
+  2026).
+- [ ] **Launch blocker to check:** inbound messages without a phone number in `from`. We understand Meta has announced
+  WhatsApp usernames, which may mean a message whose sender is not identified by a phone number. Step 2.4b fails such a
+  message permanently as `contact_phone_invalid` (P4 assumes every WhatsApp lead has a phone); confirm against Meta's
+  current webhook reference before launch and decide how such a contact is stored (noted 20 Nov 2026).
 
 ## Sources
 

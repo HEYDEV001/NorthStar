@@ -11,9 +11,9 @@ import org.springframework.jdbc.core.simple.JdbcClient;
  * every table with tenant_id from the catalogue and fails, naming the table, when one has no fixture or a fixture names
  * a table that no longer exists: a new tenant table is never silently left out.
  *
- * <p>Rows a staff member could be restricted from (leads, conversations and their messages, and contacts and their
- * sources, which staff see through an assigned conversation) are assigned to the tenant's staff member, so every role
- * has a row of its own tenant to see.
+ * <p>Rows a staff member could be restricted from (leads and their events, conversations and their messages, and contacts
+ * and their sources, which staff see through an assigned conversation) are assigned to the tenant's staff member, so
+ * every role has a row of its own tenant to see.
  */
 final class TenantFixtures {
 
@@ -107,7 +107,23 @@ final class TenantFixtures {
                     (side, seed) ->
                             seed.returningId("""
                     insert into northstar.contact_sources (tenant_id, contact_id, source)
-                    values (:t, :contact, 'direct') returning id""", Map.of("t", side.tenantId(), "contact", staffContact(side, seed)))));
+                    values (:t, :contact, 'direct') returning id""", Map.of("t", side.tenantId(), "contact", staffContact(side, seed)))),
+            // Step 2.4a: an engine event on the staff member's lead, which is how staff see one.
+            Map.entry(
+                    "northstar.events",
+                    (side, seed) -> seed.returningId(
+                            """
+                    insert into northstar.events (tenant_id, lead_id, type, dedupe_key)
+                    values (:t, :lead, 'message.received', :key) returning id""",
+                            Map.of(
+                                    "t", side.tenantId(),
+                                    "lead",
+                                            seed.data()
+                                                    .lead(
+                                                            side.tenantId(),
+                                                            seed.data().workflowVersion(side.tenantId()),
+                                                            side.staffMembership()),
+                                    "key", "fixture:" + UUID.randomUUID()))));
 
     /** A contact the tenant's staff member sees: its conversation is assigned to them (step 2.3). */
     private static UUID staffContact(Side side, Seeding seed) {
