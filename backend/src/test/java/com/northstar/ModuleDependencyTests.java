@@ -62,6 +62,11 @@ class ModuleDependencyTests {
         assertThat(graph.get("workflow")).contains("tenancy", "jobs");
         assertThat(graph.get("notifications")).contains("tenancy", "workflow", "integrations");
         assertThat(graph.getOrDefault("tenancy", Set.of())).doesNotContain("workflow", "integrations", "notifications");
+        // Step 2.4b: the inbound job in integrations writes through contacts and workflow, which stay independent of
+        // each other and of integrations, so later steps can depend on either without a cycle.
+        assertThat(graph.get("integrations")).contains("contacts", "workflow");
+        assertThat(graph.get("contacts")).contains("tenancy").doesNotContain("workflow", "integrations");
+        assertThat(graph.get("workflow")).doesNotContain("contacts", "integrations");
     }
 
     @Test

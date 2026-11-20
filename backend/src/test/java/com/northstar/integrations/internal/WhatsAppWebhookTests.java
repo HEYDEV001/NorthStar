@@ -546,6 +546,7 @@ class WhatsAppWebhookTests {
     void nothingSensitiveIsLogged(CapturedOutput output) {
         UUID tenant = data.tenant();
         String number = data.whatsAppNumber(tenant);
+        data.workflowVersion(tenant); // so the job opens a lead, the fullest path
         String unknown = WhatsAppPayloads.phoneNumberId();
         String wamid = WhatsAppPayloads.wamid();
         String unknownWamid = WhatsAppPayloads.wamid();
@@ -577,7 +578,7 @@ class WhatsAppWebhookTests {
         runJob(new ProcessWhatsAppWebhook(tenant, stored));
 
         String logs = output.getAll();
-        assertThat(logs).contains("webhook.received").contains("webhook.stored").contains("webhook.queued");
+        assertThat(logs).contains("webhook.received").contains("webhook.stored").contains("webhook.processed");
         for (String secret : List.of(
                 marker,
                 wamid,
@@ -598,29 +599,39 @@ class WhatsAppWebhookTests {
     // The queued job
 
     @Test
-    void theJobConfirmsItsRowInItsTenantAndLeavesItUnprocessed(CapturedOutput output) {
+    void theQueuedJobProcessesItsRowInItsTenantOnly(CapturedOutput output) {
         UUID tenant = data.tenant();
         UUID otherTenant = data.tenant();
         String number = data.whatsAppNumber(tenant);
+        data.workflowVersion(tenant);
         String wamid = WhatsAppPayloads.wamid();
         assertThat(post(script.deliver(
                         WhatsAppPayloads.delivery().message(number, wamid, "Hi").json())))
                 .hasStatusOk();
         UUID id = events("message:" + wamid).getFirst();
 
-        runJob(new ProcessWhatsAppWebhook(tenant, id));
-        assertThat(output.getAll()).contains("webhook.queued provider=whatsapp webhook_event_id=" + id);
-        assertThat(admin.sql("select processed_at is null from northstar.webhook_events where id = :id")
-                        .param("id", id)
-                        .query(Boolean.class)
-                        .single())
-                .as("processing is step 2.4")
-                .isTrue();
-
-        // In another tenant the row is invisible: the job fails loudly rather than doing anything.
+        // In another tenant the row is invisible: the job fails loudly rather than doing anything (step 2.4b covers
+        // the processing itself in InboundWhatsAppJobTests).
         assertThatThrownBy(() -> runJob(new ProcessWhatsAppWebhook(otherTenant, id)))
                 .isInstanceOf(IllegalStateException.class);
         assertThat(output.getAll()).contains("webhook.event_missing webhook_event_id=" + id);
+
+        runJob(new ProcessWhatsAppWebhook(tenant, id));
+        assertThat(output.getAll()).contains("webhook.processed provider=whatsapp webhook_event_id=" + id);
+        assertThat(admin.sql("select processed_at is not null and error is null from northstar.webhook_events"
+                                + " where id = :id")
+                        .param("id", id)
+                        .query(Boolean.class)
+                        .single())
+                .as("processed in full")
+                .isTrue();
+        assertThat(admin.sql(
+                                "select count(*) from northstar.messages where tenant_id = :t and provider_message_id = :w")
+                        .param("t", tenant)
+                        .param("w", wamid)
+                        .query(Long.class)
+                        .single())
+                .isOne();
     }
 
     // Helpers
