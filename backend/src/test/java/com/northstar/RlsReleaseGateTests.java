@@ -150,6 +150,55 @@ class RlsReleaseGateTests {
         }
 
         @Test
+        void aWeakenedStaffPolicyOnConversationsFails() {
+            sql("drop policy conversations_staff_assigned on northstar.conversations");
+            sql("create policy conversations_staff_assigned on northstar.conversations as restrictive for all"
+                    + " to app_user using (current_setting('app.role', true) in ('admin', 'system', 'staff'))"
+                    + " with check (current_setting('app.role', true) in ('admin', 'system', 'staff'))");
+            assertThat(gate())
+                    .hasSize(2)
+                    .anySatisfy(v -> assertThat(v).startsWith("northstar.conversations: undeclared or changed policy"))
+                    .anySatisfy(v -> assertThat(v).startsWith("northstar.conversations: declared policy missing"));
+        }
+
+        @Test
+        void aWeakenedStaffPolicyOnMessagesFails() {
+            // Leaving staff to conversations' own policy, without the assignment spelled out here.
+            sql("drop policy messages_staff_assigned on northstar.messages");
+            sql("create policy messages_staff_assigned on northstar.messages as restrictive for all to app_user"
+                    + " using (exists (select from northstar.conversations c where c.id = messages.conversation_id))"
+                    + " with check (exists (select from northstar.conversations c"
+                    + " where c.id = messages.conversation_id))");
+            assertThat(gate())
+                    .hasSize(2)
+                    .anySatisfy(v -> assertThat(v).startsWith("northstar.messages: undeclared or changed policy"))
+                    .anySatisfy(v -> assertThat(v).startsWith("northstar.messages: declared policy missing"));
+        }
+
+        @Test
+        void droppedStaffPoliciesOnContactsFail() {
+            sql("drop policy contacts_staff_assigned on northstar.contacts");
+            sql("drop policy contact_sources_staff_assigned on northstar.contact_sources");
+            assertThat(gate())
+                    .hasSize(2)
+                    .anySatisfy(v -> assertThat(v).startsWith("northstar.contacts: declared policy missing"))
+                    .anySatisfy(v -> assertThat(v).startsWith("northstar.contact_sources: declared policy missing"));
+        }
+
+        @Test
+        void templatesThatStaffCanWriteFail() {
+            sql("drop policy message_templates_write_insert on northstar.message_templates");
+            assertThat(gate())
+                    .containsExactly("northstar.message_templates: declared policy missing: "
+                            + RlsReleaseGate.restrictivePolicy(
+                                    "message_templates_write_insert",
+                                    "INSERT",
+                                    null,
+                                    "(current_setting('app.role'::text, true) = ANY (ARRAY['admin'::text,"
+                                            + " 'system'::text]))"));
+        }
+
+        @Test
         void declaredRestrictivePolicyPasses() {
             createTenantProbe();
             sql("create policy staff_view on " + PROBE + " as restrictive for select to app_user using (id > 0)");
@@ -428,6 +477,33 @@ class RlsReleaseGateTests {
                     .containsExactly(
                             "northstar.integrations: column provider is updatable but not declared",
                             "northstar.whatsapp_accounts: column phone_number_id is updatable but not declared");
+        }
+
+        @Test
+        void aMessageBodyThatCanBeUpdatedFails() {
+            sql("grant update (body) on northstar.messages to app_user");
+            assertThat(RlsReleaseGate.NORTHSTAR.violations(jdbc))
+                    .containsExactly("northstar.messages: column body is updatable but not declared");
+        }
+
+        @Test
+        void aConversationsContactThatCanBeUpdatedFails() {
+            sql("grant update (contact_id) on northstar.conversations to app_user");
+            sql("grant update (name) on northstar.message_templates to app_user");
+            assertThat(RlsReleaseGate.NORTHSTAR.violations(jdbc))
+                    .containsExactly(
+                            "northstar.conversations: column contact_id is updatable but not declared",
+                            "northstar.message_templates: column name is updatable but not declared");
+        }
+
+        @Test
+        void aContactSourceThatCanBeUpdatedOrDeletedFails() {
+            sql("grant update (source) on northstar.contact_sources to app_user");
+            sql("grant delete on northstar.messages to app_user");
+            assertThat(RlsReleaseGate.NORTHSTAR.violations(jdbc))
+                    .containsExactly(
+                            "northstar.contact_sources: insert-only but app_user has UPDATE on a column",
+                            "northstar.messages: lifecycle table but app_user has DELETE");
         }
 
         private void createSecretsProbe(String policyRole) {

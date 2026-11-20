@@ -206,7 +206,10 @@ class CrossTenantLeakTests {
         return delete == null ? null : "delete " + delete;
     }
 
-    /** A copy of tenant A's row, moved to tenant B with a new id, must be refused. Null when it is. */
+    /**
+     * A copy of tenant A's row, moved to tenant B with a new id, must be refused. Null when it is. Generated columns
+     * (conversations.window_expires_at, step 2.3) are left out: Postgres refuses a value for one before RLS is asked.
+     */
     private String attemptInsertIntoB(String table, Function<Function<JdbcClient, Integer>, Integer> as) {
         String row = admin.sql("select (to_jsonb(x) || jsonb_build_object('tenant_id', :b::text, 'id',"
                         + " gen_random_uuid()::text))::text from " + table + " x where x.id = :id")
@@ -214,9 +217,15 @@ class CrossTenantLeakTests {
                 .param("id", rowsOfA.get(table))
                 .query(String.class)
                 .single();
+        String columns = String.join(
+                ", ", admin.sql("""
+                                select quote_ident(attname) from pg_attribute
+                                where attrelid = cast(:table as regclass) and attnum > 0 and not attisdropped
+                                  and attgenerated = ''
+                                order by attnum""").param("table", table).query(String.class).list());
         try {
-            int inserted = as.apply(jdbc -> jdbc.sql("insert into " + table
-                            + " select * from json_populate_record(null::" + table + ", cast(:row as json))")
+            int inserted = as.apply(jdbc -> jdbc.sql("insert into " + table + " (" + columns + ") select " + columns
+                            + " from json_populate_record(null::" + table + ", cast(:row as json))")
                     .param("row", row)
                     .update());
             return "insert into tenant B was accepted (" + inserted + " row)";

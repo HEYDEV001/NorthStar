@@ -125,6 +125,49 @@ public final class TestData {
         return phoneNumberId;
     }
 
+    /**
+     * The contact's WhatsApp conversation on a new number of the tenant, assigned to the membership (null: unassigned),
+     * with an inbound message just now (step 2.3).
+     */
+    public UUID conversation(UUID tenant, UUID contact, UUID assignedMembership) {
+        return admin.sql("""
+                        insert into northstar.conversations
+                          (tenant_id, contact_id, channel, whatsapp_phone_number_id, assigned_membership_id,
+                           last_inbound_at)
+                        values (:tenant, :contact, 'whatsapp', :number, :assigned, now()) returning id""")
+                .param("tenant", tenant)
+                .param("contact", contact)
+                .param("number", whatsAppNumber(tenant))
+                .param("assigned", assignedMembership)
+                .query(UUID.class)
+                .single();
+    }
+
+    /** An inbound text message in the conversation, with a random WhatsApp message ID (step 2.3). */
+    public UUID message(UUID tenant, UUID conversation) {
+        return admin.sql("""
+                        insert into northstar.messages
+                          (tenant_id, conversation_id, direction, sender_type, provider_message_id, type, body, sent_at)
+                        values (:tenant, :conversation, 'in', 'contact', :wamid, 'text', 'Fixture message', now())
+                        returning id""")
+                .param("tenant", tenant)
+                .param("conversation", conversation)
+                .param("wamid", "wamid.TEST" + UUID.randomUUID())
+                .query(UUID.class)
+                .single();
+    }
+
+    /** An approved template with a random name (step 2.3). */
+    public UUID messageTemplate(UUID tenant) {
+        return admin.sql("""
+                        insert into northstar.message_templates (tenant_id, name, language, category, body, status)
+                        values (:tenant, :name, 'en', 'UTILITY', 'Hello {{1}}', 'approved') returning id""")
+                .param("tenant", tenant)
+                .param("name", "fixture_" + UUID.randomUUID().toString().replace("-", ""))
+                .query(UUID.class)
+                .single();
+    }
+
     /** An open lead for a new contact on the given version, assigned to the membership (null: unassigned). */
     public UUID lead(UUID tenant, UUID version, UUID assignedMembership) {
         return admin.sql("""

@@ -83,14 +83,20 @@ record RlsReleaseGate(
             Map.of(
                     "northstar.memberships", adminOnlyWrites("memberships"),
                     "northstar.invites", adminOnlyWrites("invites"),
-                    "northstar.leads", Set.of(staffSeeAssignedLeads())),
+                    "northstar.leads", Set.of(staffSeeAssigned("leads")),
+                    "northstar.conversations", Set.of(staffSeeAssigned("conversations")),
+                    "northstar.messages", Set.of(staffSeeMessagesOfAssignedConversations()),
+                    "northstar.contacts", Set.of(staffSeeContactsOfTheirWork("contacts", "id")),
+                    "northstar.contact_sources", Set.of(staffSeeContactsOfTheirWork("contact_sources", "contact_id")),
+                    "northstar.message_templates", adminOrSystemWrites("message_templates")),
             // app_user may insert and read, never update or delete.
             Set.of(
                     "northstar.workflow_versions",
                     "northstar.timeline_events",
                     "northstar.audit_log",
                     "northstar.lead_score_history",
-                    "northstar.credit_notes"),
+                    "northstar.credit_notes",
+                    "northstar.contact_sources"),
             // app_user may never delete or update the whole row; only the listed status and processing columns are
             // updatable. Each list is filled in by the migration that creates the table.
             Map.of(
@@ -107,6 +113,16 @@ record RlsReleaseGate(
                                     "approver_membership_id",
                                     "approved_at"),
                     "northstar.webhook_events", Set.of("processed_at", "error"),
+                    // provider_message_id and media_path are set once (trigger messages_set_once, SQLSTATE NSM01).
+                    "northstar.messages",
+                            Set.of(
+                                    "status",
+                                    "error_code",
+                                    "sent_at",
+                                    "delivered_at",
+                                    "read_at",
+                                    "provider_message_id",
+                                    "media_path"),
                     "northstar.payments", Set.of(),
                     "northstar.invoices", Set.of(),
                     "northstar.refunds", Set.of()),
@@ -139,12 +155,13 @@ record RlsReleaseGate(
                                     "last_error_code",
                                     "last_error_at"),
                     "northstar.whatsapp_accounts",
-                            Set.of(
-                                    "display_phone",
-                                    "display_name",
-                                    "quality_rating",
-                                    "messaging_limit",
-                                    "verified_at")),
+                            Set.of("display_phone", "display_name", "quality_rating", "messaging_limit", "verified_at"),
+                    // window_expires_at is generated; the contact, channel and WhatsApp number never change.
+                    "northstar.conversations",
+                            Set.of("status", "ai_paused", "needs_human", "assigned_membership_id", "last_inbound_at"),
+                    // A template's name and language are its identity.
+                    "northstar.message_templates",
+                            Set.of("body", "variables", "category", "provider_template_id", "status", "approved_at")),
             // SECURITY DEFINER functions, as "schema.name(argument types)". Each must also pin search_path and be
             // executable by app_user only.
             Set.of(
@@ -186,18 +203,54 @@ record RlsReleaseGate(
         return describe(name, "RESTRICTIVE", command, "{app_user}", using, withCheck);
     }
 
+    // The staff policies (P11), as Postgres stores them. Admins and the system actor pass on the role alone; staff only
+    // through their own active membership. The same expression guards reads and writes.
+    private static final String ADMIN_OR_SYSTEM =
+            "(current_setting('app.role'::text, true) = ANY (ARRAY['admin'::text, 'system'::text]))";
+    private static final String STAFF = "(current_setting('app.role'::text, true) = 'staff'::text)";
+    private static final String MY_ACTIVE_MEMBERSHIP =
+            "( SELECT m.id FROM northstar.memberships m WHERE ((m.tenant_id ="
+                    + " (current_setting('app.tenant_id'::text, true))::uuid) AND (m.user_id ="
+                    + " (NULLIF(current_setting('app.user_id'::text, true), ''::text))::uuid) AND (m.status ="
+                    + " 'active'::text)))";
+
     /**
-     * The restrictive policy on leads (P11, step 1.13): admins and the system actor see the tenant's leads; staff only
-     * those assigned to their own active membership. The same expression guards reads and writes.
+     * The restrictive policy on a table with its own assigned_membership_id (leads since step 1.13, conversations since
+     * step 2.3): staff see only the rows assigned to their own active membership.
      */
-    private static String staffSeeAssignedLeads() {
-        String assigned = "((current_setting('app.role'::text, true) = ANY (ARRAY['admin'::text, 'system'::text]))"
-                + " OR ((current_setting('app.role'::text, true) = 'staff'::text) AND (assigned_membership_id = ("
-                + " SELECT m.id FROM northstar.memberships m WHERE ((m.tenant_id ="
-                + " (current_setting('app.tenant_id'::text, true))::uuid) AND (m.user_id ="
-                + " (NULLIF(current_setting('app.user_id'::text, true), ''::text))::uuid) AND (m.status ="
-                + " 'active'::text))))))";
-        return restrictivePolicy("leads_staff_assigned", "ALL", assigned, assigned);
+    private static String staffSeeAssigned(String table) {
+        String assigned = "(" + ADMIN_OR_SYSTEM + " OR (" + STAFF + " AND (assigned_membership_id = "
+                + MY_ACTIVE_MEMBERSHIP + ")))";
+        return restrictivePolicy(table + "_staff_assigned", "ALL", assigned, assigned);
+    }
+
+    /** The restrictive policy on messages (step 2.3): staff see only the messages of their assigned conversations. */
+    private static String staffSeeMessagesOfAssignedConversations() {
+        String assigned = "(" + ADMIN_OR_SYSTEM + " OR (" + STAFF + " AND (EXISTS ( SELECT FROM"
+                + " northstar.conversations c WHERE ((c.tenant_id = messages.tenant_id) AND (c.id ="
+                + " messages.conversation_id) AND (c.assigned_membership_id = " + MY_ACTIVE_MEMBERSHIP + "))))))";
+        return restrictivePolicy("messages_staff_assigned", "ALL", assigned, assigned);
+    }
+
+    /**
+     * The restrictive policy on contacts and contact_sources (step 2.3): staff see a contact while one of its leads,
+     * open or closed, or its conversation is assigned to them. contactId is the table's column naming the contact.
+     */
+    private static String staffSeeContactsOfTheirWork(String table, String contactId) {
+        String assigned = "(" + ADMIN_OR_SYSTEM + " OR (" + STAFF + " AND ((EXISTS ( SELECT FROM northstar.leads l"
+                + " WHERE ((l.tenant_id = " + table + ".tenant_id) AND (l.contact_id = " + table + "." + contactId
+                + ") AND (l.assigned_membership_id = " + MY_ACTIVE_MEMBERSHIP + ")))) OR (EXISTS ( SELECT FROM"
+                + " northstar.conversations c WHERE ((c.tenant_id = " + table + ".tenant_id) AND (c.contact_id = "
+                + table + "." + contactId + ") AND (c.assigned_membership_id = " + MY_ACTIVE_MEMBERSHIP + ")))))))";
+        return restrictivePolicy(table + "_staff_assigned", "ALL", assigned, assigned);
+    }
+
+    /** The restrictive policies that limit insert, update and delete to admins and the system actor (step 2.3). */
+    private static Set<String> adminOrSystemWrites(String table) {
+        return Set.of(
+                restrictivePolicy(table + "_write_insert", "INSERT", null, ADMIN_OR_SYSTEM),
+                restrictivePolicy(table + "_write_update", "UPDATE", ADMIN_OR_SYSTEM, ADMIN_OR_SYSTEM),
+                restrictivePolicy(table + "_write_delete", "DELETE", ADMIN_OR_SYSTEM, null));
     }
 
     /** The restrictive policies that limit insert, update and delete to app.role = 'admin'. */

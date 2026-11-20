@@ -140,7 +140,6 @@ class WebhookRoutingTests {
         UUID tenant = data.tenant();
         UUID otherTenant = data.tenant();
         String number = data.whatsAppNumber(tenant);
-        UUID contact = data.contact(tenant);
         TenantContext webhook = routing.whatsAppTenants(Set.of(number)).get(number);
         String eventId = "message:wamid.TEST" + UUID.randomUUID();
 
@@ -175,6 +174,27 @@ class WebhookRoutingTests {
                 new Probe(
                         "select on webhook_events",
                         jdbc -> jdbc.sql("select count(*) from northstar.webhook_events")
+                                .query(Long.class)
+                                .single()),
+                // Step 2.3's tables.
+                new Probe(
+                        "select on conversations",
+                        jdbc -> jdbc.sql("select count(*) from northstar.conversations")
+                                .query(Long.class)
+                                .single()),
+                new Probe(
+                        "select on messages",
+                        jdbc -> jdbc.sql("select count(*) from northstar.messages")
+                                .query(Long.class)
+                                .single()),
+                new Probe(
+                        "select on message_templates",
+                        jdbc -> jdbc.sql("select count(*) from northstar.message_templates")
+                                .query(Long.class)
+                                .single()),
+                new Probe(
+                        "select on contact_sources",
+                        jdbc -> jdbc.sql("select count(*) from northstar.contact_sources")
                                 .query(Long.class)
                                 .single()),
                 new Probe(
@@ -241,10 +261,13 @@ class WebhookRoutingTests {
 
         // Mutation check: the database alone would allow these. The same statements, run with the same context
         // (tenant, nil user, role webhook) on a plain app_user connection without the guard, succeed. So the refusals
-        // above come from the guard's webhook mode; drop that mode and this test fails.
+        // above come from the guard's webhook mode; drop that mode and this test fails. (Since step 2.3 the database
+        // refuses the webhook role contacts, conversations, messages and contact sources as well: their staff policies
+        // leave it out, as ConversationIsolationTests shows. So the check reads tables only the guard keeps it from.)
+        UUID template = data.messageTemplate(tenant);
         appUser.run(tenant, TenantContext.SYSTEM_USER_ID, "webhook", jdbc -> {
-            assertThat(jdbc.sql("select count(*) from northstar.contacts where id = ?")
-                            .param(contact)
+            assertThat(jdbc.sql("select count(*) from northstar.message_templates where id = ?")
+                            .param(template)
                             .query(Long.class)
                             .single())
                     .isEqualTo(1);
@@ -252,9 +275,13 @@ class WebhookRoutingTests {
                             .query(Long.class)
                             .single())
                     .isNotNull();
-            assertThat(jdbc.sql("insert into northstar.contacts (tenant_id, normalized_phone) values (?, ?)")
-                            .param(tenant)
-                            .param(phone)
+            assertThat(jdbc.sql("select count(*) from northstar.webhook_events where id = ?")
+                            .param(stored)
+                            .query(Long.class)
+                            .single())
+                    .isEqualTo(1);
+            assertThat(jdbc.sql("update northstar.webhook_events set processed_at = now() where id = ?")
+                            .param(stored)
                             .update())
                     .isEqualTo(1);
         });
