@@ -398,7 +398,14 @@ class ActionsTests {
         UUID id = as(
                         member,
                         () -> actions.create(new NewAction(
-                                FakeActionHandlers.QUICK_TYPE, key, ActionMode.AUTOMATIC, false, null, null, null)))
+                                FakeActionHandlers.QUICK_TYPE,
+                                key,
+                                ActionMode.AUTOMATIC,
+                                false,
+                                null,
+                                null,
+                                null,
+                                null)))
                 .action()
                 .id();
 
@@ -545,6 +552,7 @@ class ActionsTests {
                 needsReview ? ActionMode.APPROVAL : ActionMode.AUTOMATIC,
                 needsReview,
                 "{\"draft\": \"quote-v1\"}",
+                null,
                 null,
                 null);
     }

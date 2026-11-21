@@ -5,6 +5,7 @@ import com.northstar.tenancy.InviteDelivery;
 import com.northstar.tenancy.InviteDelivery.InviteToSend;
 import com.northstar.workflow.ActionHandler;
 import com.northstar.workflow.ActionOutcome;
+import com.northstar.workflow.ActionRecipient;
 import com.northstar.workflow.ActionRequest;
 import com.northstar.workflow.RetryPolicy;
 import java.time.Duration;
@@ -56,6 +57,12 @@ class InviteEmailHandler implements ActionHandler {
     @Override
     public String type() {
         return InviteEmailActions.TYPE;
+    }
+
+    /** The invited user is a member to be, not a contact, so an opt-out never touches an invite. */
+    @Override
+    public ActionRecipient recipient() {
+        return ActionRecipient.NONE;
     }
 
     @Override

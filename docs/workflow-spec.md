@@ -303,7 +303,7 @@ Inside the 24-hour customer-service window the system sends free-form messages; 
 
 - Templates are created per business in their WhatsApp account during onboarding, from Northstar's starter set, in the business's language.
 - The sender checks the window at send time; outside it, it switches to the matching template or fails the action with a clear reason.
-- Opt-out (STOP and configured keywords) blocks all automated and promotional messages immediately; replies the client starts later are still answered.
+- Opt-out (STOP and configured keywords) blocks all automated and promotional messages immediately. From step 2.5 every outbound action to an opted-out contact is refused, replies included (decided 21 Nov 2026); whether a reply to a message the client starts later may be sent is decided in step 2.6 or 2.9.
 - Message categories and pricing are set by Meta and can change; record the category returned on template approval.
 
 ## 13. Side flows
@@ -347,7 +347,16 @@ Each side flow below has a fixed sequence; the engine follows it the same way fo
 
 1. STOP (or configured keyword) → contact opt\_out\_at set.
 2. All scheduled outbound timers for that contact cancelled; no further automated messages.
-3. Stage unchanged; staff see an Opted out badge; transactional replies only if the client writes first.
+3. Stage unchanged; staff see an Opted out badge. From step 2.5 no outbound action to the contact is allowed at all, transactional replies included, until steps 2.6 / 2.9 decide whether a reply to a message the client writes first is allowed.
+
+How step 2.5 builds it (decided 21 Nov 2026):
+
+- **What counts.** Only a text message or an interactive reply (button, list or template quick-reply) whose whole text, normalised, equals a keyword. Normalising applies Unicode NFKC, lowercases, removes invisible format characters, turns punctuation and white space into a space, makes runs of space one, and trims; the keyword is normalised the same way, and one that normalises to nothing never matches. "Stop!" and "Opt-out." opt out; "Please don't stop the shoot" does not. Media captions, locations, reactions and every other type never opt out. Keywords: the platform's `stop`, `unsubscribe`, `opt out`, `optout` and `stop promotions` (the label of Meta's marketing opt-out button, a full opt-out until marketing and transactional consent are split), plus the business's own (`tenants.opt_out_keywords`).
+- **Checked first,** in the inbound job's one transaction, under the contact's row lock, before anything hands the message on.
+- **Effect,** in that same transaction: consent\_state `opted_out` and opt\_out\_at (WhatsApp's timestamp of the message) the first time only; every pending (due, scheduled or waiting for a retry), needs\_review and paused action whose recipient is the contact cancelled with reason `contact_opted_out`; the open lead joined (and linked to the conversation if it had none), its stage unchanged, and no lead ever opened by an opt-out message; the message stored in the conversation as usual; `optout.received` recorded instead of `message.received`, so the engine and the AI never see it as conversation. An attempt already processing cannot be recalled; its next claim is refused.
+- **Refused afterwards,** at three points: creating an action for the contact stores it cancelled (`contact_opted_out`) and never queues it; claiming one cancels it without calling its handler; and the database refuses a runnable action for an opted-out recipient (`actions_refuse_opted_out`, NSA01). Every action handler declares whether it messages a contact, and such a type cannot be created without its recipient.
+- **Final.** No step can clear an opt-out yet (`contacts_consent_guard`, NSC01); opting back in is a later step.
+- **Logs** carry IDs, codes and counts only, never the text or the keyword matched. No confirmation message is sent (step 2.6, wording to be approved).
 
 ## 14. Industry templates
 

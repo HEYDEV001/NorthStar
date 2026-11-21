@@ -13,14 +13,15 @@ import tools.jackson.databind.json.JsonMapper;
 import tools.jackson.databind.node.ObjectNode;
 
 /**
- * {@link EngineEvents} (step 2.4b): {@code insert ... on conflict (tenant_id, dedupe_key) do nothing} (P1), native SQL
- * with bind parameters and the tenant bound explicitly, inside the caller's transaction.
+ * {@link EngineEvents} (steps 2.4b and 2.5): {@code insert ... on conflict (tenant_id, dedupe_key) do nothing} (P1),
+ * native SQL with bind parameters and the tenant bound explicitly, inside the caller's transaction.
  */
 @Service
 @Transactional(propagation = Propagation.MANDATORY)
 class EngineEventsService implements EngineEvents {
 
     static final String MESSAGE_RECEIVED = "message.received";
+    static final String OPTOUT_RECEIVED = "optout.received";
 
     /** The events check allows 1 to 300 characters. */
     static final int MAX_DEDUPE_KEY_LENGTH = 300;
@@ -54,10 +55,32 @@ class EngineEventsService implements EngineEvents {
         payload.put("lead", event.lead().code());
         payload.put("sent_at", event.sentAt().toString());
 
+        return insert(event.leadId(), MESSAGE_RECEIVED, dedupeKey, payload);
+    }
+
+    @Override
+    public boolean recordOptOutReceived(OptOutReceived event) {
+        Objects.requireNonNull(event, "event");
+        String dedupeKey = OPTOUT_RECEIVED + ":" + event.providerMessageId();
+        if (dedupeKey.length() > MAX_DEDUPE_KEY_LENGTH) throw new IllegalArgumentException("Dedupe key too long");
+
+        // IDs, a fixed code and WhatsApp's timestamp only: never the text, and not the keyword it matched.
+        ObjectNode payload = json.createObjectNode();
+        payload.put("webhook_event_id", event.webhookEventId().toString());
+        payload.put("contact_id", event.contactId().toString());
+        payload.put("conversation_id", event.conversationId().toString());
+        payload.put("message_id", event.messageId().toString());
+        payload.put("lead", event.lead().code());
+        payload.put("sent_at", event.sentAt().toString());
+
+        return insert(event.leadId(), OPTOUT_RECEIVED, dedupeKey, payload);
+    }
+
+    private boolean insert(UUID leadId, String type, String dedupeKey, ObjectNode payload) {
         return jdbc.sql(INSERT_EVENT)
                         .param(systemTenant())
-                        .param(event.leadId())
-                        .param(MESSAGE_RECEIVED)
+                        .param(leadId)
+                        .param(type)
                         .param(dedupeKey)
                         .param(json.writeValueAsString(payload))
                         .update()

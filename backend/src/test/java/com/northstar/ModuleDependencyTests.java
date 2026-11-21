@@ -67,6 +67,11 @@ class ModuleDependencyTests {
         assertThat(graph.get("integrations")).contains("contacts", "workflow");
         assertThat(graph.get("contacts")).contains("tenancy").doesNotContain("workflow", "integrations");
         assertThat(graph.get("workflow")).doesNotContain("contacts", "integrations");
+        // Step 2.5: the action core asks for consent through its own port, RecipientConsent, which integrations
+        // implements over contacts; contacts reads the tenant's keywords from tenancy, which depends on neither.
+        assertThat(graph.get("integrations")).contains("contacts", "workflow");
+        assertThat(graph.get("contacts")).contains("tenancy", "api");
+        assertThat(graph.getOrDefault("tenancy", Set.of())).doesNotContain("contacts");
     }
 
     @Test

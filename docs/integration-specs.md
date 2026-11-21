@@ -125,7 +125,7 @@ Northstar operates as a Meta Tech Provider: each business connects its own Whats
 - Free-form text and media only inside the 24-hour customer-service window (`conversations.window_expires_at`); outside it, an approved template.
 - Quote and invoice PDFs sent as `document` messages with a signed URL or uploaded media ID.
 - Accept / Request Changes as interactive reply buttons (button IDs carry the quote version ID).
-- Opt-out keywords (STOP and tenant-configured words) checked on every inbound message before the AI sees it.
+- Opt-out keywords (STOP and tenant-configured words) checked on every inbound message before the AI sees it. Built in step 2.5 (`workflow-spec.md` section 13, Opt-out): a text or interactive reply whose whole normalised text is a keyword opts the contact out, in the inbound job's transaction; every outbound action to an opted-out contact is then refused, and the sender (step 2.6) must create its send actions with the contact as recipient.
 
 **Quality and limits:** store the number's quality rating and messaging limit; alert the admin when quality drops.
 

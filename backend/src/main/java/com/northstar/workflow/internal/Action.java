@@ -28,6 +28,7 @@ public class Action {
     static final String FAILED = "failed";
     static final String NEEDS_REVIEW = "needs_review";
     static final String PAUSED = "paused";
+    static final String CANCELLED = "cancelled";
 
     @Id
     @Column(updatable = false)
@@ -72,6 +73,13 @@ public class Action {
 
     @Column(updatable = false)
     private UUID stageEntryId;
+
+    /** The contact the action sends something to (step 2.5); null for an action that messages nobody outside. */
+    @Column(updatable = false)
+    private UUID recipientContactId;
+
+    /** A fixed code, set exactly when the action is cancelled (step 2.5). */
+    private String cancelReason;
 
     @Column(insertable = false, updatable = false)
     private Instant createdAt;
@@ -134,6 +142,14 @@ public class Action {
         nextAttemptAt = now;
     }
 
+    /** It no longer applies (step 2.5: its recipient opted out). It never runs, and nothing changes it afterwards. */
+    void cancel(String reason) {
+        status = CANCELLED;
+        cancelReason = reason;
+        nextAttemptAt = null;
+        leaseExpiresAt = null;
+    }
+
     /** When the action first became runnable: its approval, or its creation. The retry window counts from here. */
     Instant runnableSince() {
         return approvedAt != null ? approvedAt : createdAt;
@@ -153,7 +169,9 @@ public class Action {
                 lastErrorCode,
                 approverMembershipId,
                 approvedAt,
-                createdAt);
+                createdAt,
+                recipientContactId,
+                cancelReason);
     }
 
     UUID getId() {

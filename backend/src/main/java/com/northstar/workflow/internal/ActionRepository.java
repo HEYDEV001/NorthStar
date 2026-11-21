@@ -15,14 +15,16 @@ interface ActionRepository extends JpaRepository<Action, UUID> {
 
     /**
      * Inserts the action unless the tenant already has one with this idempotency key; 1 if inserted, 0 if not. Native
-     * SQL for on conflict; the tenant is bound explicitly from the scope, and RLS checks it again.
+     * SQL for on conflict; the tenant is bound explicitly from the scope, and RLS checks it again. An action for a
+     * contact who has opted out is inserted as cancelled with its reason (step 2.5).
      */
     @Modifying
     @Query(nativeQuery = true, value = """
             insert into northstar.actions
-              (id, tenant_id, lead_id, type, status, idempotency_key, mode, payload, next_attempt_at, stage_entry_id)
+              (id, tenant_id, lead_id, type, status, idempotency_key, mode, payload, next_attempt_at, stage_entry_id,
+               recipient_contact_id, cancel_reason)
             values (:id, :tenantId, :leadId, :type, :status, :idempotencyKey, :mode, cast(:payload as jsonb),
-                    :nextAttemptAt, :stageEntryId)
+                    :nextAttemptAt, :stageEntryId, :recipientContactId, :cancelReason)
             on conflict (tenant_id, idempotency_key) do nothing""")
     int insertIfAbsent(
             @Param("id") UUID id,
@@ -34,7 +36,19 @@ interface ActionRepository extends JpaRepository<Action, UUID> {
             @Param("mode") String mode,
             @Param("payload") String payload,
             @Param("nextAttemptAt") Instant nextAttemptAt,
-            @Param("stageEntryId") UUID stageEntryId);
+            @Param("stageEntryId") UUID stageEntryId,
+            @Param("recipientContactId") UUID recipientContactId,
+            @Param("cancelReason") String cancelReason);
+
+    /**
+     * The action's recipient (step 2.5), read as a plain value without loading the action into the persistence
+     * context, so the claim can read the recipient's consent before it locks the action. Empty when the action has no
+     * recipient or is not in the tenant. The recipient is written once, so reading it unlocked is safe.
+     */
+    @Query(nativeQuery = true, value = """
+            select recipient_contact_id from northstar.actions
+            where tenant_id = :tenantId and id = :id and recipient_contact_id is not null""")
+    Optional<UUID> findRecipientContactId(@Param("tenantId") UUID tenantId, @Param("id") UUID id);
 
     Optional<Action> findByIdempotencyKey(String idempotencyKey);
 
