@@ -179,6 +179,8 @@ record RlsReleaseGate(
                     "northstar.tenants_with_unprocessed_webhooks(p_older_than interval)",
                     "northstar.set_invite_token(p_invite_id uuid, p_token_hash text)",
                     "northstar.whatsapp_tenants(p_phone_number_ids text[])",
+                    "northstar.whatsapp_waba_tenants(p_waba_ids text[])",
+                    "northstar.tenants_with_whatsapp()",
                     "northstar.park_invalid_signature(p_provider text, p_body_bytes integer)",
                     "northstar.park_unknown_account(p_provider text, p_provider_event_id text, p_routing_key text,"
                             + " p_body_bytes integer, p_payload jsonb)"),

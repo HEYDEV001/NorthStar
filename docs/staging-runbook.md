@@ -27,7 +27,9 @@ registry tag deletion and garbage collection with the token's scopes, and everyt
 - re-run `roles.sql` and then `verify.sql` on the staging project (`db/bootstrap/README.md`, Commands (hosted)).
   Since step 2.1a they also create and check the `secrets_user` role and the `secrets` and `ingest` schemas, which the
   migrations need; the 18 PASS lines above predate them. In the same session, turn on `secrets_user`'s login and set
-  its password with `\password secrets_user`;
+  its password with `\password secrets_user`. Since step 2.8a `roles.sql` also installs `btree_gist`, which the
+  migration `one tenant per waba` needs: run it (and `verify.sql`, check 27) before the first deploy that includes
+  2.8a, or the pre-deploy job stops with `sql_state=NSB01` (`db/bootstrap/README.md`);
 - generate the credential key and keep its offline copy (Secrets, Generating the credential key). When the app is
   created in step 7, `worker` needs `SECRETS_DB_USER`, `SECRETS_DB_PASSWORD`, `NORTHSTAR_CREDENTIAL_KEYS` and
   `NORTHSTAR_CREDENTIAL_ACTIVE_KEY` (step 2.1b): the worker refuses to start without them.
@@ -127,8 +129,12 @@ The API refuses to start without both secrets; set them before the first deploy 
 3. **Subscribe, after the deploy is active:** Meta App Dashboard → WhatsApp → Configuration → Webhook → Edit. Callback
    URL `https://<app>.ondigitalocean.app/webhooks/whatsapp`, Verify token: paste. Verify and save: Meta calls the GET
    handshake, which echoes its challenge only for the right token. Then `pbcopy < /dev/null`.
-4. **Webhook fields:** subscribe to `messages` only. Template, quality and account updates are keyed by the WABA ID,
-   which step 2.8 routes; until then the API accepts them with a 200 and stores nothing.
+4. **Webhook fields:** subscribe to `messages`, and, once a deploy includes step 2.8a, `business_capability_update`
+   (the business portfolio's messaging limit, routed by the WABA ID in `entry.id`). Subscribe
+   `message_template_status_update` and `template_category_update` only once step 2.8b ships. Leave
+   `phone_number_quality_update` (onboarding and throughput upgrades only, so not stored), `account_update` and
+   `message_template_quality_update` unsubscribed until Phase 8. The API answers every field with a 200 and stores only
+   the ones it routes; the rest are counted as `ignored`.
 5. **Check:** App → Runtime Logs shows `webhook.verification provider=whatsapp status=200`. Send a message to the test
    number: the logs show `webhook.received ... stored=1` once the number's `whatsapp_accounts` row exists, or
    `webhook.unknown_account ... unrouted_id=<id>` before it does (parked, never processed).

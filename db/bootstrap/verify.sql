@@ -55,7 +55,11 @@ with checks (n, ok, description) as (
          'migrator cannot use schema auth (so no foreign key to auth.users)'),
     (26, (select exists (select from pg_available_extensions where name = 'citext')
              and not exists (select from pg_extension where extname = 'citext')),
-         'citext is available but not installed')
+         'citext is available but not installed'),
+    -- Step 2.8a: the exclusion constraint "one tenant per WABA" needs btree_gist, which roles.sql installs.
+    (27, exists (select from pg_extension e join pg_namespace n on n.oid = e.extnamespace
+                 where e.extname = 'btree_gist' and n.nspname = 'extensions'),
+         'btree_gist is installed in schema extensions')
 ),
 results as (
   select n, case when ok is true then 'PASS' else 'FAIL' end as result, description from checks

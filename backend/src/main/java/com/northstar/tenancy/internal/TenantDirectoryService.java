@@ -22,9 +22,9 @@ import org.springframework.transaction.PlatformTransactionManager;
 import org.springframework.transaction.support.TransactionTemplate;
 
 /**
- * {@link TenantDirectory}. The due-action scan and the unprocessed-webhook scan each run in their own guard scan mode: no
- * context is set and the call to the allowlisted function is the only statement allowed, so nothing else can run
- * without a tenant.
+ * {@link TenantDirectory}. The due-action scan, the unprocessed-webhook scan and the WhatsApp tenant scan (step 2.8a)
+ * each run in their own guard scan mode: no context is set and the call to the allowlisted function is the only
+ * statement allowed, so nothing else can run without a tenant.
  */
 @Service
 class TenantDirectoryService implements TenantDirectory {
@@ -81,6 +81,15 @@ class TenantDirectoryService implements TenantDirectory {
                 TenantGuardDataSource.UNPROCESSED_WEBHOOK_TENANTS,
                 TenantGuardedConnection::beginUnprocessedWebhookScan,
                 statement -> statement.setString(1, olderThan.toString()));
+    }
+
+    @Override
+    public List<UUID> tenantsWithWhatsApp() {
+        return scanTenantIds(
+                "WhatsApp tenant scan",
+                TenantGuardDataSource.WHATSAPP_TENANTS,
+                TenantGuardedConnection::beginWhatsAppTenantScan,
+                statement -> {});
     }
 
     /** Puts a guarded connection into one of its tenant-scan modes. */

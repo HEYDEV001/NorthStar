@@ -125,6 +125,19 @@ public final class TestData {
         return phoneNumberId;
     }
 
+    /** A WhatsApp number of the tenant under this WABA (step 2.8a), returning its random phone number ID. */
+    public String whatsAppNumber(UUID tenant, String wabaId) {
+        String phoneNumberId = "pn-" + UUID.randomUUID();
+        admin.sql("""
+                        insert into northstar.whatsapp_accounts (tenant_id, waba_id, phone_number_id)
+                        values (:tenant, :waba, :phone)""")
+                .param("tenant", tenant)
+                .param("waba", wabaId)
+                .param("phone", phoneNumberId)
+                .update();
+        return phoneNumberId;
+    }
+
     /**
      * The contact's WhatsApp conversation on a new number of the tenant, assigned to the membership (null: unassigned),
      * with an inbound message just now (step 2.3).

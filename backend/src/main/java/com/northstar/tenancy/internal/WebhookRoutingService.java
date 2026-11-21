@@ -52,10 +52,42 @@ class WebhookRoutingService implements WebhookRouting {
                     }
                     return found;
                 });
+        return webhookContexts(tenants);
+    }
+
+    @Override
+    public Map<String, TenantContext> whatsAppTenantsByWaba(Set<String> wabaIds) {
+        if (wabaIds.isEmpty()) return Map.of();
+        if (wabaIds.size() > MAX_ROUTING_KEYS) {
+            throw new IllegalArgumentException("At most " + MAX_ROUTING_KEYS + " WABA IDs per call");
+        }
+        Map<String, UUID> tenants = inTransaction(
+                TenantGuardDataSource.WHATSAPP_WABA_ROUTING,
+                TenantGuardedConnection::beginWhatsAppWabaRouting,
+                (connection, statement) -> {
+                    statement.setArray(1, connection.createArrayOf("text", wabaIds.toArray(String[]::new)));
+                    Map<String, UUID> found = new LinkedHashMap<>();
+                    try (ResultSet rows = statement.executeQuery()) {
+                        while (rows.next()) {
+                            UUID tenant = rows.getObject("tenant_id", UUID.class);
+                            UUID other = found.put(rows.getString("waba_id"), tenant);
+                            // The exclusion constraint makes this impossible; routing to either tenant would be a leak.
+                            if (other != null && !other.equals(tenant)) {
+                                throw new IllegalStateException("A WABA ID routed to two tenants");
+                            }
+                        }
+                    }
+                    return found;
+                });
+        return webhookContexts(tenants);
+    }
+
+    /** A webhook context per routed key, for exactly the tenants a routing function returned. */
+    private Map<String, TenantContext> webhookContexts(Map<String, UUID> tenants) {
         Map<String, TenantContext> contexts = new LinkedHashMap<>();
         for (Map.Entry<String, UUID> routed : tenants.entrySet()) {
             // Constructed right here, not through a method reference: TenantContext checks that this class is the
-            // caller, so only a tenant the function returned ever gets a webhook context.
+            // caller, so only a tenant a routing function returned ever gets a webhook context.
             TenantContext context = new TenantContext(routed.getValue(), TenantContext.SYSTEM_USER_ID, Role.WEBHOOK);
             contexts.put(routed.getKey(), context);
         }

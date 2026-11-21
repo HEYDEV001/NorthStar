@@ -11,12 +11,13 @@ import java.util.UUID;
  * context and allows exactly one statement: the allowlisted SECURITY DEFINER function behind it.
  *
  * <p>Routing returns webhook contexts ({@link TenantContext#isWebhook}), the only way to obtain one, so a webhook can
- * only ever be stored in a tenant that owns its phone number ID. Inside such a context the guard allows exactly one
+ * only ever be stored in a tenant that owns its phone number ID, or, for a change that names only the business account,
+ * its WABA ID (step 2.8a). Inside such a context the guard allows exactly one
  * statement, {@link #INSERT_WEBHOOK_EVENT}; anything else fails before it reaches Postgres.
  */
 public interface WebhookRouting {
 
-    /** At most this many phone number IDs per routing call; the function ignores any beyond. */
+    /** At most this many phone number or WABA IDs per routing call; the functions ignore any beyond. */
     int MAX_ROUTING_KEYS = 100;
 
     /**
@@ -37,6 +38,14 @@ public interface WebhookRouting {
      * {@link #MAX_ROUTING_KEYS} IDs. Calls northstar.whatsapp_tenants(), which returns IDs only.
      */
     Map<String, TenantContext> whatsAppTenants(Set<String> phoneNumberIds);
+
+    /**
+     * The tenants owning these WhatsApp Business Account IDs, as webhook contexts; unknown IDs are absent (step 2.8a).
+     * Used for webhook changes that name only the WABA, in {@code entry.id}. A WABA belongs to one tenant
+     * (whatsapp_accounts_one_tenant_per_waba). At most {@link #MAX_ROUTING_KEYS} IDs. Calls
+     * northstar.whatsapp_waba_tenants(), which returns IDs only.
+     */
+    Map<String, TenantContext> whatsAppTenantsByWaba(Set<String> wabaIds);
 
     /** Parks a delivery with a bad or missing signature: metadata only (P15). Calls northstar.park_invalid_signature(). */
     Parked parkInvalidSignature(String provider, int bodyBytes);

@@ -35,8 +35,8 @@ import org.springframework.transaction.PlatformTransactionManager;
 import org.springframework.transaction.support.TransactionTemplate;
 
 /**
- * Webhook routing and parking before the tenant is known, and what a webhook context may do once it is (step 2.2,
- * data-model.md section 12): each call runs in a single-statement guard mode; a webhook context exists only for a
+ * Webhook routing (by phone number ID, and by WABA ID since step 2.8a) and parking before the tenant is known, and what
+ * a webhook context may do once it is (step 2.2, data-model.md section 12): each call runs in a single-statement guard mode; a webhook context exists only for a
  * tenant the routing function returned, and may run only the webhook_events insert.
  */
 @SpringBootTest
@@ -120,6 +120,66 @@ class WebhookRoutingTests {
         Set<String> oneTooMany = new LinkedHashSet<>(List.of(many));
         oneTooMany.add("one-too-many");
         assertThatThrownBy(() -> routing.whatsAppTenants(oneTooMany)).isInstanceOf(IllegalArgumentException.class);
+    }
+
+    @Test
+    void P9_routingByWabaMapsEachAccountToItsOwnTenantAndUnknownAccountsToNothing() {
+        UUID tenantA = data.tenant();
+        UUID tenantB = data.tenant();
+        String wabaA = "waba-" + UUID.randomUUID();
+        String wabaB = "waba-" + UUID.randomUUID();
+        data.whatsAppNumber(tenantA, wabaA);
+        data.whatsAppNumber(tenantA, wabaA); // two numbers of one account
+        data.whatsAppNumber(tenantB, wabaB);
+        String unknown = "waba-" + UUID.randomUUID();
+
+        Map<String, TenantContext> routed =
+                routing.whatsAppTenantsByWaba(new LinkedHashSet<>(List.of(wabaA, wabaB, unknown)));
+
+        assertThat(routed).containsOnlyKeys(wabaA, wabaB);
+        assertThat(routed.get(wabaA).tenantId()).isEqualTo(tenantA);
+        assertThat(routed.get(wabaB).tenantId()).isEqualTo(tenantB);
+        for (TenantContext context : routed.values()) {
+            assertThat(context.isWebhook()).isTrue();
+            assertThat(context.role()).isEqualTo(Role.WEBHOOK);
+            assertThat(context.userId()).isEqualTo(TenantContext.SYSTEM_USER_ID);
+        }
+        assertThat(routing.whatsAppTenantsByWaba(Set.of())).isEmpty();
+        assertThat(routing.whatsAppTenants(Set.of(wabaA)))
+                .as("a WABA ID is not a phone number ID")
+                .isEmpty();
+    }
+
+    @Test
+    void theWabaRoutingFunctionReturnsIdsOnceAndLooksAtNoMoreThanAHundred() {
+        UUID tenant = data.tenant();
+        String waba = "waba-" + UUID.randomUUID();
+        data.whatsAppNumber(tenant, waba);
+        data.whatsAppNumber(tenant, waba);
+        String[] many = IntStream.range(0, 100).mapToObj(i -> "waba-none-" + i).toArray(String[]::new);
+        String[] withWabaLast = java.util.Arrays.copyOf(many, 101);
+        withWabaLast[100] = waba;
+
+        List<Map<String, Object>> rows =
+                appUser.withoutContext(jdbc -> jdbc.sql("select * from northstar.whatsapp_waba_tenants(?)")
+                        .param(withWabaLast)
+                        .query()
+                        .listOfRows());
+        assertThat(rows).as("the 101st ID is not looked at").isEmpty();
+
+        withWabaLast[0] = waba;
+        rows = appUser.withoutContext(jdbc -> jdbc.sql("select * from northstar.whatsapp_waba_tenants(?)")
+                .param(withWabaLast)
+                .query()
+                .listOfRows());
+        assertThat(rows).as("once, however many numbers share the account").hasSize(1);
+        assertThat(rows.getFirst()).containsOnlyKeys("waba_id", "tenant_id");
+        assertThat(rows.getFirst()).containsEntry("tenant_id", tenant);
+
+        Set<String> oneTooMany = new LinkedHashSet<>(List.of(many));
+        oneTooMany.add("one-too-many");
+        assertThatThrownBy(() -> routing.whatsAppTenantsByWaba(oneTooMany))
+                .isInstanceOf(IllegalArgumentException.class);
     }
 
     @Test
@@ -294,6 +354,9 @@ class WebhookRoutingTests {
         List<Mode> modes = List.of(
                 new Mode(TenantGuardedConnection::beginWhatsAppRouting, TenantGuardDataSource.WHATSAPP_ROUTING),
                 new Mode(
+                        TenantGuardedConnection::beginWhatsAppWabaRouting, TenantGuardDataSource.WHATSAPP_WABA_ROUTING),
+                new Mode(TenantGuardedConnection::beginWhatsAppTenantScan, TenantGuardDataSource.WHATSAPP_TENANTS),
+                new Mode(
                         TenantGuardedConnection::beginInvalidSignatureParking,
                         TenantGuardDataSource.PARK_INVALID_SIGNATURE),
                 new Mode(
@@ -302,6 +365,7 @@ class WebhookRoutingTests {
         List<String> others = List.of(
                 "select 1",
                 "select tenant_id from northstar.whatsapp_accounts",
+                "select waba_id, tenant_id from northstar.whatsapp_accounts",
                 "select * from ingest.unrouted_webhooks",
                 TenantGuardDataSource.MEMBERSHIP_LOOKUP,
                 TenantGuardDataSource.DUE_ACTION_TENANTS,

@@ -44,10 +44,12 @@ import org.springframework.jdbc.datasource.DelegatingDataSource;
  * Accepting an invite works the same way: {@link InviteAcceptance} allows only {@link #INVITE_ACCEPTANCE}. The job
  * sweeper's scan for tenants with due actions sets no context at all and allows only {@link #DUE_ACTION_TENANTS}; the
  * webhook sweep's scan for tenants with unprocessed webhook events likewise allows only
- * {@link #UNPROCESSED_WEBHOOK_TENANTS} (step 2.4a).
+ * {@link #UNPROCESSED_WEBHOOK_TENANTS} (step 2.4a), and the scheduled WhatsApp sync's scan for tenants to sync allows
+ * only {@link #WHATSAPP_TENANTS} (step 2.8a).
  *
  * <p>Webhooks (step 2.2) arrive with no token and no tenant. Routing a WhatsApp delivery sets no context and allows only
- * {@link #WHATSAPP_ROUTING}; parking an unroutable delivery allows only {@link #PARK_INVALID_SIGNATURE} or
+ * {@link #WHATSAPP_ROUTING}, or, for the changes that name only their business account, {@link #WHATSAPP_WABA_ROUTING}
+ * (step 2.8a), each in its own mode; parking an unroutable delivery allows only {@link #PARK_INVALID_SIGNATURE} or
  * {@link #PARK_UNKNOWN_ACCOUNT}, each in its own mode. Storing a routed delivery is a tenant transaction in a webhook
  * context ({@link TenantContext#isWebhook}): the full context is set, but the only statement allowed is
  * {@link WebhookRouting#INSERT_WEBHOOK_EVENT}, so a webhook can never read or change anything else in its tenant.
@@ -80,6 +82,15 @@ public final class TenantGuardDataSource extends DelegatingDataSource {
     /** The one statement allowed in WhatsApp routing mode: phone number IDs to tenant IDs, nothing else (step 2.2). */
     static final String WHATSAPP_ROUTING = "select phone_number_id, tenant_id from northstar.whatsapp_tenants(?)";
 
+    /** The one statement allowed in WhatsApp WABA routing mode: WABA IDs to tenant IDs, nothing else (step 2.8a). */
+    static final String WHATSAPP_WABA_ROUTING = "select waba_id, tenant_id from northstar.whatsapp_waba_tenants(?)";
+
+    /**
+     * The one statement allowed in WhatsApp tenant scan mode (step 2.8a): the tenants with a connected WhatsApp
+     * integration and a number, IDs only, for the scheduled sync.
+     */
+    static final String WHATSAPP_TENANTS = "select tenant_id from northstar.tenants_with_whatsapp()";
+
     /** The one statement allowed in invalid-signature parking mode (P15): metadata only, no payload parameter. */
     static final String PARK_INVALID_SIGNATURE =
             "select outcome, unrouted_id from northstar.park_invalid_signature(?, ?)";
@@ -97,6 +108,8 @@ public final class TenantGuardDataSource extends DelegatingDataSource {
         DUE_ACTION_SCAN(TenantGuardDataSource.DUE_ACTION_TENANTS),
         UNPROCESSED_WEBHOOK_SCAN(TenantGuardDataSource.UNPROCESSED_WEBHOOK_TENANTS),
         WHATSAPP_ROUTING(TenantGuardDataSource.WHATSAPP_ROUTING),
+        WHATSAPP_WABA_ROUTING(TenantGuardDataSource.WHATSAPP_WABA_ROUTING),
+        WHATSAPP_TENANT_SCAN(TenantGuardDataSource.WHATSAPP_TENANTS),
         INVALID_SIGNATURE_PARKING(TenantGuardDataSource.PARK_INVALID_SIGNATURE),
         UNKNOWN_ACCOUNT_PARKING(TenantGuardDataSource.PARK_UNKNOWN_ACCOUNT),
         /** A tenant transaction in a webhook context: the full context is set, and only the insert may run. */
@@ -189,6 +202,14 @@ public final class TenantGuardDataSource extends DelegatingDataSource {
                 }
                 case "beginWhatsAppRouting" -> {
                     beginWithoutContext(Mode.WHATSAPP_ROUTING);
+                    return null;
+                }
+                case "beginWhatsAppWabaRouting" -> {
+                    beginWithoutContext(Mode.WHATSAPP_WABA_ROUTING);
+                    return null;
+                }
+                case "beginWhatsAppTenantScan" -> {
+                    beginWithoutContext(Mode.WHATSAPP_TENANT_SCAN);
                     return null;
                 }
                 case "beginInvalidSignatureParking" -> {
@@ -329,7 +350,7 @@ public final class TenantGuardDataSource extends DelegatingDataSource {
             mode = context.isWebhook() ? Mode.WEBHOOK_EVENT_INSERT : Mode.TENANT;
         }
 
-        /** The single-statement modes that set no context at all: routing, parking and the two tenant scans. */
+        /** The single-statement modes that set no context at all: routing, parking and the tenant scans. */
         private void beginWithoutContext(Mode withoutContext) throws SQLException {
             if (target.getAutoCommit()) {
                 throw new IllegalStateException("A context-free call can only run inside a transaction");

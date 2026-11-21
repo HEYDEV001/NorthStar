@@ -127,6 +127,25 @@ class WebhookSweepTests {
     }
 
     @Test
+    void accountChangeRowsAreSweptToo() {
+        UUID tenant = data.tenant();
+        String waba = WhatsAppPayloads.wabaId();
+        UUID change = admin.sql("""
+                        insert into northstar.webhook_events (tenant_id, provider, provider_event_id, payload, received_at)
+                        values (:t, 'whatsapp', :key, '{}', now() - interval '3 minutes') returning id""")
+                .param("t", tenant)
+                .param("key", "business_capability_update:" + waba + ":1739321024:" + "a".repeat(32))
+                .query(UUID.class)
+                .single();
+
+        sweep(tenant);
+
+        assertThat(retryJobs(change))
+                .as("account-level changes are swept since step 2.8a")
+                .containsExactly(1);
+    }
+
+    @Test
     void eachStepQueuesOneJobHoweverOftenTheSweepRuns() {
         UUID tenant = data.tenant();
         UUID row = messageRow(tenant, "3 minutes", "database_unavailable");

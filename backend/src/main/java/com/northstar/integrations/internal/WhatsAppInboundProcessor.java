@@ -18,8 +18,10 @@ import org.springframework.stereotype.Component;
  * caller's one transaction as the system actor in the event's tenant, so it is stored in full or not at all (P3):
  *
  * <ol>
- *   <li>lock the event row: one already processed is left alone (P1), and a status row is handed to
- *       {@link WhatsAppStatusProcessor} (step 2.7), which does the rest for it;
+ *   <li>lock the event row: one already processed is left alone (P1); a status row is handed to
+ *       {@link WhatsAppStatusProcessor} (step 2.7) and an account-level change routed by WABA ID to
+ *       {@link WhatsAppAccountUpdateProcessor} (step 2.8a), each of which does the rest for it; a row of any other kind
+ *       but a message is closed as {@value #EVENT_UNSUPPORTED}, so the sweep never retries it forever;
  *   <li>read the message from the stored slice; an unusable one is closed with a fixed code and nothing else is
  *       written (P4);
  *   <li>a message already stored is a duplicate: the row is closed and nothing else is written (P1);
@@ -44,6 +46,10 @@ class WhatsAppInboundProcessor {
 
     static final String PROVIDER = WhatsAppWebhookIntake.PROVIDER;
     static final String STATUS_EVENT_PREFIX = "status:";
+    static final String MESSAGE_EVENT_PREFIX = "message:";
+
+    /** A stored row of a kind this job does not process (none is stored today); closed, never retried. */
+    static final String EVENT_UNSUPPORTED = "event_unsupported";
 
     /** Processed in full, but no lead was opened because the tenant has no single published workflow. */
     static final String NO_PUBLISHED_WORKFLOW = "no_published_workflow";
@@ -58,6 +64,9 @@ class WhatsAppInboundProcessor {
 
     /** A delivery status, processed by {@link WhatsAppStatusProcessor} (step 2.7). */
     record StatusProcessed(WhatsAppStatusProcessor.Outcome outcome) implements Outcome {}
+
+    /** An account-level change, processed by {@link WhatsAppAccountUpdateProcessor} (step 2.8a). */
+    record AccountUpdateProcessed(WhatsAppAccountUpdateProcessor.Outcome outcome) implements Outcome {}
 
     /** Closed for good with this fixed code; nothing else was written. */
     record Rejected(String errorCode) implements Outcome {}
@@ -83,6 +92,7 @@ class WhatsAppInboundProcessor {
     private final OutboundCancellation cancellation;
     private final EngineEvents events;
     private final WhatsAppStatusProcessor statuses;
+    private final WhatsAppAccountUpdateProcessor accountUpdates;
 
     WhatsAppInboundProcessor(
             WebhookEventProcessing rows,
@@ -91,7 +101,8 @@ class WhatsAppInboundProcessor {
             LeadIntake leads,
             OutboundCancellation cancellation,
             EngineEvents events,
-            WhatsAppStatusProcessor statuses) {
+            WhatsAppStatusProcessor statuses,
+            WhatsAppAccountUpdateProcessor accountUpdates) {
         this.rows = rows;
         this.contacts = contacts;
         this.consent = consent;
@@ -99,6 +110,7 @@ class WhatsAppInboundProcessor {
         this.cancellation = cancellation;
         this.events = events;
         this.statuses = statuses;
+        this.accountUpdates = accountUpdates;
     }
 
     /** Runs inside the caller's transaction. */
@@ -109,6 +121,13 @@ class WhatsAppInboundProcessor {
         if (row.processed()) return new AlreadyProcessed();
         if (row.providerEventId().startsWith(STATUS_EVENT_PREFIX)) {
             return new StatusProcessed(statuses.process(webhookEventId, row));
+        }
+        if (WhatsAppAccountUpdate.handles(row.providerEventId())) {
+            return new AccountUpdateProcessed(accountUpdates.process(webhookEventId, row));
+        }
+        if (!row.providerEventId().startsWith(MESSAGE_EVENT_PREFIX)) {
+            rows.finish(webhookEventId, EVENT_UNSUPPORTED);
+            return new Rejected(EVENT_UNSUPPORTED);
         }
 
         WhatsAppInboundMessage message;

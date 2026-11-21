@@ -45,8 +45,6 @@ final class CloudApiWhatsAppSender implements WhatsAppSender {
     /** Meta's phone number IDs are digits; anything else would change the request path. */
     private static final Pattern PHONE_NUMBER_ID = Pattern.compile("\\d{1,64}");
 
-    private static final Pattern TRACE_ID = Pattern.compile("[A-Za-z0-9_-]{1,64}");
-
     /** The pacing statuses Meta's reference lists; any other value is logged as "other". */
     private static final Set<String> MESSAGE_STATUSES = Set.of("accepted", "held_for_quality_assessment", "paused");
 
@@ -143,7 +141,7 @@ final class CloudApiWhatsAppSender implements WhatsAppSender {
 
     private WhatsAppSendResult answer(UUID messageId, HttpResponse<String> response) {
         int status = response.statusCode();
-        JsonNode json = parse(response.body());
+        JsonNode json = GraphAnswers.parse(response.body());
         if (status >= 200 && status < 300) {
             Optional<String> providerMessageId = providerMessageId(json);
             if (providerMessageId.isPresent()) {
@@ -157,10 +155,10 @@ final class CloudApiWhatsAppSender implements WhatsAppSender {
             log.error("whatsapp.cloud_api.unreadable message_id={} status={}", messageId, status);
             return new Rejected(new ActionOutcome.Failed(FailureClass.PERMANENT, "response_unreadable", null));
         }
-        JsonNode error = json == null ? null : json.get("error");
-        Integer metaCode = metaCode(error);
-        ActionOutcome.Failed failure =
-                MetaErrors.classify(status, metaCode, retryAfter(response).orElse(null));
+        JsonNode error = GraphAnswers.error(json);
+        Integer metaCode = GraphAnswers.metaCode(error);
+        ActionOutcome.Failed failure = MetaErrors.classify(
+                status, metaCode, GraphAnswers.retryAfter(response).orElse(null));
         log.warn(
                 "whatsapp.cloud_api.failed message_id={} status={} meta_code={} class={} code={} fbtrace_id={}",
                 messageId,
@@ -168,7 +166,7 @@ final class CloudApiWhatsAppSender implements WhatsAppSender {
                 metaCode == null ? "none" : metaCode,
                 failure.failureClass().databaseValue(),
                 failure.code(),
-                traceId(error));
+                GraphAnswers.traceId(error));
         return new Rejected(failure);
     }
 
@@ -195,32 +193,5 @@ final class CloudApiWhatsAppSender implements WhatsAppSender {
         JsonNode status = json.get("messages").get(0).get("message_status");
         if (status == null || !status.isString()) return "none";
         return MESSAGE_STATUSES.contains(status.asString()) ? status.asString() : "other";
-    }
-
-    private static Integer metaCode(JsonNode error) {
-        JsonNode code = error == null ? null : error.get("code");
-        return code != null && code.isIntegralNumber() && code.canConvertToInt() ? code.intValue() : null;
-    }
-
-    private static String traceId(JsonNode error) {
-        JsonNode trace = error == null ? null : error.get("fbtrace_id");
-        if (trace == null || !trace.isString()) return "none";
-        return TRACE_ID.matcher(trace.asString()).matches() ? trace.asString() : "invalid";
-    }
-
-    /** A Retry-After in seconds, if Meta sends one (its pages document none). */
-    private static Optional<Duration> retryAfter(HttpResponse<String> response) {
-        return response.headers()
-                .firstValue("retry-after")
-                .filter(value -> value.matches("\\d{1,6}"))
-                .map(value -> Duration.ofSeconds(Long.parseLong(value)));
-    }
-
-    private static JsonNode parse(String body) {
-        try {
-            return ProviderJson.MAPPER.readTree(body == null ? "" : body);
-        } catch (RuntimeException notJson) {
-            return null;
-        }
     }
 }

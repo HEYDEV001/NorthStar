@@ -26,4 +26,11 @@ public interface TenantDirectory {
      * northstar.tenants_with_unprocessed_webhooks(), which returns IDs only.
      */
     List<UUID> tenantsWithUnprocessedWebhooks(Duration olderThan);
+
+    /**
+     * Tenants whose WhatsApp integration is connected with a credential and who have at least one WhatsApp number: the
+     * ones the scheduled WhatsApp sync syncs (step 2.8a). Runs without a tenant scope through the allowlisted
+     * northstar.tenants_with_whatsapp(), which returns IDs only.
+     */
+    List<UUID> tenantsWithWhatsApp();
 }

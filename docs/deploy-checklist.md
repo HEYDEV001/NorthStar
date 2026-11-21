@@ -19,8 +19,9 @@ and rotate secrets on staging: `docs/staging-runbook.md`.
 ## Database
 
 - [ ] `db/bootstrap/roles.sql` has run on the project and `db/bootstrap/verify.sql` prints PASS on every line
-      (hosted `postgres` is not a full superuser). A FAIL stops the deploy; it is never fixed by weakening a policy or
-      giving `app_user` more rights.
+      (hosted `postgres` is not a full superuser). Run both again after any change to `roles.sql`, before the deploy
+      that needs it: step 2.8a's `btree_gist`, without which the pre-deploy job stops with `sql_state=NSB01`. A FAIL
+      stops the deploy; it is never fixed by weakening a policy or giving `app_user` more rights.
 - [ ] SSL is enforced on incoming connections (Supabase: Database → Settings → SSL Configuration).
 - [ ] Flyway uses a direct or session-pooler connection; the app uses the transaction pooler with `prepareThreshold=0`.
       On App Platform both go through the pooler (its direct connection is IPv6 only): `FLYWAY_URL` on port 5432,

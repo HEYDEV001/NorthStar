@@ -17,7 +17,8 @@ import org.junit.jupiter.api.Test;
 
 /**
  * Meta's error codes as retryable, permanent or auth (step 2.6b, integration-specs.md section 2). The expected table is
- * written out here again, from Meta's error-code page (checked 21 Nov 2026), rather than read from {@link MetaErrors},
+ * written out here again, from Meta's error-code page (checked 21 Nov 2026; 80008 from the message templates reference,
+ * step 2.8a), rather than read from {@link MetaErrors},
  * so a code moved to another class or renamed fails by name; and the spec's table must list exactly what the code does.
  */
 class MetaErrorsTests {
@@ -35,6 +36,7 @@ class MetaErrorsTests {
             entry(131000, "retryable|meta_unknown_error"),
             entry(4, "retryable|rate_limited_app"),
             entry(80007, "retryable|rate_limited_waba"),
+            entry(80008, "retryable|rate_limited_waba_management"),
             entry(130429, "retryable|rate_limited_throughput"),
             entry(131056, "retryable|rate_limited_pair"),
             entry(131057, "retryable|account_maintenance"),

@@ -52,6 +52,14 @@ create schema if not exists ingest authorization migrator;
 alter schema ingest owner to migrator;
 revoke all on schema ingest from public;
 
+-- btree_gist (step 2.8a): lets an exclusion constraint compare plain columns with = and <>. Extensions are installed
+-- here, by postgres, never by a migration running as migrator. The first use is "one tenant per WABA" on whatsapp_accounts;
+-- Phase 6's booking exclusions need it too. It goes in the extensions schema, as Supabase installs its extensions;
+-- hosted Supabase already has that schema, and a new database (local or test) gets it here. Neither app role is given
+-- any right on it: an index uses the extension's operator classes without one.
+create schema if not exists extensions;
+create extension if not exists btree_gist with schema extensions;
+
 do $$
 declare
   t record;

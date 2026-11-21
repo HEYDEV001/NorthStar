@@ -11,7 +11,7 @@ import org.springframework.transaction.annotation.Propagation;
 import org.springframework.transaction.annotation.Transactional;
 
 /**
- * The business's WhatsApp integration as the sender sees it (step 2.6a; data-model.md section 9,
+ * The business's WhatsApp integration as the sender and the sync see it (steps 2.6a and 2.8a; data-model.md section 9,
  * integration-specs.md section 1 Health): whether it is connected and which credential it uses, and its health after
  * each call to Meta. Native SQL with an explicit tenant filter on top of RLS (D7), as the system actor, MANDATORY: it
  * joins the sender's transaction.
@@ -59,7 +59,7 @@ class WhatsAppConnection {
                 .optional();
     }
 
-    /** Meta accepted a message. */
+    /** A call to Meta succeeded: a message accepted, or a number read. */
     void recordSuccess() {
         jdbc.sql(SUCCESS).param(systemTenant()).update();
     }
@@ -75,7 +75,7 @@ class WhatsAppConnection {
 
     private static UUID systemTenant() {
         TenantContext context = TenantScope.require();
-        if (!context.isSystem()) throw new IllegalStateException("WhatsApp messages are sent by the system actor");
+        if (!context.isSystem()) throw new IllegalStateException("Calls to Meta run as the system actor");
         return context.tenantId();
     }
 }
