@@ -23,8 +23,9 @@ import org.springframework.jdbc.core.simple.JdbcClient;
 
 /**
  * The webhook sweep's tenant scan (step 2.4a): northstar.tenants_with_unprocessed_webhooks() returns tenant IDs only,
- * for WhatsApp message events still unprocessed past the grace period on the database's clock, and is locked down; the
- * guard's scan mode allows that one statement and nothing else (P10).
+ * for WhatsApp events of every kind (messages; statuses since 2.7; account-level changes since 2.8a) still unprocessed
+ * past the grace period on the database's clock, and is locked down; the guard's scan mode allows that one statement
+ * and nothing else (P10).
  */
 @SpringBootTest
 @Import(TestcontainersConfiguration.class)
@@ -46,22 +47,31 @@ class UnprocessedWebhookScanTests {
     }
 
     @Test
-    void listsOnlyTenantsWithMessageOrStatusEventsUnprocessedPastTheGracePeriod() {
+    void listsOnlyTenantsWithWhatsAppEventsOfAnyKindUnprocessedPastTheGracePeriod() {
         UUID waiting = data.tenant();
         UUID failedWaiting = data.tenant();
         UUID fresh = data.tenant();
         UUID processed = data.tenant();
         UUID statusOnly = data.tenant();
+        UUID accountChangeOnly = data.tenant();
+        UUID otherProvider = data.tenant();
         webhookEvent(waiting, "message:", "3 minutes", false, null);
         webhookEvent(failedWaiting, "message:", "1 day", false, "database_unavailable");
         webhookEvent(fresh, "message:", "0 seconds", false, null);
         webhookEvent(processed, "message:", "1 hour", true, null);
         webhookEvent(statusOnly, "status:", "1 hour", false, null);
+        webhookEvent(accountChangeOnly, "business_capability_update:", "1 hour", false, null);
+        admin.sql("""
+                        insert into northstar.webhook_events (tenant_id, provider, provider_event_id, payload, received_at)
+                        values (:t, 'razorpay', :key, '{}', now() - interval '1 hour')""")
+                .param("t", otherProvider)
+                .param("key", "pay_" + UUID.randomUUID())
+                .update();
 
         assertThat(directory.tenantsWithUnprocessedWebhooks(GRACE))
-                .as("status rows count since step 2.7")
-                .contains(waiting, failedWaiting, statusOnly)
-                .doesNotContain(fresh, processed)
+                .as("status rows count since step 2.7, account-level changes since 2.8a; other providers do not")
+                .contains(waiting, failedWaiting, statusOnly, accountChangeOnly)
+                .doesNotContain(fresh, processed, otherProvider)
                 .doesNotHaveDuplicates();
     }
 

@@ -1,6 +1,7 @@
 package com.northstar;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 import com.northstar.migrate.Migrate;
 import java.io.IOException;
@@ -102,6 +103,46 @@ class MigrationRunnerTests {
                 .doesNotContain(marker)
                 .doesNotContain("no_such_table")
                 .doesNotContain(logins.migratorPassword());
+    }
+
+    @Test
+    void aDatabaseBootstrappedBeforeBtreeGistStopsAtTheWabaRuleWithItsOwnSqlState(CapturedOutput output)
+            throws Exception {
+        String database = freshDatabase();
+        // As if roles.sql ran before step 2.8a added btree_gist to it.
+        try (Connection admin = connect(database);
+                Statement statement = admin.createStatement()) {
+            statement.execute("drop extension btree_gist");
+        }
+
+        assertThat(Migrate.run(settings(database, logins.migratorPassword()), MIGRATIONS))
+                .isOne();
+        assertThat(output)
+                .contains("migrate_failed ")
+                .contains("sql_state=NSB01")
+                .contains("description=\"one tenant per waba\"");
+
+        // Running roles.sql again, as the message and the runbook say, lets the migration through.
+        try (Connection admin = connect(database)) {
+            DatabaseBootstrap.applyRoles(admin);
+        }
+        assertThat(Migrate.run(settings(database, logins.migratorPassword()), MIGRATIONS))
+                .isZero();
+    }
+
+    @Test
+    void theWabaRulesMessageSaysWhatToRun() throws Exception {
+        String database = freshDatabase();
+        try (Connection admin = connect(database);
+                Statement statement = admin.createStatement()) {
+            statement.execute("drop extension btree_gist");
+            String check = Files.readString(MIGRATIONS.resolve("V202611221000__one_tenant_per_waba.sql"));
+            String block = check.substring(check.indexOf("do $$"), check.indexOf("$$;") + 2);
+            assertThatThrownBy(() -> statement.execute(block))
+                    .isInstanceOf(SQLException.class)
+                    .hasMessageContaining("btree_gist is not installed: run db/bootstrap/roles.sql as postgres")
+                    .satisfies(e -> assertThat(((SQLException) e).getSQLState()).isEqualTo("NSB01"));
+        }
     }
 
     @Test

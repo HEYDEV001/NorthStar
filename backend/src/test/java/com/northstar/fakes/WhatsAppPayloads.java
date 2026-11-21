@@ -39,6 +39,37 @@ public final class WhatsAppPayloads {
         return "pn-" + UUID.randomUUID();
     }
 
+    /** A random WhatsApp Business Account ID (Meta's are digits; this one is clearly a test value). */
+    public static String wabaId() {
+        return "waba-" + UUID.randomUUID();
+    }
+
+    /**
+     * An entry for this business account at this Unix time with one {@code business_capability_update} change (step
+     * 2.8a), shaped as Meta's webhook reference shows it: the portfolio's messaging limit in
+     * {@code max_daily_conversations_per_business} (null leaves it out), and the phone-number cap beside it.
+     */
+    public WhatsAppPayloads capabilityUpdate(String wabaId, long time, String limit) {
+        ObjectNode value = JSON.createObjectNode();
+        if (limit != null) value.put("max_daily_conversations_per_business", limit);
+        value.put("max_phone_numbers_per_waba", 25);
+        return accountChange(wabaId, time, "business_capability_update", value);
+    }
+
+    /** An entry for this business account at this Unix time with one change of any field (step 2.8a). */
+    public WhatsAppPayloads accountChange(String wabaId, long time, String field, ObjectNode value) {
+        ObjectNode entry = entries.addObject().put("id", wabaId).put("time", time);
+        ObjectNode change = entry.putArray("changes").addObject();
+        change.put("field", field);
+        change.set("value", value);
+        return this;
+    }
+
+    /** An empty object to build a change's value with. */
+    public static ObjectNode object() {
+        return JSON.createObjectNode();
+    }
+
     /** Text no log line should ever contain. */
     public static String marker() {
         return "body-marker-" + UUID.randomUUID();

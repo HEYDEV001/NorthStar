@@ -25,7 +25,7 @@ Every case below has a defined behaviour and an automated test before launch; th
 | P13 | Staff member deactivated while logged in | Session invalid on next request; open leads and future appointments flagged for reassignment | 1 |
 | P14 | Last admin tries to remove themselves or downgrade to staff | Refused; a workspace always keeps at least one active admin | 1 |
 | P15 | Webhook with invalid signature | Rejected with 401; parked in `ingest.unrouted_webhooks` with `signature_valid = false` and metadata only (no payload) for investigation; no processing | 2 |
-| P16 | Webhook for an unknown WhatsApp phone number ID | Parked in `ingest.unrouted_webhooks` as `unknown_account` (payload kept up to 64 KB); Northstar admin alerted; nothing processed | 2 |
+| P16 | Webhook for an unknown WhatsApp phone number ID (or, for a change that names only its business account, an unknown WABA ID: step 2.8a) | Parked in `ingest.unrouted_webhooks` as `unknown_account` with that ID as its routing key (payload kept up to 64 KB); Northstar admin alerted; nothing processed | 2 |
 | P17 | Google Sheets quota exceeded | Outbox batches back off and retry; integration shows delayed sync with last success time; no data lost | 7 |
 | P18 | Business deletes the connected spreadsheet or tab | Sync marked error; prompt to reconnect or create a new sheet; full resync on reconnect | 7 |
 | P19 | Staff disconnects Google Calendar | Excluded from auto-assignment until reconnected (no free/busy); admin notified | 6 |

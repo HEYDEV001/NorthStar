@@ -23,7 +23,8 @@ import org.testcontainers.postgresql.PostgreSQLContainer;
  * The integration tables' rules in the database (step 2.1a, data-model.md sections 9, 12 and 13): duplicate webhooks
  * insert nothing (P1 groundwork), every reference stays in its tenant, only declared columns change, tenant credentials
  * are reachable only through secrets_user, and unrouted webhooks only by app_admin, with no payload kept for a bad
- * signature and none over 64 KB for an unknown account.
+ * signature and none over 64 KB for an unknown account. Since step 2.8a: one business per WABA, and the defined values of
+ * a number's quality rating and messaging limit.
  */
 @SpringBootTest
 @Import(TestcontainersConfiguration.class)
@@ -261,8 +262,8 @@ class IntegrationSchemaTests {
                 .hasMessageContaining("whatsapp_accounts_phone_number_id_key");
         int rated = asAdmin(
                 owner,
-                jdbc -> jdbc.sql("update northstar.whatsapp_accounts set quality_rating = 'GREEN',"
-                                + " messaging_limit = 'TIER_1K' where id = :id")
+                jdbc -> jdbc.sql("update northstar.whatsapp_accounts set quality_rating = 'green',"
+                                + " messaging_limit = 'tier_2k' where id = :id")
                         .param("id", account)
                         .update());
         assertThat(rated).isOne();
@@ -277,6 +278,102 @@ class IntegrationSchemaTests {
                     .rootCause()
                     .hasMessageContaining("permission denied");
         }
+    }
+
+    @Test
+    void aWabaBelongsToOneBusinessWhateverItsNumbers() {
+        TestData.Member owner = data.member("admin");
+        TestData.Member other = data.member("admin");
+        String waba = "waba-" + UUID.randomUUID();
+
+        // As app_user, which has no right on the extensions schema: the constraint's operator classes need none.
+        for (int i = 0; i < 2; i++) {
+            int inserted = asAdmin(
+                    owner,
+                    jdbc -> jdbc.sql("""
+                                    insert into northstar.whatsapp_accounts (tenant_id, waba_id, phone_number_id)
+                                    values (:t, :waba, :phone)""")
+                            .param("t", owner.tenantId())
+                            .param("waba", waba)
+                            .param("phone", "pn-" + UUID.randomUUID())
+                            .update());
+            assertThat(inserted)
+                    .as("number %d of one account in one business", i + 1)
+                    .isOne();
+        }
+        assertThatThrownBy(() -> asAdmin(
+                        other,
+                        jdbc -> jdbc.sql("""
+                                        insert into northstar.whatsapp_accounts (tenant_id, waba_id, phone_number_id)
+                                        values (:t, :waba, :phone)""")
+                                .param("t", other.tenantId())
+                                .param("waba", waba)
+                                .param("phone", "pn-" + UUID.randomUUID())
+                                .update()))
+                .as("the same account in a second business, even though RLS hides the first")
+                .rootCause()
+                .hasMessageContaining("whatsapp_accounts_one_tenant_per_waba");
+        assertThat(admin.sql("""
+                        select pg_get_constraintdef(oid) from pg_constraint
+                        where conname = 'whatsapp_accounts_one_tenant_per_waba'""").query(String.class).single())
+                .isEqualTo("EXCLUDE USING gist (waba_id WITH =, tenant_id WITH <>)");
+    }
+
+    @Test
+    void qualityRatingAndMessagingLimitTakeOnlyTheirDefinedValues() {
+        TestData.Member owner = data.member("admin");
+        UUID account = data.whatsAppAccount(owner.tenantId());
+        String quality = "update northstar.whatsapp_accounts set quality_rating = :v where id = :id";
+        String limit = "update northstar.whatsapp_accounts set messaging_limit = :v where id = :id";
+
+        for (String value : List.of("green", "yellow", "red", "unknown")) {
+            int updated = asAdmin(
+                    owner,
+                    jdbc -> jdbc.sql(quality)
+                            .param("v", value)
+                            .param("id", account)
+                            .update());
+            assertThat(updated).as(value).isOne();
+        }
+        for (String value :
+                List.of("tier_50", "tier_250", "tier_2k", "tier_10k", "tier_100k", "tier_unlimited", "tier_not_set")) {
+            int updated = asAdmin(
+                    owner,
+                    jdbc -> jdbc.sql(limit)
+                            .param("v", value)
+                            .param("id", account)
+                            .update());
+            assertThat(updated).as(value).isOne();
+        }
+        for (String value : List.of("GREEN", "Green", "na", "flagged", "")) {
+            assertThatThrownBy(() -> asAdmin(
+                            owner,
+                            jdbc -> jdbc.sql(quality)
+                                    .param("v", value)
+                                    .param("id", account)
+                                    .update()))
+                    .as(value)
+                    .rootCause()
+                    .hasMessageContaining("whatsapp_accounts_quality_rating_valid");
+        }
+        for (String value : List.of("TIER_2K", "tier_1k", "2000", "-1", "unlimited", "")) {
+            assertThatThrownBy(() -> asAdmin(
+                            owner,
+                            jdbc -> jdbc.sql(limit)
+                                    .param("v", value)
+                                    .param("id", account)
+                                    .update()))
+                    .as(value)
+                    .rootCause()
+                    .hasMessageContaining("whatsapp_accounts_messaging_limit_valid");
+        }
+        int cleared = asAdmin(
+                owner,
+                jdbc -> jdbc.sql("update northstar.whatsapp_accounts set quality_rating = null, messaging_limit = null"
+                                + " where id = :id")
+                        .param("id", account)
+                        .update());
+        assertThat(cleared).as("null: never read from Meta").isOne();
     }
 
     // secrets.integration_credentials

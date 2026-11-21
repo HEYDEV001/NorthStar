@@ -251,6 +251,7 @@ Every side effect runs as an action through the job queue with a status, an idem
 | Sheets row upsert | Batched; retry until success, max 24 h | Integration marked error; outbox kept |
 | Meta CAPI event | 5 attempts up to 24 h | Failed; logged for admin view |
 | Email send (Resend) | Same as WhatsApp send (6 attempts) | Failed; alert; for an invite, the admin resends it |
+| WhatsApp sync (step 2.8a) | A first try plus 2 retries (3 attempts), waiting 30 s → 5 min; window 5.5 min | Failed; alert; the stored values stay as they were, and the next scheduled sync (one per business every 6 hours) tries again |
 | AI call | 3 attempts | Escalate lead to Needs Human |
 
 **Failed Actions screen:** shows lead, action, error, attempts, last try; buttons Retry, Skip (with reason), Open lead.

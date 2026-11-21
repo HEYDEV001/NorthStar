@@ -16,7 +16,8 @@ import org.springframework.transaction.support.TransactionTemplate;
 
 /**
  * One tenant's webhook sweep, run by the worker as the system actor in that tenant (step 2.4a). Reads the tenant's
- * oldest unprocessed WhatsApp message and status events (status events since step 2.7) past the grace period and, as {@link WebhookRetrySchedule} decides, queues
+ * oldest unprocessed WhatsApp events (messages, statuses since step 2.7 and account-level changes since step 2.8a) past
+ * the grace period and, as {@link WebhookRetrySchedule} decides, queues
  * each again under its step's job ID or closes a failed one that is past the retry window. Jobs are created after the
  * transaction commits ({@link Jobs}).
  *

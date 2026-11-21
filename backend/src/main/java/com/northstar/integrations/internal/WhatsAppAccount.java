@@ -15,8 +15,9 @@ import org.hibernate.annotations.TenantId;
 
 /**
  * A business's WhatsApp number (northstar.whatsapp_accounts, data-model.md section 9). phoneNumberId routes inbound
- * webhooks to the tenant and is unique across tenants; it and wabaId never change, matching the column grants.
- * qualityRating and messagingLimit are plain text until step 2.8 defines their values.
+ * webhooks to the tenant and is unique across tenants; it and wabaId never change, matching the column grants. A WABA
+ * belongs to one tenant (step 2.8a). qualityRating and messagingLimit hold {@link QualityRating} and
+ * {@link MessagingLimit} values (step 2.8a); the sync writes them through {@link WhatsAppAccountHealth}.
  */
 @Entity
 @Table(schema = "northstar", name = "whatsapp_accounts")
@@ -58,10 +59,10 @@ public class WhatsAppAccount {
         this.phoneNumberId = phoneNumberId;
     }
 
-    /** What Meta reports about the number's quality and sending limit (step 2.8 defines the values). */
-    void recordQuality(String qualityRating, String messagingLimit) {
-        this.qualityRating = qualityRating;
-        this.messagingLimit = messagingLimit;
+    /** What Meta reports about the number's quality and its portfolio's messaging limit (step 2.8a). */
+    void recordQuality(QualityRating qualityRating, MessagingLimit messagingLimit) {
+        this.qualityRating = qualityRating.databaseValue();
+        this.messagingLimit = messagingLimit.databaseValue();
     }
 
     UUID getId() {

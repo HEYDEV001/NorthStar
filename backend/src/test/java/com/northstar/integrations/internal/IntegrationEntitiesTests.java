@@ -81,7 +81,7 @@ class IntegrationEntitiesTests {
                         .save(new WhatsAppAccount("waba-" + UUID.randomUUID(), phoneNumberId))
                         .getId());
         inTenant(owner, () -> {
-            whatsAppAccounts.findById(id).orElseThrow().recordQuality("GREEN", "TIER_1K");
+            whatsAppAccounts.findById(id).orElseThrow().recordQuality(QualityRating.GREEN, MessagingLimit.TIER_2K);
             return null;
         });
         WhatsAppAccount saved =
@@ -89,7 +89,7 @@ class IntegrationEntitiesTests {
 
         assertThat(saved.getTenantId()).isEqualTo(owner.tenantId());
         assertThat(saved.getPhoneNumberId()).isEqualTo(phoneNumberId);
-        assertThat(saved.getQualityRating()).isEqualTo("GREEN");
+        assertThat(saved.getQualityRating()).isEqualTo("green");
     }
 
     @Test

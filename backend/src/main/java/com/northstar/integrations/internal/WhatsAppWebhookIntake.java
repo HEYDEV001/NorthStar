@@ -14,6 +14,7 @@ import java.util.Map;
 import java.util.Optional;
 import java.util.Set;
 import java.util.UUID;
+import java.util.function.Function;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.slf4j.MDC;
@@ -23,15 +24,16 @@ import org.springframework.transaction.support.TransactionTemplate;
 
 /**
  * Stores a verified WhatsApp delivery (step 2.2, integration-specs.md section 1, steps 3 to 5): split into items, route
- * each by phone number ID, store each tenant's items in that tenant's own transaction in a webhook context (one row per
- * item, a duplicate stores nothing, P1) and queue one job per stored row after the commit, then park items for unknown
- * numbers (P16). Nothing is processed here and nothing is sent.
+ * each by phone number ID (or, for a change that names only its business account, by WABA ID: step 2.8a), store each
+ * tenant's items in that tenant's own transaction in a webhook context (one row per item, a duplicate stores nothing,
+ * P1) and queue one job per stored row after the commit, then park items for unknown numbers and accounts (P16).
+ * Nothing is processed here and nothing is sent.
  *
  * <p>Tenants are written one after another, each in its own transaction, as a transaction is bound to one tenant. If any
  * write fails the request fails (500) and Meta retries the whole delivery; items already stored are then duplicates.
  *
  * <p>Logs carry counts, webhook event IDs, unrouted row IDs and tenant IDs only: never the body, a wamid, a phone number
- * ID or a phone number.
+ * ID, a WABA ID or a phone number.
  */
 @Service
 class WhatsAppWebhookIntake {
@@ -79,20 +81,25 @@ class WhatsAppWebhookIntake {
             return new Outcome(false, 0, 0, 0, 0, 0, 0, 0);
         }
 
-        Map<String, List<WhatsAppDelivery.Item>> byNumber = new LinkedHashMap<>();
+        Map<WhatsAppDelivery.Route, Map<String, List<WhatsAppDelivery.Item>>> byKey = new LinkedHashMap<>();
         for (WhatsAppDelivery.Item item : delivery.items()) {
-            byNumber.computeIfAbsent(item.phoneNumberId(), key -> new ArrayList<>())
+            byKey.computeIfAbsent(item.route(), route -> new LinkedHashMap<>())
+                    .computeIfAbsent(item.routingKey(), key -> new ArrayList<>())
                     .add(item);
         }
-        Map<String, TenantContext> tenants = route(byNumber.keySet());
 
-        // One transaction per tenant, holding every item of every number that tenant owns.
+        // One transaction per tenant, holding every item of every number and account that tenant owns.
         Map<TenantContext, List<WhatsAppDelivery.Item>> byTenant = new LinkedHashMap<>();
         List<WhatsAppDelivery.Item> unknown = new ArrayList<>();
-        byNumber.forEach((number, items) -> {
-            TenantContext tenant = tenants.get(number);
-            if (tenant == null) unknown.addAll(items);
-            else byTenant.computeIfAbsent(tenant, key -> new ArrayList<>()).addAll(items);
+        byKey.forEach((route, keys) -> {
+            Map<String, TenantContext> tenants = route(route, keys.keySet());
+            keys.forEach((key, items) -> {
+                TenantContext tenant = tenants.get(key);
+                if (tenant == null) unknown.addAll(items);
+                else
+                    byTenant.computeIfAbsent(tenant, context -> new ArrayList<>())
+                            .addAll(items);
+            });
         });
 
         int stored = 0;
@@ -136,12 +143,17 @@ class WhatsAppWebhookIntake {
         return outcome;
     }
 
-    private Map<String, TenantContext> route(Set<String> numbers) {
+    /** Routes the keys of one kind, at most {@link WebhookRouting#MAX_ROUTING_KEYS} per call. */
+    private Map<String, TenantContext> route(WhatsAppDelivery.Route route, Set<String> keys) {
+        Function<Set<String>, Map<String, TenantContext>> lookup = switch (route) {
+            case PHONE_NUMBER -> routing::whatsAppTenants;
+            case WABA -> routing::whatsAppTenantsByWaba;
+        };
         Map<String, TenantContext> tenants = new LinkedHashMap<>();
-        List<String> all = new ArrayList<>(numbers);
+        List<String> all = new ArrayList<>(keys);
         for (int from = 0; from < all.size(); from += WebhookRouting.MAX_ROUTING_KEYS) {
             List<String> chunk = all.subList(from, Math.min(all.size(), from + WebhookRouting.MAX_ROUTING_KEYS));
-            tenants.putAll(routing.whatsAppTenants(new LinkedHashSet<>(chunk)));
+            tenants.putAll(lookup.apply(new LinkedHashSet<>(chunk)));
         }
         return tenants;
     }
@@ -177,7 +189,7 @@ class WhatsAppWebhookIntake {
     private Parked.Outcome park(WhatsAppDelivery.Item item) {
         if (!limiter.tryAcquire(UnroutedRateLimiter.Reason.UNKNOWN_ACCOUNT)) return Parked.Outcome.RATE_LIMITED;
         Parked parked = routing.parkUnknownAccount(
-                PROVIDER, item.providerEventId(), item.phoneNumberId(), item.payloadBytes(), item.payloadJson());
+                PROVIDER, item.providerEventId(), item.routingKey(), item.payloadBytes(), item.payloadJson());
         switch (parked.outcome()) {
             case STORED ->
                 // The alert for now (P16); the Northstar admin is notified from Phase 8.

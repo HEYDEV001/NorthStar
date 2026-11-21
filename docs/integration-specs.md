@@ -110,11 +110,11 @@ Northstar operates as a Meta Tech Provider: each business connects its own Whats
 | Endpoint | `GET` and `POST /webhooks/whatsapp`, outside `/api/v1` (step 2.2) |
 | Verification | `GET` with `hub.mode`, `hub.verify_token`, `hub.challenge`; echo the challenge when the token matches. Built: `hub.mode` must be `subscribe` (Meta: "always set to subscribe"), the token is compared in constant time, and the challenge (Meta: "an int you must pass back") is echoed as plain text only if it is 1 to 64 digits; anything else is 403 `verification_failed` |
 | Signature | `X-Hub-Signature-256`: HMAC-SHA256 of the raw body with the app secret; reject on mismatch. Built: exactly `sha256=` and 64 lowercase hex digits, checked on the exact bytes received before any JSON parsing, in constant time; mismatch, missing or malformed → 401 `invalid_signature`, parked as metadata only (P15). The provider event ID of a bad-signature row stays null: an unverified body is never parsed |
-| Routing | `metadata.phone_number_id` → `whatsapp_accounts` → tenant, through the allowlisted `northstar.whatsapp_tenants()` (`data-model.md` section 12) |
-| Splitting | One delivery can carry several entries and changes, for several numbers and so several tenants, and Meta batches up to 1000 updates without guaranteeing the grouping. Each element of a change's `messages` or `statuses` is one item, stored as its own `webhook_events` row in its number's tenant (one transaction per tenant), with a Meta-shaped slice as payload: the envelope, the entry ID, one change with its `value` fields (metadata, contacts, messaging_product) and only that item. Items for unknown numbers are parked one by one with only their own slice. U+0000 and unpaired surrogates in the slice become U+FFFD (jsonb cannot hold them) |
-| Dedupe | Message ID for messages; message ID + status for status updates. Built as `provider_event_id` = `message:<wamid>` (`messages[].id`) and `status:<wamid>:<status>` (`statuses[].id`, the sent message's wamid, and `statuses[].status`); per item, so a retry batched differently still dedupes (P1). A duplicate is not stored and queues nothing |
-| Not stored (until step 2.8) | Changes whose `field` is not `messages` (template status, quality and account updates, keyed by the WABA ID in `entry.id`), value-level `errors` (no item ID), items without a usable ID and changes without a phone number ID: 200, counted as `ignored` in the log. Only the `messages` field is subscribed until 2.8 routes the rest by WABA |
-| Queueing | One `ProcessWhatsAppWebhook` job (IDs only) per stored row, created after the tenant's transaction commits; it processes the row (step 2.4b, section 1). Since step 2.4a the webhook sweep queues it again for a message row still unprocessed past the grace period (section 1) |
+| Routing | `metadata.phone_number_id` → `whatsapp_accounts` → tenant, through the allowlisted `northstar.whatsapp_tenants()` (`data-model.md` section 12). A change that names only its business account (step 2.8a: `business_capability_update`) is routed by the WABA ID in `entry.id` instead, through `northstar.whatsapp_waba_tenants()`, in its own guard mode. A WABA belongs to one tenant (exclusion constraint `whatsapp_accounts_one_tenant_per_waba`); an unknown WABA ID is parked as `unknown_account` with the WABA ID as its routing key (P16) |
+| Splitting | One delivery can carry several entries and changes, for several numbers and so several tenants, and Meta batches up to 1000 updates without guaranteeing the grouping. Each element of a change's `messages` or `statuses` is one item, stored as its own `webhook_events` row in its number's tenant (one transaction per tenant), with a Meta-shaped slice as payload: the envelope, the entry ID, one change with its `value` fields (metadata, contacts, messaging_product) and only that item. Items for unknown numbers are parked one by one with only their own slice. An account-level change (step 2.8a) is one item too, its slice the envelope, the entry's `id` and `time`, and that one change. U+0000 and unpaired surrogates in the slice become U+FFFD (jsonb cannot hold them) |
+| Dedupe | Message ID for messages; message ID + status for status updates. Built as `provider_event_id` = `message:<wamid>` (`messages[].id`) and `status:<wamid>:<status>` (`statuses[].id`, the sent message's wamid, and `statuses[].status`); per item, so a retry batched differently still dedupes (P1). An account-level change has no event ID from Meta, so it is keyed `<field>:<entry.id>:<entry.time>:<digest>`, the digest the first 32 hex digits of the SHA-256 of its `value` as stored: the same change has the same key however it is batched, and another value in the same second, or the same value at another time, is another change (step 2.8a). A change without a usable WABA ID or an integer `time` is not stored. A duplicate is not stored and queues nothing |
+| Not stored | 200, counted as `ignored` in the log: `message_template_status_update` and `template_category_update` (step 2.8b stores them); `phone_number_quality_update` (its events are now only `ONBOARDING` and `THROUGHPUT_UPGRADE`, and its `max_daily_conversations_per_business` can then be a throughput level, so limits come from `business_capability_update` and the sync instead, decided 22 Nov 2026); `account_update` and `message_template_quality_update` (Phase 8 alerts); any other field; value-level `errors` (no item ID); items without a usable ID; changes without a phone number ID. Subscribed in Meta's dashboard: `messages`, and `business_capability_update` from step 2.8a (`docs/staging-runbook.md`) |
+| Queueing | One `ProcessWhatsAppWebhook` job (IDs only) per stored row, created after the tenant's transaction commits; it processes the row (step 2.4b, section 1). Since step 2.4a the webhook sweep queues it again for a row still unprocessed past the grace period (section 1): message rows, status rows since 2.7, and every WhatsApp row since 2.8a. A row of a kind the job does not process is closed as `event_unsupported`, never retried |
 | Inbound types handled | Stored as (step 2.4b): text → `text`; interactive `button_reply` and `list_reply`, and a template's quick-reply `button` → `interactive`, body the reply's title or text (the button ID stays in the webhook payload for Phase 5); image and document → their type, body the caption; audio and location → their type, no body (media IDs and coordinates stay in the webhook payload, kept 30 days, for step 4.5); video, sticker, contacts, order, reaction, system and any other type → `unsupported`, no body. No media is downloaded yet. Reactions and system messages never open a lead on their own |
 | Status updates | sent, delivered, read, failed → `messages.status`, forward only; a failure sets `messages.error_code` and the send action stays succeeded (step 2.7, below) |
 | Click-to-WhatsApp referral | `referral` object on the first message: `source_id`, `source_type`, `source_url`, `headline`, `ctwa_clid` → `ad_referrals`; `ctwa_clid` stored for Conversions API matching |
@@ -222,7 +222,8 @@ How step 2.6b calls Meta (decided 21 Nov 2026):
 **Meta's error codes** ([Meta: WhatsApp Cloud API error codes](https://developers.facebook.com/docs/whatsapp/cloud-api/support/error-codes),
 checked 21 Nov 2026; `MetaErrors`, and `MetaErrorsTests` fails if this table and the code differ). Codes Meta lists
 for other endpoints (template creation, registration, migration, Flows, media, insights and the Marketing Messages API)
-are not mapped and fall to the status rule above. "Judgement" marks a class Meta's text does not state outright.
+are not mapped and fall to the status rule above, except 80008, which the message templates reference lists for the
+management endpoints the sync calls (step 2.8a). "Judgement" marks a class Meta's text does not state outright.
 
 | Meta code | Class | Our code | Meta's description |
 | --- | --- | --- | --- |
@@ -238,6 +239,7 @@ are not mapped and fall to the status rule above. "Judgement" marks a class Meta
 | 131000 | retryable | `meta_unknown_error` | Unknown error; "Try again" |
 | 4 | retryable | `rate_limited_app` | The app reached its API call rate limit |
 | 80007 | retryable | `rate_limited_waba` | The WhatsApp Business Account reached its rate limit |
+| 80008 | retryable | `rate_limited_waba_management` | Too many calls to this WhatsApp Business account; wait and try again (listed for the management endpoints the sync calls, step 2.8a) |
 | 130429 | retryable | `rate_limited_throughput` | Cloud API message throughput reached |
 | 131056 | retryable | `rate_limited_pair` | Too many messages to the same recipient in a short time; "Wait and retry" |
 | 131057 | retryable | `account_maintenance` | The Business Account is in maintenance mode, for example a throughput upgrade (judgement: temporary) |
@@ -307,6 +309,56 @@ How step 2.7 applies statuses (decided 21 Nov 2026):
   error title, message or details.
 
 **Quality and limits:** store the number's quality rating and messaging limit; alert the admin when quality drops.
+
+How step 2.8a does it (decided 22 Nov 2026; Meta's pages checked 21 and 22 Nov 2026, Sources):
+
+- **What Meta reports now.** Messaging limits are set per business portfolio and shared by all its numbers
+  ([Meta: messaging limits](https://developers.facebook.com/documentation/business-messaging/whatsapp/messaging-limits)):
+  new portfolios start at 250, then 2,000, 10,000, 100,000 and unlimited. A number's limit is read from its
+  `whatsapp_business_manager_messaging_limit` field (Meta's example: `TIER_250`, on v27.0); `messaging_limit_tier` is
+  deprecated. Webhooks report the limit in `max_daily_conversations_per_business` (`business_capability_update`;
+  `phone_number_quality_update` too, but see Not stored above); the older `max_daily_conversation_per_phone`,
+  `current_limit` and `old_limit` were deprecated for removal in February 2026, so none of them is read. No webhook
+  carries a number's messaging quality any more (`account_update` carries calling quality only), so the quality rating
+  comes only from the sync.
+- **Values** (`data-model.md` section 9). `quality_rating`: `green`, `yellow`, `red`, `unknown`, from Meta's `GREEN`,
+  `YELLOW`, `RED`, and `NA` or `UNKNOWN` (Meta's pages show these and publish no full list; matched in any case).
+  `messaging_limit`: `tier_50`, `tier_250`, `tier_2k`, `tier_10k`, `tier_100k`, `tier_unlimited`, `tier_not_set`, from
+  Meta's `TIER_` names exactly. Null: never read from Meta. A value Meta does not document is never stored: the stored
+  value is kept, with a WARN and a fixed code, and never the value itself. Meta's `business_capability_update` example
+  shows the number `2000` where its field table lists only `TIER_` names; a number is treated as unrecognised.
+- **The limit webhook.** A `business_capability_update` is routed by WABA ID, stored per change (above) and processed by
+  the job in the account's tenant: a documented limit is set on every number of that WABA in the tenant (their rows
+  locked in ID order), in arrival order with no ordering check, since the limit drives nothing yet and every sync reads
+  it again. No limit field: nothing changes, the row is closed. An unrecognised limit: the row is closed as
+  `messaging_limit_unrecognised`, WARN. A WABA with no number in the row's tenant: closed as `account_not_found`, ERROR
+  (routing never produces it; P9). An unusable slice, or one that does not match its key: `payload_invalid`.
+- **The sync** is a `whatsapp.sync` action (every external call is an action), with no recipient, run by the worker as
+  the system actor with the business's decrypted token. It reads each of the business's numbers with
+  `GET /{version}/{phone-number-id}?fields=quality_rating,whatsapp_business_manager_messaging_limit` (step 2.8b adds the
+  templates), one after another, and records each number in its own transaction. Retries: 3 attempts, waiting 30 s and
+  5 min (`workflow-spec.md` section 10); its timeout is 4 minutes, under the 5-minute lease.
+- **The pinned v26.0 and the limit field.** Meta does not say when `whatsapp_business_manager_messaging_limit` was
+  added, and the Graph API answers a field a version does not have with error 100 rather than leaving it out. So a 100
+  on the full read is followed by one read of `quality_rating` alone; if that succeeds, the number's stored limit is
+  kept. A limit missing from the answer, or refused this way, is INFO `whatsapp.sync.value_kept ... code=
+  messaging_limit_absent reason=not_in_answer|field_refused`, and the sync succeeds. Staging cannot show which happens
+  until a business is onboarded (Phase 8).
+- **When.** A recurring platform job every hour asks the allowlisted `northstar.tenants_with_whatsapp()` (tenant IDs of
+  businesses whose WhatsApp is connected with a credential and who have a number) and queues one tenant job per tenant
+  for the current 6-hour block of UTC (00, 06, 12, 18); that job creates the action keyed
+  `whatsapp-sync:scheduled:<block>`, so each business syncs once per block and a restart neither skips nor repeats one.
+  On demand, `integrations.WhatsAppSync.request()` (system actor only) creates `whatsapp-sync:requested:<block>` per
+  10-minute block, so a burst of requests syncs once (P1); its first callers arrive in step 2.8b.
+- **Failures** are classified by the error table above, as for sends; 80008 ("Too many calls to this WhatsApp Business
+  account") is retryable. A failed read stops the sync, and the integration's health is recorded after every call: an
+  auth failure sets it to `error` and pauses the sync, which raises its auth alert; later syncs pause before calling
+  Meta. WhatsApp not connected pauses the sync as auth `integration_not_connected` without calling Meta.
+- **Quality drops** (green to yellow or red, yellow to red) are a WARN `whatsapp.account.quality_dropped` with the
+  account ID and the two values: the admin's alert until Phase 8. A rating appearing, a rise, or `unknown` is no drop.
+  Since only the sync reads quality, a drop shows up as much as 6 hours late.
+- **Logs:** action, account and webhook event IDs, attempts, Northstar's values (`green`, `tier_2k`), classes and fixed
+  codes; never the token, phone number IDs, WABA IDs, Meta's raw values or Meta's error text.
 
 ## 3. Razorpay
 
@@ -480,6 +532,11 @@ Staging and production never share credentials, and staging uses only provider t
   `ctwa_clid`, Phase 7). Until then step 2.4b tags every lead `direct`, and the webhook payload holding the referral is
   kept only 30 days (`data-model.md` section 14), so ad attribution missed in that time cannot be recovered (noted 20 Nov
   2026).
+- [ ] **Before any live tenant traffic:** a send resumed after a long pause must not fail on its first retryable error.
+  The retry window (`workflow-spec.md` section 10, 81.5 minutes for a WhatsApp send) counts from when the action first
+  became runnable (created, or approved), so a send that waited longer than that, paused for auth (step 2.6a) or for a
+  paused template (step 2.8c), fails for good at its first retryable error after it resumes. Fix before launch, which
+  needs a column for when the action last became runnable and a section 10 change (noted 22 Nov 2026).
 - [ ] **Launch blocker to check:** inbound messages without a phone number in `from`. We understand Meta has announced
   WhatsApp usernames, which may mean a message whose sender is not identified by a phone number. Step 2.4b fails such a
   message permanently as `contact_phone_invalid` (P4 assumes every WhatsApp lead has a phone); confirm against Meta's
@@ -514,5 +571,14 @@ Checked 21 Nov 2026 for steps 2.6a and 2.6b (sending):
 - [Meta: business-scoped user IDs](https://developers.facebook.com/documentation/business-messaging/whatsapp/business-scoped-user-ids.md) (users with usernames may arrive without a phone number; sends to a BSUID since July 2026)
 - No page checked offers an idempotency key for sends.
 - [Meta: status webhook reference](https://developers.facebook.com/documentation/business-messaging/whatsapp/webhooks/reference/messages/status) (step 2.7: statuses `sent`, `delivered`, `read`, `failed` and `played`; `timestamp` in Unix time; `errors[]` with `code`, `title`, `message`, `error_data.details` and `href`; "A status is considered read only if it has been delivered", and `delivered` may be skipped when a message is read at once; `pricing` in the sent or the delivered / read webhook; `conversation` omitted from v24.0 outside free entry points) and [WhatsApp webhook components](https://developers.facebook.com/docs/whatsapp/cloud-api/webhooks/components) (up to three status webhooks per message; "Use `statuses.id` to correlate")
+
+Checked 21 and 22 Nov 2026 for step 2.8a (routing by WABA, quality and limits):
+
+- [Meta: messaging limits](https://developers.facebook.com/documentation/business-messaging/whatsapp/messaging-limits) (limits per business portfolio, shared by its numbers; 250, 2,000, 10,000, 100,000 and unlimited; `GET /{phone-number-id}?fields=whatsapp_business_manager_messaging_limit` answering `TIER_250`, shown on v27.0; `messaging_limit_tier` deprecated; `business_capability_update` reports increases)
+- [Meta: `business_capability_update` webhook](https://developers.facebook.com/documentation/business-messaging/whatsapp/webhooks/reference/business_capability_update) (`entry.id` the account, `entry.time` when it fired; `max_daily_conversations_per_business` `TIER_250`, `TIER_2K`, `TIER_10K`, `TIER_100K`, `TIER_UNLIMITED`, though its example shows `2000`; `max_daily_conversation_per_phone` deprecated, removal scheduled for February 2026; the phone-number caps)
+- [Meta: `phone_number_quality_update` webhook](https://developers.facebook.com/documentation/business-messaging/whatsapp/webhooks/reference/phone_number_quality_update) (events `ONBOARDING` and `THROUGHPUT_UPGRADE` only; `max_daily_conversations_per_business` "the owning business portfolio's messaging limit or throughput level", with `TIER_50`, `TIER_NOT_SET` and `TIER_UNLIMITED` ("the number has higher throughput"); `current_limit` and `old_limit` deprecated February 2026; no quality rating)
+- [Meta: `account_update` webhook](https://developers.facebook.com/documentation/business-messaging/whatsapp/webhooks/reference/account_update) (account events and calling quality; no messaging quality or limit)
+- [Meta: business phone numbers](https://developers.facebook.com/documentation/business-messaging/whatsapp/business-phone-numbers/phone-numbers) (`quality_rating` examples `GREEN`, `NA`, `UNKNOWN`; `GET /{WABA_ID}/phone_numbers`)
+- [Meta: `message_template_status_update` webhook](https://developers.facebook.com/documentation/business-messaging/whatsapp/webhooks/reference/message_template_status_update) and [message templates reference](https://developers.facebook.com/docs/graph-api/reference/whats-app-business-account/message_templates/) (for step 2.8b: `entry.id` the account; the events and statuses; errors 80008, 100, 200 and 190 for the template list)
 
 Google API details are from general platform knowledge; confirm endpoints, scopes and quotas against current provider docs during build.

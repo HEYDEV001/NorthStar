@@ -1,8 +1,10 @@
 # Database bootstrap
 
 `roles.sql` creates Northstar's five database roles and makes `migrator` the owner of the `northstar`, `jobrunr`,
-`secrets` and `ingest` schemas (`data-model.md` section 12). Run it once per environment as `postgres`, before the first Flyway migration. It is
-safe to run again, and it puts back any role attribute changed by hand.
+`secrets` and `ingest` schemas (`data-model.md` section 12). Since step 2.8a it also installs the `btree_gist`
+extension in the `extensions` schema (creating that schema on a database that lacks it), for exclusion constraints
+on plain columns; migrations never install extensions. Run it once per environment as `postgres`, before the first
+Flyway migration. It is safe to run again, and it puts back any role attribute changed by hand.
 
 | Role | Login used by | Bypasses RLS |
 | --- | --- | --- |
@@ -61,7 +63,15 @@ prints one `PASS` or `FAIL` line per check, then a summary line. It checks:
   reach `jobrunr`, `secrets` or `ingest`;
 - the two findings from the local image that Phase 1 relies on: `migrator` cannot use schema `auth` (so `user_profiles`
   has no foreign key to `auth.users` and the service enforces it), and `citext` is available but not installed (so
-  `invites.email` is plain text with a `lower(email)` index).
+  `invites.email` is plain text with a `lower(email)` index);
+- `btree_gist` is installed in schema `extensions` (step 2.8a: one tenant per WhatsApp Business Account).
+
+**A database bootstrapped before step 2.8a** lacks `btree_gist`: run `roles.sql` again, then `verify.sql`, before
+deploying it. Otherwise the migration `one tenant per waba` stops the deploy: the migration runner prints
+`migrate_failed ... sql_state=NSB01 version=202611221000 description="one tenant per waba"` (it prints SQL states,
+never messages), and `flyway:migrate` locally prints "btree_gist is not installed: run db/bootstrap/roles.sql as
+postgres, then verify.sql, and migrate again". Migrations before it are applied, it and those after it are not; run
+`roles.sql`, then migrate (or deploy) again.
 
 **If any line says FAIL, stop and report it before running Flyway.** In particular, if `migrator` cannot get
 `BYPASSRLS` on hosted Supabase, stop: the fix is never to weaken a policy, drop `force row level security`, or give

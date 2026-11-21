@@ -12,7 +12,8 @@ import org.springframework.transaction.PlatformTransactionManager;
 import org.springframework.transaction.support.TransactionTemplate;
 
 /**
- * The job for a stored WhatsApp webhook event (steps 2.4b and 2.7: a message or a delivery status), run by the worker as the system actor in the event's tenant.
+ * The job for a stored WhatsApp webhook event (steps 2.4b, 2.7 and 2.8a: a message, a delivery status or an
+ * account-level change), run by the worker as the system actor in the event's tenant.
  * Queued once per stored row by step 2.2, and again by the webhook sweep ({@link TenantWebhookSweeper}) while the row
  * is unprocessed past the grace period.
  *
@@ -23,7 +24,7 @@ import org.springframework.transaction.support.TransactionTemplate;
  *
  * <p>Running it twice changes nothing: the event row's lock serialises runs, and a processed row is left alone (P1).
  * Logs carry webhook event IDs, row IDs, fixed codes and exception classes only: never message text, profile names,
- * phone numbers, wamids or phone number IDs, and never an exception's message.
+ * phone numbers, wamids, phone number IDs or WABA IDs, and never an exception's message.
  */
 @Component
 public class ProcessWhatsAppWebhookHandler extends TenantJobHandler<ProcessWhatsAppWebhook> {
@@ -72,6 +73,7 @@ public class ProcessWhatsAppWebhookHandler extends TenantJobHandler<ProcessWhats
             case WhatsAppInboundProcessor.AlreadyProcessed done ->
                 log.info("webhook.already_processed provider=whatsapp webhook_event_id={}", id);
             case WhatsAppInboundProcessor.StatusProcessed processed -> logStatus(id, processed.outcome());
+            case WhatsAppInboundProcessor.AccountUpdateProcessed processed -> logAccountUpdate(id, processed.outcome());
             case WhatsAppInboundProcessor.Rejected rejected ->
                 log.error(
                         "webhook.failed provider=whatsapp webhook_event_id={} error={} final=true",
@@ -156,6 +158,35 @@ public class ProcessWhatsAppWebhookHandler extends TenantJobHandler<ProcessWhats
                         id,
                         WhatsAppStatusProcessor.STATUS_UNSUPPORTED);
             case WhatsAppStatusProcessor.Rejected rejected ->
+                log.error(
+                        "webhook.failed provider=whatsapp webhook_event_id={} error={} final=true",
+                        id,
+                        rejected.errorCode());
+        }
+    }
+
+    /**
+     * An account-level change's outcome (step 2.8a): IDs, counts, Northstar's limit value and fixed codes only, never
+     * the WABA ID or the payload.
+     */
+    private static void logAccountUpdate(UUID id, WhatsAppAccountUpdateProcessor.Outcome outcome) {
+        switch (outcome) {
+            case WhatsAppAccountUpdateProcessor.LimitApplied applied ->
+                log.info(
+                        "webhook.limit_applied provider=whatsapp webhook_event_id={} limit={} numbers={} changed={}",
+                        id,
+                        applied.limit().databaseValue(),
+                        applied.numbers(),
+                        applied.changed());
+            case WhatsAppAccountUpdateProcessor.LimitMissing missing ->
+                log.info("webhook.limit_missing provider=whatsapp webhook_event_id={}", id);
+            case WhatsAppAccountUpdateProcessor.Rejected rejected
+            when WhatsAppAccountUpdateProcessor.LIMIT_UNRECOGNISED.equals(rejected.errorCode()) ->
+                log.warn(
+                        "webhook.limit_unrecognised provider=whatsapp webhook_event_id={} error={}",
+                        id,
+                        rejected.errorCode());
+            case WhatsAppAccountUpdateProcessor.Rejected rejected ->
                 log.error(
                         "webhook.failed provider=whatsapp webhook_event_id={} error={} final=true",
                         id,

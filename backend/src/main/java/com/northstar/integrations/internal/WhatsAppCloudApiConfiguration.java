@@ -11,10 +11,11 @@ import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
 
 /**
- * Builds the Cloud API sender (step 2.6b, integration-specs.md section 2). The Graph API version is pinned in
+ * Builds the Cloud API sender (step 2.6b, integration-specs.md section 2) and the number reader the sync uses (step
+ * 2.8a), on the same base URL, version, timeouts and redirect rule. The Graph API version is pinned in
  * application.properties ({@code northstar.whatsapp.graph.version}, v26.0), never set per environment: the staging app
  * spec gives no component a variable for it, and bumping it is a reviewed change with its tests. Every process builds
- * the sender, as every process builds the send handler, but only the worker runs sends; it holds no secret, since each
+ * both, as every process builds the handlers, but only the worker runs them; neither holds a secret, since each
  * business's token is read at call time.
  *
  * <p>Refuses startup, naming the setting and never a value, for a version not shaped like {@code v26.0}, or a base URL
@@ -39,16 +40,30 @@ class WhatsAppCloudApiConfiguration {
     WhatsAppSender whatsAppSender(
             @Value("${northstar.whatsapp.graph.base-url}") String baseUrl,
             @Value("${northstar.whatsapp.graph.version}") String version) {
-        if (!VERSION.matcher(version).matches()) {
-            throw new IllegalStateException(
-                    "northstar.whatsapp.graph.version must be a Graph API version such as v26.0");
-        }
-        URI base = baseUrl(baseUrl);
-        HttpClient http = HttpClient.newBuilder()
+        return new CloudApiWhatsAppSender(http(), baseUrl(baseUrl), version(version), REQUEST_TIMEOUT);
+    }
+
+    @Bean
+    WhatsAppAccountReader whatsAppAccountReader(
+            @Value("${northstar.whatsapp.graph.base-url}") String baseUrl,
+            @Value("${northstar.whatsapp.graph.version}") String version) {
+        return new CloudApiWhatsAppAccountReader(http(), baseUrl(baseUrl), version(version), REQUEST_TIMEOUT);
+    }
+
+    /** Never follows a redirect, so the token goes to the configured host only. */
+    private static HttpClient http() {
+        return HttpClient.newBuilder()
                 .connectTimeout(CONNECT_TIMEOUT)
                 .followRedirects(HttpClient.Redirect.NEVER)
                 .build();
-        return new CloudApiWhatsAppSender(http, base, version, REQUEST_TIMEOUT);
+    }
+
+    private static String version(String value) {
+        if (!VERSION.matcher(value).matches()) {
+            throw new IllegalStateException(
+                    "northstar.whatsapp.graph.version must be a Graph API version such as v26.0");
+        }
+        return value;
     }
 
     private static URI baseUrl(String value) {

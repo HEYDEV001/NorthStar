@@ -1,7 +1,10 @@
 package com.northstar.integrations.internal;
 
 import java.nio.charset.StandardCharsets;
+import java.security.MessageDigest;
+import java.security.NoSuchAlgorithmException;
 import java.util.ArrayList;
+import java.util.HexFormat;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
@@ -29,9 +32,18 @@ import tools.jackson.databind.node.ObjectNode;
  * and only this item. A batch spanning several numbers, and so several tenants, never puts one number's data in
  * another's slice.
  *
- * <p>Not stored, only counted as ignored: changes whose field is not {@code messages} (template, quality and account
- * updates are keyed by the WABA ID, which step 2.8 routes), value-level {@code errors} (no item ID), items with no
- * usable ID, and changes with no usable phone number ID. A body that is not JSON, or not a
+ * <p>Changes that name only their business account are routed by the WABA ID in {@code entry.id} instead (step 2.8a).
+ * Stored so far: {@value #BUSINESS_CAPABILITY_FIELD}, the business portfolio's messaging limit. Meta gives these changes
+ * no event ID, so each change is one item keyed {@code <field>:<entry.id>:<entry.time>:<digest>}, the digest being the
+ * first 32 hex digits of the SHA-256 of its {@code value} as stored: a retry of the same change, however Meta batches
+ * it, has the same key (P1), and two changes of one account in the same second do not. Its slice is the envelope, the
+ * entry's ID and time, and that one change.
+ *
+ * <p>Not stored, only counted as ignored: changes of any other field (template status and category updates wait for
+ * step 2.8b; {@code phone_number_quality_update}, whose events are onboarding and throughput upgrades and whose
+ * {@code max_daily_conversations_per_business} can then be a throughput level, and account and template-quality
+ * updates are not subscribed), value-level {@code errors} (no item ID), items with no usable ID, changes with no usable
+ * phone number ID, and account changes with no usable WABA ID or time. A body that is not JSON, or not a
  * {@code whatsapp_business_account} object, is unreadable.
  *
  * <p>Postgres jsonb cannot hold U+0000, and Java strings can carry lone surrogates; both are replaced with U+FFFD in
@@ -42,14 +54,30 @@ final class WhatsAppDelivery {
     static final String OBJECT = "whatsapp_business_account";
     static final String MESSAGES_FIELD = "messages";
 
+    /** The business portfolio's messaging limit, routed by WABA ID (step 2.8a). */
+    static final String BUSINESS_CAPABILITY_FIELD = "business_capability_update";
+
+    /** The fields routed by WABA ID that are stored; every other field but {@value #MESSAGES_FIELD} is ignored. */
+    static final Set<String> ACCOUNT_FIELDS = Set.of(BUSINESS_CAPABILITY_FIELD);
+
     private static final Pattern ITEM_ID = Pattern.compile("[\\x21-\\x7e]{1,160}");
     private static final Pattern STATUS = Pattern.compile("[a-z_]{1,32}");
     private static final Pattern PHONE_NUMBER_ID = Pattern.compile("[\\x21-\\x7e]{1,64}");
+
+    /** Meta's WABA IDs are digits; no colon, so an account change's key reads one way only. */
+    private static final Pattern WABA_ID = Pattern.compile("[A-Za-z0-9_.-]{1,64}");
+
     private static final Set<String> ITEM_ARRAYS = Set.of("messages", "statuses", "errors");
     private static final JsonNodeFactory NODES = ProviderJson.MAPPER.getNodeFactory();
 
-    /** One stored unit: its routing key, dedupe key and payload slice (JSON text and its UTF-8 size). */
-    record Item(String phoneNumberId, String providerEventId, String payloadJson, int payloadBytes) {}
+    /** What an item is routed by: its change's phone number ID, or its entry's WABA ID (step 2.8a). */
+    enum Route {
+        PHONE_NUMBER,
+        WABA
+    }
+
+    /** One stored unit: how it is routed and by which key, its dedupe key and payload slice (JSON and UTF-8 size). */
+    record Item(Route route, String routingKey, String providerEventId, String payloadJson, int payloadBytes) {}
 
     /** A parsed delivery: readable or not, its items in delivery order, and how many parts were ignored. */
     record Parsed(boolean readable, List<Item> items, int ignored) {
@@ -87,7 +115,10 @@ final class WhatsAppDelivery {
     /** Adds the change's items; returns how many parts of it were ignored. */
     private static int split(JsonNode entry, JsonNode change, List<Item> items) {
         JsonNode value = change.isObject() ? change.get("value") : null;
-        if (!MESSAGES_FIELD.equals(text(change.get("field"))) || value == null || !value.isObject()) return 1;
+        String field = change.isObject() ? text(change.get("field")) : null;
+        if (value == null || !value.isObject()) return 1;
+        if (field != null && ACCOUNT_FIELDS.contains(field)) return accountChange(entry, field, value, items);
+        if (!MESSAGES_FIELD.equals(field)) return 1;
 
         List<JsonNode> messages = arrayOf(value.get("messages"));
         List<JsonNode> statuses = arrayOf(value.get("statuses"));
@@ -142,7 +173,47 @@ final class WhatsAppDelivery {
         slice.putArray("entry").add(entrySlice);
 
         String json = ProviderJson.MAPPER.writeValueAsString(slice);
-        return new Item(phoneNumberId, providerEventId, json, json.getBytes(StandardCharsets.UTF_8).length);
+        return new Item(
+                Route.PHONE_NUMBER, phoneNumberId, providerEventId, json, json.getBytes(StandardCharsets.UTF_8).length);
+    }
+
+    /** One change routed by its entry's WABA ID; returns how many parts were ignored (0 or 1). */
+    private static int accountChange(JsonNode entry, String field, JsonNode value, List<Item> items) {
+        String wabaId = text(entry.get("id"));
+        JsonNode time = entry.get("time");
+        if (wabaId == null || !WABA_ID.matcher(wabaId).matches()) return 1;
+        if (time == null || !time.isIntegralNumber() || !time.canConvertToLong() || time.longValue() <= 0) return 1;
+
+        JsonNode cleanValue = sanitized(value);
+        String valueJson = ProviderJson.MAPPER.writeValueAsString(cleanValue);
+        String providerEventId = field + ":" + wabaId + ":" + time.longValue() + ":" + digest(valueJson);
+
+        ObjectNode changeSlice = NODES.objectNode();
+        changeSlice.put("field", field);
+        changeSlice.set("value", cleanValue);
+
+        ObjectNode entrySlice = NODES.objectNode();
+        entrySlice.put("id", wabaId);
+        entrySlice.put("time", time.longValue());
+        entrySlice.putArray("changes").add(changeSlice);
+
+        ObjectNode slice = NODES.objectNode();
+        slice.put("object", OBJECT);
+        slice.putArray("entry").add(entrySlice);
+
+        String json = ProviderJson.MAPPER.writeValueAsString(slice);
+        items.add(new Item(Route.WABA, wabaId, providerEventId, json, json.getBytes(StandardCharsets.UTF_8).length));
+        return 0;
+    }
+
+    /** The first 32 hex digits of the SHA-256 of the text's UTF-8 bytes. */
+    private static String digest(String text) {
+        try {
+            byte[] hash = MessageDigest.getInstance("SHA-256").digest(text.getBytes(StandardCharsets.UTF_8));
+            return HexFormat.of().formatHex(hash).substring(0, 32);
+        } catch (NoSuchAlgorithmException e) {
+            throw new IllegalStateException("SHA-256 is part of every JDK", e);
+        }
     }
 
     /** A copy with every string, keys included, safe for jsonb. */

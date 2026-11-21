@@ -45,6 +45,18 @@ interface TenantGuardedConnection extends Connection {
      */
     void beginWhatsAppRouting() throws SQLException;
 
+    /**
+     * Sets no context and allows exactly one statement, the WhatsApp routing lookup by WABA ID (step 2.8a). Used for a
+     * webhook change that names only its business account; it returns WABA IDs and tenant IDs only.
+     */
+    void beginWhatsAppWabaRouting() throws SQLException;
+
+    /**
+     * Sets no context and allows exactly one statement, the scan for tenants with a connected WhatsApp integration and a
+     * number (step 2.8a). Used by the scheduled sync, which starts without a tenant; it returns tenant IDs only.
+     */
+    void beginWhatsAppTenantScan() throws SQLException;
+
     /** Sets no context and allows exactly one statement, parking a delivery with a bad signature (P15). */
     void beginInvalidSignatureParking() throws SQLException;
 

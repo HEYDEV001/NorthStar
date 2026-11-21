@@ -8,11 +8,12 @@ import java.util.Optional;
 
 /**
  * Meta's WhatsApp Cloud API error codes as retryable, permanent or auth (step 2.6b; integration-specs.md section 2, the
- * error table; Meta's error-code page, checked 21 Nov 2026). Built on {@code error.code}, as Meta advises ("Build your
+ * error table; Meta's error-code page, checked 21 Nov 2026; 80008 from the message templates reference, for the
+ * management endpoints the sync calls, step 2.8a). Built on {@code error.code}, as Meta advises ("Build your
  * app's error handling around error codes instead of subcodes or HTTP response status codes"); the HTTP status decides
  * only for a code that is not listed here, or an answer without one.
  *
- * <p>Only codes Meta documents for sending are mapped. Anything else falls back on the status: 5xx, 408 and 429 are
+ * <p>Only codes Meta documents for sending, and 80008 for the management endpoints, are mapped. Anything else falls back on the status: 5xx, 408 and 429 are
  * retryable, a 401 is auth, and any other answer is permanent, keeping Meta's code in ours ({@code meta_<code>}) so it
  * can be looked up and added here. Step 2.7 uses the same table, through {@link #codeFor}, for the errors Meta reports
  * later in status webhooks.
@@ -40,6 +41,8 @@ final class MetaErrors {
             Map.entry(131000, retryable("meta_unknown_error")), // "Try again"
             Map.entry(4, retryable("rate_limited_app")),
             Map.entry(80007, retryable("rate_limited_waba")),
+            // Management endpoints (the sync, step 2.8a): "Too many calls to this WhatsApp Business account".
+            Map.entry(80008, retryable("rate_limited_waba_management")),
             Map.entry(130429, retryable("rate_limited_throughput")),
             Map.entry(131056, retryable("rate_limited_pair")), // "Wait and retry"
             Map.entry(131057, retryable("account_maintenance")),

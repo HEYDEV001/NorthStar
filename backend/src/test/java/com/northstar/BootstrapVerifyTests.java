@@ -63,6 +63,19 @@ class BootstrapVerifyTests {
         }
     }
 
+    @Test
+    void theBtreeGistCheckFailsWithoutTheExtension() {
+        // Rolled back: the exclusion constraint that needs it (step 2.8a) is dropped with it only inside the test.
+        Function<JdbcClient, List<Line>> verifyAfterwards = jdbc -> {
+            jdbc.sql("drop extension btree_gist cascade").update();
+            return verify(jdbc);
+        };
+        List<Line> lines = postgres.rolledBack(verifyAfterwards);
+
+        assertThat(lines).contains(new Line("FAIL", "btree_gist is installed in schema extensions"));
+        assertThat(lines.getLast().result()).isEqualTo("FAIL");
+    }
+
     /** The script's one query, run inside the caller's transaction (its own begin read only and rollback stripped). */
     private static List<Line> verify(JdbcClient jdbc) {
         String script;
