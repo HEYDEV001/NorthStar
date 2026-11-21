@@ -4,7 +4,8 @@ import java.time.Duration;
 import java.util.List;
 
 /**
- * When the webhook sweep queues an unprocessed WhatsApp message event again, and when it gives up on one (step 2.4a,
+ * When the webhook sweep queues an unprocessed WhatsApp message or status event again (status events since step 2.7),
+ * and when it gives up on one (step 2.4a,
  * integration-specs.md section 1). Pure: it decides from two facts the row already holds, whether an attempt has failed
  * (error set) and its age (since received_at, on the database's clock), so webhook_events needs no attempt counter.
  *

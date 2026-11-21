@@ -18,7 +18,8 @@ import org.springframework.stereotype.Component;
  * caller's one transaction as the system actor in the event's tenant, so it is stored in full or not at all (P3):
  *
  * <ol>
- *   <li>lock the event row: one already processed is left alone (P1), and a status row waits for step 2.7;
+ *   <li>lock the event row: one already processed is left alone (P1), and a status row is handed to
+ *       {@link WhatsAppStatusProcessor} (step 2.7), which does the rest for it;
  *   <li>read the message from the stored slice; an unusable one is closed with a fixed code and nothing else is
  *       written (P4);
  *   <li>a message already stored is a duplicate: the row is closed and nothing else is written (P1);
@@ -55,8 +56,8 @@ class WhatsAppInboundProcessor {
 
     record AlreadyProcessed() implements Outcome {}
 
-    /** A delivery status, left untouched for step 2.7. */
-    record StatusDeferred() implements Outcome {}
+    /** A delivery status, processed by {@link WhatsAppStatusProcessor} (step 2.7). */
+    record StatusProcessed(WhatsAppStatusProcessor.Outcome outcome) implements Outcome {}
 
     /** Closed for good with this fixed code; nothing else was written. */
     record Rejected(String errorCode) implements Outcome {}
@@ -81,6 +82,7 @@ class WhatsAppInboundProcessor {
     private final LeadIntake leads;
     private final OutboundCancellation cancellation;
     private final EngineEvents events;
+    private final WhatsAppStatusProcessor statuses;
 
     WhatsAppInboundProcessor(
             WebhookEventProcessing rows,
@@ -88,13 +90,15 @@ class WhatsAppInboundProcessor {
             ContactConsent consent,
             LeadIntake leads,
             OutboundCancellation cancellation,
-            EngineEvents events) {
+            EngineEvents events,
+            WhatsAppStatusProcessor statuses) {
         this.rows = rows;
         this.contacts = contacts;
         this.consent = consent;
         this.leads = leads;
         this.cancellation = cancellation;
         this.events = events;
+        this.statuses = statuses;
     }
 
     /** Runs inside the caller's transaction. */
@@ -103,7 +107,9 @@ class WhatsAppInboundProcessor {
         if (locked.isEmpty()) return new Missing();
         WebhookEventProcessing.Locked row = locked.get();
         if (row.processed()) return new AlreadyProcessed();
-        if (row.providerEventId().startsWith(STATUS_EVENT_PREFIX)) return new StatusDeferred();
+        if (row.providerEventId().startsWith(STATUS_EVENT_PREFIX)) {
+            return new StatusProcessed(statuses.process(webhookEventId, row));
+        }
 
         WhatsAppInboundMessage message;
         switch (WhatsAppInboundMessage.parse(row.providerEventId(), row.payloadJson())) {

@@ -44,8 +44,8 @@ How step 2.4a keeps stored webhooks from being stranded (decided 20 Nov 2026):
   tenants have rows still unprocessed 2 minutes (the grace period) after they were received, on the database's clock,
   and queues one sweep per tenant. That sweep reads the tenant's oldest waiting rows (up to 2,000) in its own scope and
   queues each row's processing job again. It covers a job lost between the commit and its creation, a worker that died
-  mid-job, a failure waiting for its retry, and rows stored before processing existed. WhatsApp message rows only until
-  step 2.7 adds status rows.
+  mid-job, a failure waiting for its retry, and rows stored before processing existed. WhatsApp message and status rows
+  (status rows since step 2.7, which also works through those stored since step 2.2).
 - **Retries by age, not by count.** `webhook_events` holds only `processed_at` and `error`, so a row's age decides its
   retry step: 2 min, 10 min, 1 h and 6 h. Each step is queued under its own job ID (JobRunr's retries are off and it
   skips an ID it already has), and only within 10 minutes of reaching it; a step missed while the worker was down for
@@ -69,7 +69,7 @@ How step 2.4b processes a stored WhatsApp message (step 6; decided 20 Nov 2026):
   lead. With no single published workflow, everything else is stored, no lead opens, and the row is closed as
   `no_published_workflow` with a WARN line.
 - **A message already stored** (a replay with `processed_at` cleared) closes the row and writes nothing else, so an old
-  message never opens a lead. Status rows are left untouched (`processed_at` and `error` null) for step 2.7.
+  message never opens a lead. Status rows are processed by step 2.7 (section 2, How step 2.7 applies statuses).
 - **Failures.** Retryable, with `processed_at` null and the sweep retrying: `database_unavailable`,
   `database_conflict`, `database_timeout`, `processing_failed`. Permanent, with `processed_at` set and an ERROR line:
   `payload_invalid` and `contact_phone_invalid` (a sender that is not an E.164 number, P4). A missing tenant context
@@ -116,7 +116,7 @@ Northstar operates as a Meta Tech Provider: each business connects its own Whats
 | Not stored (until step 2.8) | Changes whose `field` is not `messages` (template status, quality and account updates, keyed by the WABA ID in `entry.id`), value-level `errors` (no item ID), items without a usable ID and changes without a phone number ID: 200, counted as `ignored` in the log. Only the `messages` field is subscribed until 2.8 routes the rest by WABA |
 | Queueing | One `ProcessWhatsAppWebhook` job (IDs only) per stored row, created after the tenant's transaction commits; it processes the row (step 2.4b, section 1). Since step 2.4a the webhook sweep queues it again for a message row still unprocessed past the grace period (section 1) |
 | Inbound types handled | Stored as (step 2.4b): text → `text`; interactive `button_reply` and `list_reply`, and a template's quick-reply `button` → `interactive`, body the reply's title or text (the button ID stays in the webhook payload for Phase 5); image and document → their type, body the caption; audio and location → their type, no body (media IDs and coordinates stay in the webhook payload, kept 30 days, for step 4.5); video, sticker, contacts, order, reaction, system and any other type → `unsupported`, no body. No media is downloaded yet. Reactions and system messages never open a lead on their own |
-| Status updates | sent, delivered, read, failed → `messages.status`, failures → action error (step 2.7; until then the job leaves status rows untouched) |
+| Status updates | sent, delivered, read, failed → `messages.status`, forward only; a failure sets `messages.error_code` and the send action stays succeeded (step 2.7, below) |
 | Click-to-WhatsApp referral | `referral` object on the first message: `source_id`, `source_type`, `source_url`, `headline`, `ctwa_clid` → `ad_referrals`; `ctwa_clid` stored for Conversions API matching |
 
 **Sending**
@@ -271,6 +271,40 @@ are not mapped and fall to the status rule above. "Judgement" marks a class Meta
 | 133010 | permanent | `number_not_registered` | The phone number is not registered on the platform |
 | 33 | permanent | `number_deleted` | The business phone number was deleted |
 | 131037 | permanent | `display_name_not_approved` | The 555 number has no approved display name |
+
+How step 2.7 applies statuses (decided 21 Nov 2026):
+
+- **One transaction per status row,** as the system actor in its tenant: the webhook row is locked (one already
+  processed is left alone, P1), the slice read (its `statuses[0]` `id` and `status` must match the row's key, or the
+  row closes as `payload_invalid`; `timestamp` is Unix seconds; only `errors[0].code` is read), the outbound message
+  with that wamid locked, the status applied, `message.status` recorded and `processed_at` set. Meta's statuses are
+  `sent`, `delivered`, `read`, `failed` and `played`; `played` (voice messages, which Northstar does not send) and
+  anything else close the row as `status_unsupported`.
+- **Forward only:** `queued` < `sent` < `delivered` < `read`, any jump forward allowed. `failed` replaces `queued` or
+  `sent` only (a status always finds its message `sent`: 2.6a stores Meta's ID with that status), and nothing leaves
+  `failed`. The guarded update decides, and the trigger `messages_status_forward` (SQLSTATE NSM02, every role) refuses
+  any other move as the backstop. Meta's timestamp fills `delivered_at` or `read_at` once (`messages_set_once`);
+  `sent_at` stays the database's time from step 2.6a.
+- **What each status does.** Forward: applied, recorded, closed. The same status again (Meta's `sent` after our own,
+  or a replay): nothing changes, recorded under its dedupe key (a no-op if already there), closed. Backward (`sent`
+  after `delivered`, say), or `failed` after `delivered` or `read`: ignored, nothing recorded, an INFO line with IDs,
+  closed. A late `delivered` after `read` (Meta may skip `delivered` when a message is read at once, as read implies
+  delivered): the status stays `read`, `delivered_at` is filled if it was empty, `message.status` is recorded under
+  `delivered`'s own key, an INFO line, closed.
+- **A failure after sending** sets `error_code` from Meta's code through the error table (section 2, Meta's error
+  codes): the table's code, `meta_<code>` for an unlisted one, `delivery_failed` when Meta sends none; the class does
+  not apply, as nothing is retried. The send action stays `succeeded`, as finished actions are never reopened; the
+  failure shows on the message (inbox, step 2.9) and as `message.status` `failed` with its code (for Failed Actions,
+  step 3.8), and a WARN line `webhook.status_failed` with IDs and the code.
+- **A status before its message** (Meta's webhook beating 2.6a's commit of the ID, or a send we never stored) is not
+  dropped: the row stays unprocessed with the retryable code `message_not_found_yet` and the sweep retries it on its
+  ladder (section 1); still unmatched at 24 hours, it is closed with that code and the ERROR line
+  `webhook.failed ... final=true`, as an unmatched status can mean a send Meta accepted whose ID was not stored.
+- **Locks:** the webhook row, then the message; never the contact, conversation or action. Two statuses of one message
+  wait for each other at the message.
+- **Not stored:** the `pricing` and `conversation` objects (usage metering, Phase 8), nor `recipient_id`.
+- **Logs:** webhook event and message IDs, statuses and fixed codes only; never wamids, phone numbers, text, or Meta's
+  error title, message or details.
 
 **Quality and limits:** store the number's quality rating and messaging limit; alert the admin when quality drops.
 
@@ -479,5 +513,6 @@ Checked 21 Nov 2026 for steps 2.6a and 2.6b (sending):
 - [Meta: pricing](https://developers.facebook.com/documentation/business-messaging/whatsapp/pricing.md) (templates sent inside an open customer-service window charged per message since 1 Oct 2026)
 - [Meta: business-scoped user IDs](https://developers.facebook.com/documentation/business-messaging/whatsapp/business-scoped-user-ids.md) (users with usernames may arrive without a phone number; sends to a BSUID since July 2026)
 - No page checked offers an idempotency key for sends.
+- [Meta: status webhook reference](https://developers.facebook.com/documentation/business-messaging/whatsapp/webhooks/reference/messages/status) (step 2.7: statuses `sent`, `delivered`, `read`, `failed` and `played`; `timestamp` in Unix time; `errors[]` with `code`, `title`, `message`, `error_data.details` and `href`; "A status is considered read only if it has been delivered", and `delivered` may be skipped when a message is read at once; `pricing` in the sent or the delivered / read webhook; `conversation` omitted from v24.0 outside free entry points) and [WhatsApp webhook components](https://developers.facebook.com/docs/whatsapp/cloud-api/webhooks/components) (up to three status webhooks per message; "Use `statuses.id` to correlate")
 
 Google API details are from general platform knowledge; confirm endpoints, scopes and quotas against current provider docs during build.

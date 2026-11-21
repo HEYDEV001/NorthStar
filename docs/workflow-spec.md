@@ -137,7 +137,7 @@ Every input to the engine is a normalised event with a unique ID; the same event
 | Event | Source | Dedupe key |
 | --- | --- | --- |
 | `message.received` | WhatsApp webhook | WhatsApp message ID |
-| `message.status` (sent, delivered, read, failed) | WhatsApp webhook | message ID + status |
+| `message.status` (sent, delivered, read, failed) | WhatsApp webhook | message ID + status (`message.status:<wamid>:<status>`, step 2.7) |
 | `button.clicked` (Accept, Request Changes, confirm, reschedule) | WhatsApp interactive reply | message ID |
 | `optout.received` (STOP and configured keywords) | WhatsApp message | message ID |
 | `ai.fields_extracted` | AI worker | lead ID + turn |

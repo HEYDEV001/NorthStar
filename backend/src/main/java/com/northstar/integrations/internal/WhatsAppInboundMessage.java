@@ -147,8 +147,11 @@ record WhatsAppInboundMessage(
         return null;
     }
 
-    /** Unix seconds, sent by Meta as a string of digits (an integer is accepted too). */
-    private static Instant timestamp(JsonNode node) {
+    /**
+     * Unix seconds, sent by Meta as a string of digits (an integer is accepted too); null if missing or out of range.
+     * Status webhooks use the same format (step 2.7).
+     */
+    static Instant timestamp(JsonNode node) {
         long seconds;
         if (node.isString() && SECONDS.matcher(node.stringValue()).matches()) {
             seconds = Long.parseLong(node.stringValue());
