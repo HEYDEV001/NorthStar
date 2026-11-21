@@ -80,6 +80,18 @@ public class ProcessWhatsAppWebhookHandler extends TenantJobHandler<ProcessWhats
                         rejected.errorCode());
             case WhatsAppInboundProcessor.DuplicateMessage duplicate ->
                 log.info("webhook.duplicate_message provider=whatsapp webhook_event_id={}", id);
+            // IDs, codes and counts only: never the text or the keyword it matched (step 2.5).
+            case WhatsAppInboundProcessor.OptedOut optedOut ->
+                log.info(
+                        "webhook.opt_out provider=whatsapp webhook_event_id={} message_id={} contact_id={} lead_id={}"
+                                + " lead={} first_opt_out={} cancelled_actions={}",
+                        id,
+                        optedOut.messageId(),
+                        optedOut.contactId(),
+                        optedOut.leadId(),
+                        optedOut.lead().code(),
+                        optedOut.firstOptOut(),
+                        optedOut.cancelledActions());
             case WhatsAppInboundProcessor.Stored stored
             when stored.noPublishedWorkflow() ->
                 log.warn(

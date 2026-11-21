@@ -23,6 +23,48 @@ public interface EngineEvents {
      */
     boolean recordMessageReceived(MessageReceived event);
 
+    /**
+     * Records {@code optout.received} for an inbound message that opted its sender out (step 2.5, W32), under the dedupe
+     * key {@code optout.received:<wamid>}. Such a message records this event instead of {@code message.received}, so
+     * the engine and the AI never treat it as conversation. Returns false if it was already recorded.
+     */
+    boolean recordOptOutReceived(OptOutReceived event);
+
+    /**
+     * An inbound opt-out message stored by step 2.5. It never opens a lead: lead is {@code joined} (leadId the open
+     * lead) or {@code none} (leadId null). The keyword it matched is not recorded.
+     */
+    record OptOutReceived(
+            String providerMessageId,
+            UUID leadId,
+            LeadOutcome lead,
+            UUID webhookEventId,
+            UUID contactId,
+            UUID conversationId,
+            UUID messageId,
+            Instant sentAt) {
+
+        public OptOutReceived {
+            Objects.requireNonNull(providerMessageId, "providerMessageId");
+            Objects.requireNonNull(lead, "lead");
+            Objects.requireNonNull(webhookEventId, "webhookEventId");
+            Objects.requireNonNull(contactId, "contactId");
+            Objects.requireNonNull(conversationId, "conversationId");
+            Objects.requireNonNull(messageId, "messageId");
+            Objects.requireNonNull(sentAt, "sentAt");
+            if (lead == LeadOutcome.OPENED) throw new IllegalArgumentException("An opt-out message never opens a lead");
+            if ((leadId == null) != (lead == LeadOutcome.NONE)) {
+                throw new IllegalArgumentException("A message has a lead exactly when it joined one");
+            }
+        }
+
+        /** The provider ID is in the dedupe key only; it is left out here so it never reaches a log. */
+        @Override
+        public String toString() {
+            return "OptOutReceived[messageId=" + messageId + ", lead=" + lead.code() + "]";
+        }
+    }
+
     /** An inbound message stored by step 2.4b. leadId is null when the message joined or opened no lead. */
     record MessageReceived(
             String providerMessageId,

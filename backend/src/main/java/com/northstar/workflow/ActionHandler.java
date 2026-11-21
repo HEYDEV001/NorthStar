@@ -17,6 +17,13 @@ public interface ActionHandler {
     /** The action type, e.g. "whatsapp.send". */
     String type();
 
+    /**
+     * Whom this type sends something to (step 2.5). There is no default, so every handler must decide: a
+     * {@link ActionRecipient#CONTACT} type is created only with its recipient, and is refused once that contact has
+     * opted out (W32).
+     */
+    ActionRecipient recipient();
+
     RetryPolicy retryPolicy();
 
     Duration timeout();

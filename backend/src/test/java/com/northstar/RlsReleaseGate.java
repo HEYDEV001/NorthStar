@@ -112,7 +112,10 @@ record RlsReleaseGate(
                                     "last_error_class",
                                     "last_error_code",
                                     "approver_membership_id",
-                                    "approved_at"),
+                                    "approved_at",
+                                    // Set exactly when an action is cancelled (step 2.5); the recipient is written
+                                    // once.
+                                    "cancel_reason"),
                     "northstar.webhook_events", Set.of("processed_at", "error"),
                     // The engine sets processed_at (Phase 3); everything else is written once (step 2.4a).
                     "northstar.events", Set.of("processed_at"),

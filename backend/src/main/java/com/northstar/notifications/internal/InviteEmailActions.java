@@ -32,6 +32,7 @@ class InviteEmailActions implements InviteEmailQueue {
                 false,
                 "{\"inviteId\": \"" + inviteId + "\"}",
                 null,
+                null,
                 null));
     }
 }

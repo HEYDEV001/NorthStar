@@ -3,6 +3,7 @@ package com.northstar.workflow.internal;
 import com.northstar.fakes.FakeProvider;
 import com.northstar.workflow.ActionHandler;
 import com.northstar.workflow.ActionOutcome;
+import com.northstar.workflow.ActionRecipient;
 import com.northstar.workflow.ActionRequest;
 import com.northstar.workflow.RetryPolicy;
 import java.time.Duration;
@@ -11,11 +12,17 @@ import java.time.Duration;
 final class FakeActionHandler implements ActionHandler {
 
     private final String type;
+    private final ActionRecipient recipient;
     private final Duration timeout;
     private final FakeProvider provider;
 
     FakeActionHandler(String type, Duration timeout, FakeProvider provider) {
+        this(type, ActionRecipient.NONE, timeout, provider);
+    }
+
+    FakeActionHandler(String type, ActionRecipient recipient, Duration timeout, FakeProvider provider) {
         this.type = type;
+        this.recipient = recipient;
         this.timeout = timeout;
         this.provider = provider;
     }
@@ -23,6 +30,11 @@ final class FakeActionHandler implements ActionHandler {
     @Override
     public String type() {
         return type;
+    }
+
+    @Override
+    public ActionRecipient recipient() {
+        return recipient;
     }
 
     @Override

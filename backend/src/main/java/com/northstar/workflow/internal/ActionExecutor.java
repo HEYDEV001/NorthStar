@@ -8,6 +8,8 @@ import com.northstar.workflow.ActionHandler;
 import com.northstar.workflow.ActionOutcome;
 import com.northstar.workflow.ActionRequest;
 import com.northstar.workflow.FailureClass;
+import com.northstar.workflow.OutboundCancellation;
+import com.northstar.workflow.RecipientConsent;
 import java.time.Instant;
 import java.time.temporal.ChronoUnit;
 import java.util.Optional;
@@ -33,12 +35,18 @@ import org.springframework.transaction.support.TransactionTemplate;
  * <ol>
  *   <li>Claim, in a short transaction holding the row lock: only a due action is taken (pending and past its next
  *       attempt, or processing with an expired lease, when the lost attempt still counts). Anything else, a succeeded
- *       action included, is left alone, so running the same job twice performs the side effect once.
+ *       or cancelled action included, is left alone, so running the same job twice performs the side effect once. A
+ *       due action whose recipient has opted out is cancelled instead ({@value OutboundCancellation#CONTACT_OPTED_OUT},
+ *       step 2.5, W32), and its handler is never called.
  *   <li>Call the handler outside any transaction, on its own thread, for at most its timeout.
  *   <li>Record the outcome, in a second short transaction, only if the action is still on this attempt.
  * </ol>
  *
  * <p>Alerts and the next attempt's job are created only after the recording transaction commits.
+ *
+ * <p>The claim reads the recipient's consent under the contact's shared lock before it locks the action: the inbound
+ * job takes the contact's lock and then the contact's actions' locks to record an opt-out, so taking them in the same
+ * order means the two never deadlock, and a claim during an opt-out waits for it and then sees it.
  */
 @Service
 class ActionExecutor implements DisposableBean {
@@ -50,6 +58,7 @@ class ActionExecutor implements DisposableBean {
 
     private final ActionRepository actions;
     private final ActionHandlers handlers;
+    private final RecipientConsent consent;
     private final ActionAlerts alerts;
     private final Jobs jobs;
     private final TransactionTemplate transactions;
@@ -59,11 +68,13 @@ class ActionExecutor implements DisposableBean {
     ActionExecutor(
             ActionRepository actions,
             ActionHandlers handlers,
+            RecipientConsent consent,
             ActionAlerts alerts,
             Jobs jobs,
             PlatformTransactionManager transactionManager) {
         this.actions = actions;
         this.handlers = handlers;
+        this.consent = consent;
         this.alerts = alerts;
         this.jobs = jobs;
         this.transactions = new TransactionTemplate(transactionManager);
@@ -113,6 +124,11 @@ class ActionExecutor implements DisposableBean {
     }
 
     private Claim claim(UUID actionId) {
+        UUID tenantId = TenantScope.require().tenantId();
+        // The recipient's consent first, under the contact's shared lock, then the action's lock (see the class note).
+        boolean optedOut = actions.findRecipientContactId(tenantId, actionId)
+                .map(consent::isOptedOut)
+                .orElse(false);
         Optional<Action> found = actions.findLockedById(actionId);
         if (found.isEmpty()) {
             log.info("Not found: action {}", actionId); // another tenant's action looks the same (P9, P10)
@@ -125,6 +141,15 @@ class ActionExecutor implements DisposableBean {
         boolean due = Action.PENDING.equals(action.getStatus())
                 && !action.getNextAttemptAt().isAfter(now);
         if (!due && !takeover) return null;
+        if (optedOut) {
+            action.cancel(OutboundCancellation.CONTACT_OPTED_OUT);
+            log.info(
+                    "action.cancelled action_id={} type={} reason={} at=claim",
+                    actionId,
+                    action.getType(),
+                    OutboundCancellation.CONTACT_OPTED_OUT);
+            return null;
+        }
 
         Optional<ActionHandler> handler = handlers.get(action.getType());
         if (handler.isEmpty()) {
