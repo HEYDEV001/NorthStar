@@ -21,14 +21,22 @@ import com.northstar.tenancy.Role;
 import com.northstar.tenancy.TenantContext;
 import com.northstar.tenancy.TenantScope;
 import com.northstar.workflow.ActionMode;
+import com.northstar.workflow.ActionOutcome;
 import com.northstar.workflow.ActionRequest;
 import com.northstar.workflow.ActionView;
 import com.northstar.workflow.Actions;
 import com.northstar.workflow.ClosedAction;
+import com.northstar.workflow.FailureClass;
 import com.northstar.workflow.NewAction;
 import com.northstar.workflow.OutboundCancellation;
 import com.northstar.workflow.internal.ExecuteAction;
 import com.northstar.workflow.internal.ExecuteActionHandler;
+import com.sun.net.httpserver.HttpServer;
+import java.io.IOException;
+import java.net.InetAddress;
+import java.net.InetSocketAddress;
+import java.net.URI;
+import java.net.http.HttpClient;
 import java.nio.charset.StandardCharsets;
 import java.time.Duration;
 import java.util.List;
@@ -39,11 +47,13 @@ import java.util.concurrent.Executors;
 import java.util.concurrent.Future;
 import java.util.concurrent.ThreadLocalRandom;
 import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicReference;
 import java.util.function.Function;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.extension.ExtendWith;
+import org.springframework.beans.factory.ObjectProvider;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.boot.test.context.SpringBootTest;
@@ -58,6 +68,7 @@ import org.springframework.transaction.IllegalTransactionStateException;
 import org.springframework.transaction.PlatformTransactionManager;
 import org.springframework.transaction.support.TransactionTemplate;
 import org.springframework.web.context.request.RequestContextHolder;
+import tools.jackson.databind.json.JsonMapper;
 
 /**
  * The WhatsApp send action (step 2.6a, integration-specs.md section 2) against real Postgres with RLS, the worker's real
@@ -102,6 +113,11 @@ class WhatsAppSendTests {
     private final CredentialStore credentials;
     private final WhatsAppWebhookIntake intake;
     private final ProcessWhatsAppWebhookHandler inboundJob;
+    private final OutboundMessages outbound;
+    private final WhatsAppConnection connection;
+    private final ObjectProvider<CredentialStore> credentialProvider;
+    private final JsonMapper json;
+    private final PlatformTransactionManager transactionManager;
     private final TransactionTemplate transactions;
     private final PostgresAdmin postgres;
     private final TestData data;
@@ -119,6 +135,10 @@ class WhatsAppSendTests {
             @Autowired CredentialStore credentials,
             @Autowired WhatsAppWebhookIntake intake,
             @Autowired ProcessWhatsAppWebhookHandler inboundJob,
+            @Autowired OutboundMessages outbound,
+            @Autowired WhatsAppConnection connection,
+            @Autowired ObjectProvider<CredentialStore> credentialProvider,
+            @Autowired JsonMapper json,
             @Autowired PlatformTransactionManager transactionManager,
             @Autowired PostgresAdmin postgres) {
         this.messages = messages;
@@ -131,6 +151,11 @@ class WhatsAppSendTests {
         this.credentials = credentials;
         this.intake = intake;
         this.inboundJob = inboundJob;
+        this.outbound = outbound;
+        this.connection = connection;
+        this.credentialProvider = credentialProvider;
+        this.json = json;
+        this.transactionManager = transactionManager;
         this.transactions = new TransactionTemplate(transactionManager);
         this.postgres = postgres;
         this.data = new TestData(postgres);
@@ -703,6 +728,53 @@ class WhatsAppSendTests {
         assertThat(message(queued.messageId())).isEqualTo("failed|contact_opted_out|");
     }
 
+    // Through the Cloud API adapter (step 2.6b), against a loopback stand-in for Meta
+
+    @Test
+    void theCloudApiAdapterSendsWithTheBusinessTokenAndMetasIdIsStored() throws IOException {
+        Business business = businessOnAMetaNumber();
+        WhatsAppMessages.Queued queued = queueText(business, "Through the Cloud API");
+        StandIn meta =
+                standIn(200, "{\"messaging_product\": \"whatsapp\", \"messages\": [{\"id\": \"wamid.CLOUD1\"}]}");
+        try {
+            ActionOutcome outcome = SystemScope.call(
+                    business.tenant(), () -> cloudApiHandler(meta).execute(request(business, queued)));
+
+            assertThat(outcome)
+                    .isEqualTo(ActionOutcome.succeeded(
+                            "{\"messageId\": \"" + queued.messageId() + "\", \"outcome\": \"sent\"}"));
+            assertThat(meta.seen().get("path")).isEqualTo("/v26.0/" + business.number() + "/messages");
+            assertThat(meta.seen().get("authorization"))
+                    .as("the business's own token, decrypted in the worker")
+                    .isEqualTo("Bearer " + business.token());
+            assertThat(meta.seen().get("body")).contains("\"to\":\"" + business.phone() + "\"");
+            assertThat(message(queued.messageId())).isEqualTo("sent||wamid.CLOUD1");
+            assertThat(integration(business.tenant())).isEqualTo("connected||true");
+        } finally {
+            meta.server().stop(0);
+        }
+    }
+
+    @Test
+    void aTokenMetaRejectsSetsTheIntegrationToError() throws IOException {
+        Business business = businessOnAMetaNumber();
+        WhatsAppMessages.Queued queued = queueText(business, "With an expired token");
+        StandIn meta = standIn(
+                401,
+                "{\"error\": {\"message\": \"Error validating access token\", \"type\": \"OAuthException\","
+                        + " \"code\": 190, \"fbtrace_id\": \"AbC123\"}}");
+        try {
+            ActionOutcome outcome = SystemScope.call(
+                    business.tenant(), () -> cloudApiHandler(meta).execute(request(business, queued)));
+
+            assertThat(outcome).isEqualTo(new ActionOutcome.Failed(FailureClass.AUTH, "token_expired", null));
+            assertThat(integration(business.tenant())).isEqualTo("error|token_expired|false");
+            assertThat(message(queued.messageId())).isEqualTo("queued||");
+        } finally {
+            meta.server().stop(0);
+        }
+    }
+
     // Tenant isolation (P9, P10)
 
     @Test
@@ -912,6 +984,79 @@ class WhatsAppSendTests {
                 new Business(tenant, number, contact, phone, conversation, connected ? connect(tenant) : null);
         inboundAt(business, "now() - interval '1 hour'");
         return business;
+    }
+
+    /** A business whose number has a Meta-shaped phone number ID (digits), as the Cloud API adapter requires. */
+    private Business businessOnAMetaNumber() {
+        UUID tenant = data.tenant();
+        String number =
+                Long.toString(100_000_000_000_000L + ThreadLocalRandom.current().nextLong(899_999_999_999_999L));
+        admin.sql("""
+                        insert into northstar.whatsapp_accounts (tenant_id, waba_id, phone_number_id)
+                        values (:t, :waba, :number)""")
+                .param("t", tenant)
+                .param("waba", "waba-" + UUID.randomUUID())
+                .param("number", number)
+                .update();
+        String phone = "+91" + (9_000_000_000L + ThreadLocalRandom.current().nextLong(999_999_999L));
+        UUID contact = data.contact(tenant, phone, null);
+        UUID conversation = data.conversation(tenant, contact, number, null);
+        Business business = new Business(tenant, number, contact, phone, conversation, connect(tenant));
+        inboundAt(business, "now() - interval '1 hour'");
+        return business;
+    }
+
+    /** A loopback stand-in for Meta that answers every request the same way, and the last request it saw. */
+    private record StandIn(HttpServer server, AtomicReference<Map<String, String>> last) {
+        Map<String, String> seen() {
+            return last.get();
+        }
+
+        URI base() {
+            return URI.create("http://127.0.0.1:" + server.getAddress().getPort());
+        }
+    }
+
+    private static StandIn standIn(int status, String body) throws IOException {
+        HttpServer server = HttpServer.create(new InetSocketAddress(InetAddress.getLoopbackAddress(), 0), 0);
+        AtomicReference<Map<String, String>> last = new AtomicReference<>();
+        server.createContext("/", exchange -> {
+            last.set(Map.of(
+                    "path", exchange.getRequestURI().getRawPath(),
+                    "authorization", String.valueOf(exchange.getRequestHeaders().getFirst("Authorization")),
+                    "body", new String(exchange.getRequestBody().readAllBytes(), StandardCharsets.UTF_8)));
+            byte[] answer = body.getBytes(StandardCharsets.UTF_8);
+            exchange.sendResponseHeaders(status, answer.length);
+            exchange.getResponseBody().write(answer);
+            exchange.close();
+        });
+        server.start();
+        return new StandIn(server, last);
+    }
+
+    /** The send handler as the app builds it, with the real Cloud API adapter pointed at the stand-in. */
+    private WhatsAppSendHandler cloudApiHandler(StandIn meta) {
+        HttpClient http = HttpClient.newBuilder()
+                .connectTimeout(Duration.ofSeconds(2))
+                .followRedirects(HttpClient.Redirect.NEVER)
+                .build();
+        return new WhatsAppSendHandler(
+                outbound,
+                connection,
+                credentialProvider,
+                new CloudApiWhatsAppSender(http, meta.base(), "v26.0", Duration.ofSeconds(5)),
+                json,
+                transactionManager);
+    }
+
+    private static ActionRequest request(Business business, WhatsAppMessages.Queued queued) {
+        return new ActionRequest(
+                business.tenant(),
+                queued.action().id(),
+                "whatsapp.send",
+                "whatsapp-send:test",
+                WhatsAppSendHandler.payloadFor(queued.messageId()),
+                1);
     }
 
     /** Stores a business token through the worker's store and connects WhatsApp with it; returns the token. */

@@ -52,8 +52,9 @@ class WhatsAppSendHandler implements ActionHandler {
     static final Duration WINDOW_SAFETY_MARGIN = Duration.ofMinutes(2);
 
     /**
-     * Well under the 5-minute lease. The adapter's HTTP client must give up well before it (step 2.6b), so an answer
-     * from Meta always arrives in time to be stored rather than being cut off and retried as a duplicate.
+     * Well under the 5-minute lease. The adapter's HTTP client gives up well before it (20 seconds at most,
+     * {@link WhatsAppCloudApiConfiguration}), so an answer from Meta always arrives in time to be stored rather than
+     * being cut off and retried as a duplicate.
      */
     static final Duration TIMEOUT = Duration.ofSeconds(30);
 
@@ -68,26 +69,26 @@ class WhatsAppSendHandler implements ActionHandler {
     private final OutboundMessages messages;
     private final WhatsAppConnection connection;
     private final ObjectProvider<CredentialStore> credentials;
-    private final ObjectProvider<WhatsAppSender> senders;
+    private final WhatsAppSender sender;
     private final JsonMapper json;
     private final TransactionTemplate transactions;
     private final TransactionTemplate readOnly;
 
     /**
-     * The credential store exists only on the worker, and the Cloud API sender only from step 2.6b, but every process
-     * needs this handler: creating a send reads its {@link #recipient()}. Only the worker ever runs it.
+     * The credential store exists only on the worker, but every process needs this handler: creating a send reads its
+     * {@link #recipient()}. Only the worker ever runs it. The sender is the Cloud API adapter (step 2.6b).
      */
     WhatsAppSendHandler(
             OutboundMessages messages,
             WhatsAppConnection connection,
             ObjectProvider<CredentialStore> credentials,
-            ObjectProvider<WhatsAppSender> senders,
+            WhatsAppSender sender,
             JsonMapper json,
             PlatformTransactionManager transactionManager) {
         this.messages = messages;
         this.connection = connection;
         this.credentials = credentials;
-        this.senders = senders;
+        this.sender = sender;
         this.json = json;
         this.transactions = new TransactionTemplate(transactionManager);
         this.readOnly = new TransactionTemplate(transactionManager);
@@ -207,10 +208,6 @@ class WhatsAppSendHandler implements ActionHandler {
         UUID messageId = send.message().messageId();
         CredentialStore store = credentials.getIfAvailable();
         if (store == null) throw new IllegalStateException("Business tokens are read only on the worker");
-        WhatsAppSender sender = senders.getIfAvailable();
-        if (sender == null) {
-            throw new IllegalStateException("No WhatsApp sender is configured; the Cloud API adapter is step 2.6b");
-        }
 
         Optional<Secret> token;
         try {
