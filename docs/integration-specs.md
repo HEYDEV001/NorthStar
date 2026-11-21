@@ -168,11 +168,109 @@ How step 2.6a sends (decided 21 Nov 2026):
   Meta accepted it (a client timeout, a dropped connection, or a failure storing the returned ID) is retried and can
   reach the client twice. Permanent errors are never retried, the HTTP client gives up well before the handler's
   timeout so an answer that arrives is always stored, and once the ID is stored no re-run sends again.
-- **Not yet:** the Cloud API adapter, the mapping of Meta's error codes and the pinned Graph API version are step 2.6b;
-  documents, media and interactive buttons are Phase 5. No opt-out confirmation is sent, and every send to an
+- **Not yet:** documents, media and interactive buttons are Phase 5 (the Cloud API adapter, Meta's error codes and the
+  pinned Graph API version are step 2.6b, below). No opt-out confirmation is sent, and every send to an
   opted-out contact stays refused, replies included (step 2.9 decides replies).
 - **Logs:** action and message IDs, attempt numbers, outcome classes and fixed codes only; never text, template
   parameters, phone numbers, wamids, phone number IDs or tokens.
+
+How step 2.6b calls Meta (decided 21 Nov 2026):
+
+- **Request.** `POST {base URL}/{version}/{phone-number-id}/messages` with `Authorization: Bearer <business token>` and
+  a JSON body: `messaging_product` `whatsapp`, `recipient_type` `individual`, `to` the contact's E.164 number (Meta's
+  example keeps the leading `+`), then `type` `text` with `text.body`, or `type` `template` with `template.name`,
+  `template.language.code` and, when the template takes values, one `body` component whose `parameters` are
+  `{"type": "text", "text": ...}` in order, each with `parameter_name` for named values. A template without values
+  sends no components. The phone number ID must be digits, as Meta's are, or the send fails as permanent
+  `phone_number_id_invalid` without a request. Java's `HttpClient`, no SDK; redirects are never followed, so the token
+  goes to the configured host only.
+- **Version, pinned.** `northstar.whatsapp.graph.version=v26.0` in `application.properties` (released 29 Jul 2026; its
+  changelog changes nothing for messaging, and the legacy protocol features it removes are not used; v27.0, released 4
+  Nov 2026, had no changelog page to review when checked). The base URL is `northstar.whatsapp.graph.base-url`
+  (`https://graph.facebook.com`). Neither is set per environment: no component's app spec has a variable for either
+  (`StagingAppSpecTests`), so every environment calls the version the repo names. A version not shaped like `v26.0`,
+  or a base URL that is not bare HTTPS (plain HTTP only to a loopback test stand-in), refuses startup, naming the
+  setting.
+- **Bumping the version,** well before the pinned version's expiry date in Meta's Graph API changelog
+  (`deploy-checklist.md`): (1) read Meta's Graph API changelog for the new version and the WhatsApp Business Platform
+  changelog for changes to `/messages`, templates and error codes; (2) change `northstar.whatsapp.graph.version` alone,
+  in its own pull request that says what the changelogs say, with the tests green (`CloudApiWhatsAppSenderTests` and
+  `WhatsAppCloudApiConfigurationTests` check the request path carries the configured version); (3) once a business can
+  connect WhatsApp (onboarding, Phase 8), send a test message to staging's test number after the deploy; (4) update the
+  version, date and Sources entry here.
+- **Timeouts.** Connect 5 s, request 15 s: 20 s at most, well under the handler's 30 s, so an answer that arrives is
+  stored before the attempt could be cut off and retried as a duplicate.
+- **Answers.** A 2xx with `messages[0].id` is accepted, whatever `messages[0].message_status` says; delivery comes from
+  status webhooks (step 2.7). A 2xx without an ID fails permanently as `response_unreadable` and is never retried, as
+  Meta may have sent the message. Anything else is classified by Meta's `error.code`, as Meta advises ("Build your app's
+  error handling around error codes instead of subcodes or HTTP response status codes"), with the table below. The HTTP
+  status decides only when the code is missing or not in the table: 5xx, 408 and 429 are retryable (`http_<status>`),
+  401 is auth (`http_401`), and anything else is permanent: `meta_<code>` for an unlisted code, so it can be looked up
+  and added, or `http_<status>` without one. A client timeout is retryable `timeout`, a failed connection retryable
+  `connection_error`. A `Retry-After` header, if Meta sends one, is honoured on a retryable answer.
+- **Not documented by Meta** on the pages checked: the HTTP status of each error code (Meta says not to rely on it); a
+  `Retry-After` header; what each `message_status` value (`accepted`, `held_for_quality_assessment`, `paused`, listed for
+  paced templates) means; an idempotency key for sends; and whether a template with no values needs a `components`
+  array.
+- **Account-level failures** (131042, 368, 131031, 131045, 133010, 33, 131048, 131064) fail each send on its own, each
+  with its own alert, and leave the integration `connected` with the code as `last_error_code`; grouping alerts per
+  integration is Phase 8.
+- **Logs:** Northstar's message ID, the HTTP status, Meta's numeric code, the class, our code and Meta's `fbtrace_id`
+  (its support trace ID); never the request, the token, the numbers, Meta's message ID, or Meta's error `message` and
+  `details`, which can echo the request.
+
+**Meta's error codes** ([Meta: WhatsApp Cloud API error codes](https://developers.facebook.com/docs/whatsapp/cloud-api/support/error-codes),
+checked 21 Nov 2026; `MetaErrors`, and `MetaErrorsTests` fails if this table and the code differ). Codes Meta lists
+for other endpoints (template creation, registration, migration, Flows, media, insights and the Marketing Messages API)
+are not mapped and fall to the status rule above. "Judgement" marks a class Meta's text does not state outright.
+
+| Meta code | Class | Our code | Meta's description |
+| --- | --- | --- | --- |
+| 0 | auth | `token_invalid` | Unable to authenticate the app user: the token expired or was invalidated, or the user changed a setting |
+| 190 | auth | `token_expired` | The access token has expired |
+| 3 | auth | `permission_missing` | Capability or permissions issue |
+| 10 | auth | `permission_missing` | Permission not granted or removed |
+| 200–299 | auth | `permission_missing` | Permission not granted or removed |
+| 131005 | auth | `permission_missing` | Permission not granted or removed |
+| 1 | retryable | `meta_request_or_server_error` | Invalid request or possible server error (judgement: retried; a request that really is invalid fails once its attempts are used) |
+| 2 | retryable | `meta_unavailable` | Temporary downtime or overload |
+| 131016 | retryable | `meta_unavailable` | A service is temporarily unavailable |
+| 131000 | retryable | `meta_unknown_error` | Unknown error; "Try again" |
+| 4 | retryable | `rate_limited_app` | The app reached its API call rate limit |
+| 80007 | retryable | `rate_limited_waba` | The WhatsApp Business Account reached its rate limit |
+| 130429 | retryable | `rate_limited_throughput` | Cloud API message throughput reached |
+| 131056 | retryable | `rate_limited_pair` | Too many messages to the same recipient in a short time; "Wait and retry" |
+| 131057 | retryable | `account_maintenance` | The Business Account is in maintenance mode, for example a throughput upgrade (judgement: temporary) |
+| 100 | permanent | `invalid_parameter` | Unsupported or misspelled parameters |
+| 131008 | permanent | `missing_parameter` | A required parameter is missing |
+| 131009 | permanent | `invalid_parameter_value` | A parameter value is not valid |
+| 135000 | permanent | `invalid_request` | Unknown error with the request parameters |
+| 131051 | permanent | `unsupported_message_type` | Unsupported message type |
+| 131021 | permanent | `recipient_is_sender` | Sender and recipient are the same number |
+| 131026 | permanent | `recipient_unreachable` | Unable to deliver the message |
+| 130403 | permanent | `recipient_blocked_by_business` | The business has blocked the user; "Do not retry" |
+| 131050 | permanent | `recipient_stopped_marketing` | The user stopped receiving marketing messages; "Do not retry" |
+| 131047 | permanent | `window_closed` | More than 24 hours since the user last replied; send a template |
+| 131049 | permanent | `held_for_ecosystem` | Marketing message held for ecosystem health; "Retrying does not guarantee delivery" (judgement: our retries end within 81.5 minutes) |
+| 130472 | permanent | `held_for_experiment` | Not sent, as part of an experiment |
+| 132000 | permanent | `template_param_count` | The number of values does not match the template |
+| 132001 | permanent | `template_not_found` | The template does not exist in that language, or is not approved |
+| 132005 | permanent | `template_text_too_long` | Translated text is too long |
+| 132007 | permanent | `template_policy_violation` | Template content violates a WhatsApp policy |
+| 132012 | permanent | `template_param_format` | Values formatted incorrectly |
+| 132015 | permanent | `template_paused` | Template paused for low quality |
+| 132016 | permanent | `template_disabled` | Template paused too many times and now permanently disabled |
+| 131063 | permanent | `marketing_disabled_on_cloud_api` | Marketing templates are disabled for the business's Cloud API |
+| 131042 | permanent | `payment_method_error` | An error with the payment method |
+| 368 | permanent | `account_restricted` | The account is restricted or disabled for a policy violation |
+| 131031 | permanent | `account_restricted` | The account is restricted, disabled or locked |
+| 130497 | permanent | `country_restricted` | The account may not message users in some countries |
+| 131048 | permanent | `sending_restricted` | Sending from this number is restricted; "Check your quality status" (judgement: not lifted within our retries) |
+| 131064 | permanent | `messaging_limit_restricted` | Messaging limit for template misclassification, lifted after the enforcement period (judgement: as 131048) |
+| 131045 | permanent | `number_not_registered` | Phone number registration error |
+| 133010 | permanent | `number_not_registered` | The phone number is not registered on the platform |
+| 33 | permanent | `number_deleted` | The business phone number was deleted |
+| 131037 | permanent | `display_name_not_approved` | The 555 number has no approved display name |
 
 **Quality and limits:** store the number's quality rating and messaging limit; alert the admin when quality drops.
 
@@ -367,5 +465,19 @@ Staging and production never share credentials, and staging uses only provider t
 - [Meta: Graph API webhooks, getting started](https://developers.facebook.com/docs/graph-api/webhooks/getting-started) (verification request, `X-Hub-Signature-256`, batching of up to 1000 updates, deduplication; checked 19 Nov 2026 for step 2.2)
 - [Meta: WhatsApp Cloud API, set up webhooks](https://developers.facebook.com/docs/whatsapp/cloud-api/guides/set-up-webhooks) (retries of non-200 deliveries for up to 7 days, payloads up to 3 MB, mTLS rather than IP allowlists)
 - [Meta: WhatsApp webhook components](https://developers.facebook.com/docs/whatsapp/cloud-api/webhooks/components) (`entry`, `changes`, `value.metadata.phone_number_id`, `messages[].id`, `statuses[]`, `errors`)
+
+Checked 21 Nov 2026 for steps 2.6a and 2.6b (sending):
+
+- [Meta: WhatsApp Cloud API error codes](https://developers.facebook.com/docs/whatsapp/cloud-api/support/error-codes) (every code, its details and solution; build on `code` and `details`, not subcodes, titles or HTTP status; HTTP statuses given only for the Marketing Messages API)
+- [Meta: Graph API changelog](https://developers.facebook.com/docs/graph-api/changelog) (v26.0 released 29 Jul 2026 and v27.0 4 Nov 2026, both "TBD" to expire; v25.0 until 29 Jul 2028) and [Graph API v26.0 changelog](https://developers.facebook.com/docs/graph-api/changelog/version26.0) (no change to messaging; legacy protocol features removed: `pretty`, `debug`, `date_format`, `GET /?ids=`, `If-None-Match`)
+- [Meta: send text messages](https://developers.facebook.com/docs/whatsapp/cloud-api/messages/text-messages) (the request body, `to` as `+16505551234`, at most 4,096 characters, the response with `messages[0].id`)
+- [Meta: Messages API reference](https://developers.facebook.com/docs/whatsapp/cloud-api/reference/messages) (`Authorization: Bearer`, the response fields, `message_status` values for paced templates)
+- [Meta: send messages](https://developers.facebook.com/documentation/business-messaging/whatsapp/messages/send-messages.md) (a success does not mean delivery; outside the 24-hour window only templates)
+- [Meta: template fundamentals](https://developers.facebook.com/documentation/business-messaging/whatsapp/templates/overview.md) (send-time body parameters, positional or named with `parameter_name`; named parameters are lowercase letters and underscores; only APPROVED templates can be sent)
+- [Meta: template pausing](https://developers.facebook.com/documentation/business-messaging/whatsapp/templates/template-pausing.md) (pauses of 3 and 6 hours, then disabled)
+- [Meta: throughput](https://developers.facebook.com/docs/whatsapp/throughput) (80 messages a second per number by default, up to 1,000; 130429 when exceeded)
+- [Meta: pricing](https://developers.facebook.com/documentation/business-messaging/whatsapp/pricing.md) (templates sent inside an open customer-service window charged per message since 1 Oct 2026)
+- [Meta: business-scoped user IDs](https://developers.facebook.com/documentation/business-messaging/whatsapp/business-scoped-user-ids.md) (users with usernames may arrive without a phone number; sends to a BSUID since July 2026)
+- No page checked offers an idempotency key for sends.
 
 Google API details are from general platform knowledge; confirm endpoints, scopes and quotas against current provider docs during build.

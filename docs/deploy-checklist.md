@@ -69,6 +69,16 @@ and rotate secrets on staging: `docs/staging-runbook.md`.
 - [ ] Only `GET` and `POST /webhooks/whatsapp` are public; every other path still needs a Supabase token
       (`SecurityConfiguration`).
 
+## WhatsApp sending
+
+- [ ] The Graph API version pinned in `northstar.whatsapp.graph.version` (`application.properties`; v26.0 since step
+      2.6b) is at least 3 months from the expiry date Meta's [Graph API changelog](https://developers.facebook.com/docs/graph-api/changelog)
+      lists for it; otherwise bump it first, as `integration-specs.md` section 2 says (Bumping the version). v26.0's
+      expiry was "TBD" on 21 Nov 2026.
+- [ ] No component sets `NORTHSTAR_WHATSAPP_GRAPH_VERSION` or `NORTHSTAR_WHATSAPP_GRAPH_BASE_URL`: every environment
+      calls the version the repo names (`StagingAppSpecTests` for the spec; the deploy job's drift check for the live
+      app).
+
 ## App configuration
 
 - [ ] `NORTHSTAR_APP_URL` is set to the environment's frontend address; invite links are built from it. Staging uses

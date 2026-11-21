@@ -8,7 +8,7 @@ import java.util.UUID;
 /**
  * Sends one message through WhatsApp's Cloud API on a business's number (integration-specs.md section 2): the provider
  * adapter behind the {@code whatsapp.send} handler, and nothing else calls it. Step 2.6a declares it and tests use a
- * fake; the Cloud API adapter, which maps Meta's error codes, is step 2.6b.
+ * fake; the Cloud API adapter, {@link CloudApiWhatsAppSender}, which maps Meta's error codes, is step 2.6b's.
  *
  * <p>Meta takes no idempotency key, so the adapter sends exactly once per call and the handler decides whether to call
  * at all. Its answer is already classified retryable, permanent or auth (integration-specs.md section 1). The token is
