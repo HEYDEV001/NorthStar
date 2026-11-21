@@ -80,6 +80,37 @@ public final class WhatsAppPayloads {
         return change("messages", value);
     }
 
+    /**
+     * A status update as Meta's status reference describes it (step 2.7): Meta's timestamp, a pricing object, the
+     * recipient's number and, when errorCode is not null, one error whose title, message and details echo the
+     * recipient's number and {@link #marker()}-style text, so tests can show none of it is logged or stored.
+     */
+    public WhatsAppPayloads status(
+            String phoneNumberId, String wamid, String status, java.time.Instant at, Integer errorCode, String echo) {
+        ObjectNode value = messagesValue(phoneNumberId);
+        ObjectNode item = value.putArray("statuses")
+                .addObject()
+                .put("id", wamid)
+                .put("status", status)
+                .put("timestamp", Long.toString(at.getEpochSecond()))
+                .put("recipient_id", "910000000001");
+        item.putObject("pricing")
+                .put("billable", true)
+                .put("pricing_model", "PMP")
+                .put("type", "regular")
+                .put("category", "utility");
+        if (errorCode != null) {
+            ObjectNode error = item.putArray("errors")
+                    .addObject()
+                    .put("code", errorCode)
+                    .put("title", "Message undeliverable to 910000000001: " + echo)
+                    .put("message", "Message undeliverable to 910000000001: " + echo)
+                    .put("href", "https://developers.facebook.com/docs/whatsapp/cloud-api/support/error-codes/");
+            error.putObject("error_data").put("details", "Message to 910000000001 failed: " + echo);
+        }
+        return change("messages", value);
+    }
+
     /** An entry with one change of another field (for example a template status update), keyed by the WABA only. */
     public WhatsAppPayloads otherField(String field) {
         ObjectNode value = JSON.createObjectNode().put("event", "APPROVED").put("message_template_id", 1234567890L);

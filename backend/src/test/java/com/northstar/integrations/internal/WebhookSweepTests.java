@@ -103,7 +103,7 @@ class WebhookSweepTests {
     }
 
     @Test
-    void rowsInsideTheGracePeriodProcessedRowsAndStatusRowsAreLeftAlone() {
+    void rowsInsideTheGracePeriodAndProcessedRowsAreLeftAloneAndStatusRowsAreSwept() {
         UUID tenant = data.tenant();
         UUID fresh = messageRow(tenant, "10 seconds", null);
         UUID processed = messageRow(tenant, "3 minutes", null);
@@ -120,10 +120,10 @@ class WebhookSweepTests {
 
         sweep(tenant);
 
-        for (UUID row : List.of(fresh, processed, status)) {
+        for (UUID row : List.of(fresh, processed)) {
             assertThat(anyRetryJob(row)).as("row " + row).isFalse();
         }
-        assertThat(processed(status)).as("status rows wait for step 2.7").isFalse();
+        assertThat(retryJobs(status)).as("status rows are swept since step 2.7").containsExactly(1);
     }
 
     @Test

@@ -46,7 +46,7 @@ class UnprocessedWebhookScanTests {
     }
 
     @Test
-    void listsOnlyTenantsWithMessageEventsUnprocessedPastTheGracePeriod() {
+    void listsOnlyTenantsWithMessageOrStatusEventsUnprocessedPastTheGracePeriod() {
         UUID waiting = data.tenant();
         UUID failedWaiting = data.tenant();
         UUID fresh = data.tenant();
@@ -59,8 +59,9 @@ class UnprocessedWebhookScanTests {
         webhookEvent(statusOnly, "status:", "1 hour", false, null);
 
         assertThat(directory.tenantsWithUnprocessedWebhooks(GRACE))
-                .contains(waiting, failedWaiting)
-                .doesNotContain(fresh, processed, statusOnly)
+                .as("status rows count since step 2.7")
+                .contains(waiting, failedWaiting, statusOnly)
+                .doesNotContain(fresh, processed)
                 .doesNotHaveDuplicates();
     }
 

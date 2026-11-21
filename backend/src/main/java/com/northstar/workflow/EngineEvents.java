@@ -31,6 +31,54 @@ public interface EngineEvents {
     boolean recordOptOutReceived(OptOutReceived event);
 
     /**
+     * Records {@code message.status} for a delivery status Meta reported for an outbound message (step 2.7), under the
+     * dedupe key {@code message.status:<wamid>:<status>}: every status that matched a message and was not ignored
+     * (sent, delivered, read, failed; a late delivered after read included). Returns false if it was already recorded.
+     */
+    boolean recordMessageStatus(MessageStatus event);
+
+    /**
+     * A delivery status of an outbound message (step 2.7). status is sent, delivered, read or failed; errorCode is the
+     * fixed code of a failed one, and only of one. statusAt is Meta's timestamp. There is no lead yet: sends name their
+     * lead from Phase 3.
+     */
+    record MessageStatus(
+            String providerMessageId,
+            UUID webhookEventId,
+            UUID contactId,
+            UUID conversationId,
+            UUID messageId,
+            String status,
+            String errorCode,
+            Instant statusAt) {
+
+        private static final Pattern STATUS = Pattern.compile("sent|delivered|read|failed");
+        private static final Pattern ERROR_CODE = Pattern.compile("[a-z0-9_]{1,64}");
+
+        public MessageStatus {
+            Objects.requireNonNull(providerMessageId, "providerMessageId");
+            Objects.requireNonNull(webhookEventId, "webhookEventId");
+            Objects.requireNonNull(contactId, "contactId");
+            Objects.requireNonNull(conversationId, "conversationId");
+            Objects.requireNonNull(messageId, "messageId");
+            Objects.requireNonNull(statusAt, "statusAt");
+            if (status == null || !STATUS.matcher(status).matches()) {
+                throw new IllegalArgumentException("status must be sent, delivered, read or failed");
+            }
+            if (("failed".equals(status)) != (errorCode != null)
+                    || (errorCode != null && !ERROR_CODE.matcher(errorCode).matches())) {
+                throw new IllegalArgumentException("A failed status, and only one, carries a fixed error code");
+            }
+        }
+
+        /** The provider ID is in the dedupe key only; it is left out here so it never reaches a log. */
+        @Override
+        public String toString() {
+            return "MessageStatus[messageId=" + messageId + ", status=" + status + "]";
+        }
+    }
+
+    /**
      * An inbound opt-out message stored by step 2.5. It never opens a lead: lead is {@code joined} (leadId the open
      * lead) or {@code none} (leadId null). The keyword it matched is not recorded.
      */

@@ -353,6 +353,71 @@ class ConversationSchemaTests {
     }
 
     @Test
+    void statusOnlyMovesForwardForEveryRole() {
+        UUID tenant = data.tenant();
+        UUID conversation = data.conversation(tenant, data.contact(tenant), null);
+        List<String> statuses = List.of("queued", "sent", "delivered", "read", "failed");
+        List<String> order = List.of("queued", "sent", "delivered", "read");
+
+        // Step 2.7: queued < sent < delivered < read, any jump forward; failed replaces queued or sent only, and
+        // nothing leaves failed. The same status again is allowed.
+        for (String from : statuses) {
+            for (String to : statuses) {
+                boolean allowed = from.equals(to)
+                        || (!from.equals("failed") && !to.equals("failed") && order.indexOf(to) > order.indexOf(from))
+                        || (to.equals("failed") && (from.equals("queued") || from.equals("sent")));
+                UUID message = outboundWithStatus(tenant, conversation, from);
+                String move = from + " -> " + to;
+                // A message without WhatsApp's ID gets one with the move, so the ID check is not what answers.
+                boolean needsId = !to.equals("queued") && !to.equals("failed");
+                boolean hasId = !from.equals("queued") && !from.equals("failed");
+                String set = "status = '" + to + "'"
+                        + (needsId && !hasId ? ", provider_message_id = 'wamid.TEST" + UUID.randomUUID() + "'" : "");
+                if (allowed) {
+                    assertThat(updateAsSystem(tenant, message, set)).as(move).isOne();
+                } else {
+                    assertThatThrownBy(() -> updateAsSystem(tenant, message, set))
+                            .as(move)
+                            .satisfies(refused -> assertThat(sqlState(refused)).isEqualTo("NSM02"));
+                    // The table's owner too, which has every privilege and bypasses RLS.
+                    assertThatThrownBy(() -> postgres.rolledBack(jdbc -> {
+                                jdbc.sql("set local role migrator").update();
+                                jdbc.sql("update northstar.messages set " + set + " where id = :id")
+                                        .param("id", message)
+                                        .update();
+                            }))
+                            .as("as migrator: " + move)
+                            .satisfies(refused -> assertThat(sqlState(refused)).isEqualTo("NSM02"));
+                }
+            }
+        }
+    }
+
+    @Test
+    void deliveryAndReadTimesAreSetOnce() {
+        UUID tenant = data.tenant();
+        UUID conversation = data.conversation(tenant, data.contact(tenant), null);
+        UUID message = outboundWithStatus(tenant, conversation, "sent");
+
+        assertThat(updateAsSystem(tenant, message, "status = 'delivered', delivered_at = '2026-11-21T10:00:00Z'"))
+                .isOne();
+        assertThat(updateAsSystem(tenant, message, "status = 'read', read_at = '2026-11-21T10:01:00Z'"))
+                .isOne();
+        assertThat(updateAsSystem(tenant, message, "delivered_at = delivered_at, read_at = read_at"))
+                .as("the same value again is no change")
+                .isOne();
+        for (String change : List.of(
+                "delivered_at = '2026-11-21T11:00:00Z'",
+                "delivered_at = null",
+                "read_at = '2026-11-21T11:00:00Z'",
+                "read_at = null")) {
+            assertThatThrownBy(() -> updateAsSystem(tenant, message, change))
+                    .as(change)
+                    .satisfies(refused -> assertThat(sqlState(refused)).isEqualTo("NSM01"));
+        }
+    }
+
+    @Test
     void templateParamsAreATemplateMessagesStringValuesOnly() {
         TestData.Member owner = data.member("admin");
         UUID tenant = owner.tenantId();
@@ -545,6 +610,21 @@ class ConversationSchemaTests {
                 .param("t", tenant)
                 .param("c", conversation)
                 .param("wamid", wamid)
+                .query(UUID.class)
+                .single();
+    }
+
+    /** An outbound message with this status: an ID from WhatsApp unless it is queued or failed before sending. */
+    private UUID outboundWithStatus(UUID tenant, UUID conversation, String status) {
+        boolean withId = !status.equals("queued") && !status.equals("failed");
+        return admin.sql("""
+                        insert into northstar.messages
+                          (tenant_id, conversation_id, direction, sender_type, provider_message_id, type, body, status)
+                        values (:t, :c, 'out', 'system', :wamid, 'text', 'Thanks!', :status) returning id""")
+                .param("t", tenant)
+                .param("c", conversation)
+                .param("wamid", withId ? "wamid.TEST" + UUID.randomUUID() : null)
+                .param("status", status)
                 .query(UUID.class)
                 .single();
     }
