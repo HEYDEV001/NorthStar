@@ -1,6 +1,7 @@
 package com.northstar.contacts.internal;
 
 import com.northstar.api.NotFoundException;
+import com.northstar.contacts.DeliveryStatus;
 import com.northstar.contacts.MessageToSend;
 import com.northstar.contacts.OutboundContent;
 import com.northstar.contacts.OutboundMessages;
@@ -11,6 +12,9 @@ import java.nio.charset.StandardCharsets;
 import java.sql.ResultSet;
 import java.sql.SQLException;
 import java.time.Duration;
+import java.time.Instant;
+import java.time.OffsetDateTime;
+import java.time.ZoneOffset;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
@@ -33,7 +37,8 @@ import tools.jackson.databind.json.JsonMapper;
  *
  * <p>Lock order, the same on every path: the contact, then its conversation, its actions and their messages. Queueing
  * share-locks the contact before writing anything; marking sent or failed locks only the message, inside a transaction
- * that already holds whatever comes before it.
+ * that already holds whatever comes before it; a delivery status (step 2.7) locks only the message, after its webhook
+ * row.
  */
 @Service
 @Transactional(propagation = Propagation.MANDATORY)
@@ -96,6 +101,41 @@ class OutboundMessagesService implements OutboundMessages {
             update northstar.messages set status = 'failed', error_code = ?
             where tenant_id = ? and id = ? and direction = 'out' and status = 'queued'
               and provider_message_id is null""";
+
+    // A delivery status (step 2.7): the outbound message Meta knows by this ID, locked alone (not its conversation),
+    // with
+    // what deciding the status needs.
+    private static final String LOCK_BY_PROVIDER_ID = """
+            select m.id, m.status, m.conversation_id, c.contact_id, m.delivered_at is null as delivered_at_empty
+            from northstar.messages m
+            join northstar.conversations c on c.tenant_id = m.tenant_id and c.id = m.conversation_id
+            where m.tenant_id = ? and m.provider_message_id = ? and m.direction = 'out'
+            for update of m""";
+
+    // Each move is guarded by the statuses it may leave, under the lock just taken; messages_status_forward (NSM02) is
+    // the backstop. Meta's time fills an empty delivered_at or read_at; one already set is kept (NSM01).
+    private static final String TO_SENT = """
+            update northstar.messages set status = 'sent'
+            where tenant_id = ? and id = ? and status = 'queued'""";
+
+    private static final String TO_DELIVERED = """
+            update northstar.messages set status = 'delivered', delivered_at = coalesce(delivered_at, ?)
+            where tenant_id = ? and id = ? and status in ('queued', 'sent')""";
+
+    private static final String TO_READ = """
+            update northstar.messages set status = 'read', read_at = coalesce(read_at, ?)
+            where tenant_id = ? and id = ? and status in ('queued', 'sent', 'delivered')""";
+
+    private static final String TO_FAILED = """
+            update northstar.messages set status = 'failed', error_code = ?
+            where tenant_id = ? and id = ? and status in ('queued', 'sent')""";
+
+    private static final String LATE_DELIVERED = """
+            update northstar.messages set delivered_at = ?
+            where tenant_id = ? and id = ? and status = 'read' and delivered_at is null""";
+
+    /** queued < sent < delivered < read; failed is outside the order. */
+    private static final List<String> FORWARD = List.of("queued", "sent", "delivered", "read");
 
     private final JdbcClient jdbc;
     private final JsonMapper json;
@@ -197,6 +237,76 @@ class OutboundMessagesService implements OutboundMessages {
                         .param(messageId)
                         .update()
                 == 1;
+    }
+
+    @Override
+    public StatusUpdate recordStatus(String providerMessageId, DeliveryStatus status, Instant at, String errorCode) {
+        Objects.requireNonNull(providerMessageId, "providerMessageId");
+        Objects.requireNonNull(status, "status");
+        Objects.requireNonNull(at, "at");
+        if ((status == DeliveryStatus.FAILED) != (errorCode != null)) {
+            throw new IllegalArgumentException("A failed status, and only one, carries an error code");
+        }
+        if (errorCode != null && !errorCode.matches("[a-z0-9_]{1,64}")) {
+            throw new IllegalArgumentException("An error code is a fixed code");
+        }
+        UUID tenant = systemTenant();
+        Optional<Current> found = jdbc.sql(LOCK_BY_PROVIDER_ID)
+                .param(tenant)
+                .param(providerMessageId)
+                .query((row, n) -> new Current(
+                        row.getObject("id", UUID.class),
+                        row.getString("status"),
+                        row.getObject("conversation_id", UUID.class),
+                        row.getObject("contact_id", UUID.class),
+                        row.getBoolean("delivered_at_empty")))
+                .optional();
+        if (found.isEmpty()) return new NotFound();
+        Current message = found.get();
+        String from = message.status();
+        String to = status.code();
+
+        if (from.equals(to)) return new Unchanged(message.id(), message.conversationId(), message.contactId(), from);
+        if (from.equals("failed")) return new Ignored(message.id(), from, to);
+        if (status == DeliveryStatus.FAILED) {
+            if (!from.equals("queued") && !from.equals("sent")) return new Ignored(message.id(), from, to);
+            move(jdbc.sql(TO_FAILED).param(errorCode), tenant, message.id());
+            return new Applied(message.id(), message.conversationId(), message.contactId(), from, to);
+        }
+        if (FORWARD.indexOf(to) > FORWARD.indexOf(from)) {
+            switch (status) {
+                case SENT -> move(jdbc.sql(TO_SENT), tenant, message.id());
+                case DELIVERED -> move(jdbc.sql(TO_DELIVERED).param(utc(at)), tenant, message.id());
+                case READ -> move(jdbc.sql(TO_READ).param(utc(at)), tenant, message.id());
+                case FAILED -> throw new IllegalStateException("unreachable");
+            }
+            return new Applied(message.id(), message.conversationId(), message.contactId(), from, to);
+        }
+        if (status == DeliveryStatus.DELIVERED && from.equals("read")) {
+            boolean filled = message.deliveredAtEmpty()
+                    && jdbc.sql(LATE_DELIVERED)
+                                    .param(utc(at))
+                                    .param(tenant)
+                                    .param(message.id())
+                                    .update()
+                            == 1;
+            return new LateDelivered(message.id(), message.conversationId(), message.contactId(), filled);
+        }
+        return new Ignored(message.id(), from, to);
+    }
+
+    /** A message as a delivery status finds it, locked. */
+    private record Current(UUID id, String status, UUID conversationId, UUID contactId, boolean deliveredAtEmpty) {}
+
+    /** Runs one guarded move; under the row lock it must change exactly that row. */
+    private static void move(JdbcClient.StatementSpec statement, UUID tenant, UUID messageId) {
+        if (statement.param(tenant).param(messageId).update() != 1) {
+            throw new IllegalStateException("A locked message did not take its status");
+        }
+    }
+
+    private static OffsetDateTime utc(Instant at) {
+        return OffsetDateTime.ofInstant(at, ZoneOffset.UTC);
     }
 
     private MessageToSend toSend(ResultSet row) throws SQLException {

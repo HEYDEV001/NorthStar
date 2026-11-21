@@ -13,7 +13,7 @@ import tools.jackson.databind.json.JsonMapper;
 import tools.jackson.databind.node.ObjectNode;
 
 /**
- * {@link EngineEvents} (steps 2.4b and 2.5): {@code insert ... on conflict (tenant_id, dedupe_key) do nothing} (P1),
+ * {@link EngineEvents} (steps 2.4b, 2.5 and 2.7): {@code insert ... on conflict (tenant_id, dedupe_key) do nothing} (P1),
  * native SQL with bind parameters and the tenant bound explicitly, inside the caller's transaction.
  */
 @Service
@@ -22,6 +22,7 @@ class EngineEventsService implements EngineEvents {
 
     static final String MESSAGE_RECEIVED = "message.received";
     static final String OPTOUT_RECEIVED = "optout.received";
+    static final String MESSAGE_STATUS = "message.status";
 
     /** The events check allows 1 to 300 characters. */
     static final int MAX_DEDUPE_KEY_LENGTH = 300;
@@ -74,6 +75,25 @@ class EngineEventsService implements EngineEvents {
         payload.put("sent_at", event.sentAt().toString());
 
         return insert(event.leadId(), OPTOUT_RECEIVED, dedupeKey, payload);
+    }
+
+    @Override
+    public boolean recordMessageStatus(MessageStatus event) {
+        Objects.requireNonNull(event, "event");
+        String dedupeKey = MESSAGE_STATUS + ":" + event.providerMessageId() + ":" + event.status();
+        if (dedupeKey.length() > MAX_DEDUPE_KEY_LENGTH) throw new IllegalArgumentException("Dedupe key too long");
+
+        // IDs, fixed codes and Meta's timestamp only: never Meta's error title, message or details.
+        ObjectNode payload = json.createObjectNode();
+        payload.put("webhook_event_id", event.webhookEventId().toString());
+        payload.put("contact_id", event.contactId().toString());
+        payload.put("conversation_id", event.conversationId().toString());
+        payload.put("message_id", event.messageId().toString());
+        payload.put("status", event.status());
+        if (event.errorCode() != null) payload.put("error_code", event.errorCode());
+        payload.put("status_at", event.statusAt().toString());
+
+        return insert(null, MESSAGE_STATUS, dedupeKey, payload);
     }
 
     private boolean insert(UUID leadId, String type, String dedupeKey, ObjectNode payload) {

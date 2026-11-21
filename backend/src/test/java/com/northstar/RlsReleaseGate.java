@@ -119,7 +119,8 @@ record RlsReleaseGate(
                     "northstar.webhook_events", Set.of("processed_at", "error"),
                     // The engine sets processed_at (Phase 3); everything else is written once (step 2.4a).
                     "northstar.events", Set.of("processed_at"),
-                    // provider_message_id and media_path are set once (trigger messages_set_once, SQLSTATE NSM01).
+                    // provider_message_id, media_path, delivered_at and read_at are set once (messages_set_once,
+                    // NSM01); status only moves forward (messages_status_forward, NSM02, step 2.7).
                     "northstar.messages",
                             Set.of(
                                     "status",

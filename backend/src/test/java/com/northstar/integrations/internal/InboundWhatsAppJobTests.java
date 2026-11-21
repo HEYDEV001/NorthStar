@@ -715,7 +715,7 @@ class InboundWhatsAppJobTests {
     // Status rows
 
     @Test
-    void statusRowsAreLeftUntouchedForStep27(CapturedOutput output) {
+    void aStatusRowGoesToTheStatusPathAndWritesNoInboundRecords(CapturedOutput output) {
         Business business = business();
         String wamid = WhatsAppPayloads.wamid();
         intake.receive(WhatsAppPayloads.delivery()
@@ -726,10 +726,13 @@ class InboundWhatsAppJobTests {
 
         run(business.tenant(), row);
 
+        // No message has this wamid: the status waits for the sweep (step 2.7, WhatsAppStatusTests has the rest).
         assertThat(processed(row)).isFalse();
-        assertThat(error(row)).isNull();
-        assertThat(output.getAll()).contains("webhook.status_deferred provider=whatsapp webhook_event_id=" + row);
-        assertThat(totals(business.tenant())).isEqualTo(new Totals(0, 0, 0, 0, 0, 0));
+        assertThat(error(row)).isEqualTo("message_not_found_yet");
+        assertThat(output.getAll()).contains("webhook.status_waiting provider=whatsapp webhook_event_id=" + row);
+        assertThat(totals(business.tenant()))
+                .as("a status creates no contact, source, conversation, message, lead or event")
+                .isEqualTo(new Totals(0, 0, 0, 0, 0, 0));
     }
 
     // What is recorded and logged

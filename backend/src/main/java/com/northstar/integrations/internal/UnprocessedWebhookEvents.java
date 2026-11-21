@@ -11,7 +11,7 @@ import org.springframework.stereotype.Component;
 /**
  * The current tenant's webhook events still waiting to be processed, as the sweep reads and closes them (step 2.4a).
  * Native SQL with bind parameters and an explicit tenant filter on top of RLS (D7); ages are measured on the database's
- * clock, which stamped received_at. Only WhatsApp message rows for now: status rows wait for step 2.7.
+ * clock, which stamped received_at. WhatsApp message and status rows (status rows since step 2.7).
  *
  * <p>Callers run inside a tenant transaction as the system actor.
  */
@@ -25,7 +25,7 @@ class UnprocessedWebhookEvents {
             where tenant_id = ?
               and processed_at is null
               and provider = 'whatsapp'
-              and provider_event_id like 'message:%'
+              and (provider_event_id like 'message:%' or provider_event_id like 'status:%')
               and received_at < now() - cast(? as interval)
             order by received_at, id
             limit ?""";

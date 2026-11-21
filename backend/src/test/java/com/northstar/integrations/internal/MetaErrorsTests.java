@@ -132,6 +132,18 @@ class MetaErrorsTests {
     }
 
     @Test
+    void aFailureReportedInAStatusTakesTheTablesCodeWithoutAClass() {
+        assertThat(MetaErrors.codeFor(131026)).isEqualTo("recipient_unreachable");
+        assertThat(MetaErrors.codeFor(130429))
+                .as("a code the send would retry is only a code here: a status is never retried")
+                .isEqualTo("rate_limited_throughput");
+        assertThat(MetaErrors.codeFor(250)).isEqualTo("permission_missing");
+        assertThat(MetaErrors.codeFor(999999)).isEqualTo("meta_999999");
+        assertThat(MetaErrors.codeFor(null)).isEqualTo("delivery_failed");
+        assertThat(MetaErrors.codeFor(-1)).isEqualTo("delivery_failed");
+    }
+
+    @Test
     void theSpecsTableListsExactlyWhatTheCodeDoes() throws IOException {
         String spec = Files.readString(Path.of("../docs/integration-specs.md"));
         List<String> rows = spec.lines()

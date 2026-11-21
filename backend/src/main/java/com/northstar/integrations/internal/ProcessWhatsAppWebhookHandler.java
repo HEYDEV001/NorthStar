@@ -12,7 +12,7 @@ import org.springframework.transaction.PlatformTransactionManager;
 import org.springframework.transaction.support.TransactionTemplate;
 
 /**
- * The job for a stored WhatsApp webhook event (step 2.4b), run by the worker as the system actor in the event's tenant.
+ * The job for a stored WhatsApp webhook event (steps 2.4b and 2.7: a message or a delivery status), run by the worker as the system actor in the event's tenant.
  * Queued once per stored row by step 2.2, and again by the webhook sweep ({@link TenantWebhookSweeper}) while the row
  * is unprocessed past the grace period.
  *
@@ -71,8 +71,7 @@ public class ProcessWhatsAppWebhookHandler extends TenantJobHandler<ProcessWhats
             }
             case WhatsAppInboundProcessor.AlreadyProcessed done ->
                 log.info("webhook.already_processed provider=whatsapp webhook_event_id={}", id);
-            case WhatsAppInboundProcessor.StatusDeferred deferred ->
-                log.info("webhook.status_deferred provider=whatsapp webhook_event_id={}", id);
+            case WhatsAppInboundProcessor.StatusProcessed processed -> logStatus(id, processed.outcome());
             case WhatsAppInboundProcessor.Rejected rejected ->
                 log.error(
                         "webhook.failed provider=whatsapp webhook_event_id={} error={} final=true",
@@ -105,6 +104,62 @@ public class ProcessWhatsAppWebhookHandler extends TenantJobHandler<ProcessWhats
                         stored.messageId(),
                         stored.leadId(),
                         stored.lead().code());
+        }
+    }
+
+    /** A delivery status's outcome (step 2.7): IDs, statuses and fixed codes only, never the wamid or Meta's text. */
+    private static void logStatus(UUID id, WhatsAppStatusProcessor.Outcome outcome) {
+        switch (outcome) {
+            case WhatsAppStatusProcessor.Applied applied
+            when applied.errorCode() != null ->
+                log.warn(
+                        "webhook.status_failed provider=whatsapp webhook_event_id={} message_id={} from={} code={}",
+                        id,
+                        applied.messageId(),
+                        applied.from(),
+                        applied.errorCode());
+            case WhatsAppStatusProcessor.Applied applied ->
+                log.info(
+                        "webhook.status_applied provider=whatsapp webhook_event_id={} message_id={} from={} to={}",
+                        id,
+                        applied.messageId(),
+                        applied.from(),
+                        applied.to());
+            case WhatsAppStatusProcessor.Unchanged unchanged ->
+                log.info(
+                        "webhook.status_unchanged provider=whatsapp webhook_event_id={} message_id={} status={}",
+                        id,
+                        unchanged.messageId(),
+                        unchanged.status());
+            case WhatsAppStatusProcessor.LateDelivered late ->
+                log.info(
+                        "webhook.status_late_delivered provider=whatsapp webhook_event_id={} message_id={}"
+                                + " delivered_at_filled={}",
+                        id,
+                        late.messageId(),
+                        late.filled());
+            case WhatsAppStatusProcessor.Ignored ignored ->
+                log.info(
+                        "webhook.status_ignored provider=whatsapp webhook_event_id={} message_id={} from={} to={}",
+                        id,
+                        ignored.messageId(),
+                        ignored.from(),
+                        ignored.to());
+            case WhatsAppStatusProcessor.Waiting waiting ->
+                log.info(
+                        "webhook.status_waiting provider=whatsapp webhook_event_id={} error={}",
+                        id,
+                        WhatsAppStatusProcessor.MESSAGE_NOT_FOUND_YET);
+            case WhatsAppStatusProcessor.Unsupported unsupported ->
+                log.info(
+                        "webhook.status_unsupported provider=whatsapp webhook_event_id={} error={}",
+                        id,
+                        WhatsAppStatusProcessor.STATUS_UNSUPPORTED);
+            case WhatsAppStatusProcessor.Rejected rejected ->
+                log.error(
+                        "webhook.failed provider=whatsapp webhook_event_id={} error={} final=true",
+                        id,
+                        rejected.errorCode());
         }
     }
 

@@ -14,7 +14,8 @@ import java.util.Optional;
  *
  * <p>Only codes Meta documents for sending are mapped. Anything else falls back on the status: 5xx, 408 and 429 are
  * retryable, a 401 is auth, and any other answer is permanent, keeping Meta's code in ours ({@code meta_<code>}) so it
- * can be looked up and added here. Step 2.7 uses the same table for the errors Meta reports later in status webhooks.
+ * can be looked up and added here. Step 2.7 uses the same table, through {@link #codeFor}, for the errors Meta reports
+ * later in status webhooks.
  */
 final class MetaErrors {
 
@@ -86,6 +87,19 @@ final class MetaErrors {
     /** Every code this table lists, for its tests and the spec's table. */
     static Map<Integer, Mapping> listed() {
         return CODES;
+    }
+
+    /** The code of a failed status that Meta sends with no error code (step 2.7). */
+    static final String DELIVERY_FAILED = "delivery_failed";
+
+    /**
+     * The fixed code for a failure Meta reports after it accepted the message, in a status webhook's
+     * {@code errors[].code} (step 2.7): this table's code, {@code meta_<code>} for one it does not list, or
+     * {@value #DELIVERY_FAILED} when Meta sends none. No class: a status is never retried, and its send stays succeeded.
+     */
+    static String codeFor(Integer metaCode) {
+        if (metaCode == null || metaCode < 0) return DELIVERY_FAILED;
+        return forCode(metaCode).map(Mapping::code).orElse("meta_" + metaCode);
     }
 
     /**
