@@ -6,7 +6,8 @@ import java.util.UUID;
  * Where action failures are reported (workflow-spec.md section 10). Each fires at most once per action, after the
  * transaction that recorded the failure commits. For now the implementation logs a structured event; notifying the
  * business admin lands with email (step 1.12) and WhatsApp (Phase 2), the Northstar admin's cross-tenant view in
- * Phase 8, and the integration status change for auth failures in Phase 2 / 7.
+ * Phase 8. Setting an integration to error on an auth failure is its handler's (WhatsApp sends from step 2.6a; the
+ * reconnect that resumes paused actions is step 7.5).
  */
 public interface ActionAlerts {
 

@@ -7,9 +7,12 @@ package com.northstar.workflow;
 public enum FailureClass {
     /** Timeouts, 429s and 5xx: tried again on the type's schedule until its attempts run out. */
     RETRYABLE("retryable"),
-    /** Invalid input, revoked authorisation: failed at once, with an alert. */
+    /** Invalid input, or a request the provider will never accept: failed at once, with an alert. */
     PERMANENT("permanent"),
-    /** Expired credentials: the action pauses without using an attempt and resumes when the integration reconnects. */
+    /**
+     * A business's credentials expired, invalid or revoked, or a permission removed (decided 21 Nov 2026): the action
+     * pauses without using an attempt and resumes when the integration reconnects.
+     */
     AUTH("auth");
 
     private final String databaseValue;

@@ -238,13 +238,13 @@ Every side effect runs as an action through the job queue with a status, an idem
 
 **Attempts and retries.** "N attempts" in the table below counts every try, the first one included. Where waits are listed, the first try runs at once and each retry waits the next listed time, so "a first try plus 5 retries" is 6 attempts. While an attempt runs the action is Processing under a lease (5 minutes); every action handler has a timeout shorter than the lease, and an attempt that times out is recorded as a retryable failure. An attempt whose worker dies is taken over when its lease expires, and still counts.
 
-**Failure classes** (`integration-specs.md` section 1): **retryable** (timeouts, 429, 5xx) waits for the next retry, and the action fails once its attempts are used up; **permanent** (invalid input, revoked authorisation) fails at once; **auth** (expired credentials) pauses the action without using an attempt, and it resumes when the integration reconnects. A provider's `Retry-After` longer than the scheduled wait moves the next attempt later, but never past the type's overall window, counted from when the action first became runnable (created, or approved); a type with no window listed has the sum of its waits as its window.
+**Failure classes** (`integration-specs.md` section 1): **retryable** (timeouts, 429, 5xx) waits for the next retry, and the action fails once its attempts are used up; **permanent** (invalid input, a request the provider will never accept) fails at once; **auth** (a business's credentials expired, invalid or revoked, or a permission removed) pauses the action without using an attempt, and it resumes when the integration reconnects. A provider's `Retry-After` longer than the scheduled wait moves the next attempt later, but never past the type's overall window, counted from when the action first became runnable (created, or approved); a type with no window listed has the sum of its waits as its window.
 
 **Idempotency key** = `tenant_id + lead_id + action_type + stage_entry_id (+ version or amount where relevant)`. Before calling a provider, the worker checks whether an action with that key already succeeded; providers that support idempotency headers get the same key.
 
 | Action type | Retry policy | On final failure |
 | --- | --- | --- |
-| WhatsApp send | A first try plus 5 retries (6 attempts), waiting 30 s → 1 m → 5 m → 15 m → 1 h; window 81.5 min | Failed; staff alerted; if outside 24-hour window, retry with template |
+| WhatsApp send | A first try plus 5 retries (6 attempts), waiting 30 s → 1 m → 5 m → 15 m → 1 h; window 81.5 min | Failed; staff alerted; if outside 24-hour window, retry with template (a new template send from the Phase 3 engine: a text send never turns into one, step 2.6a). Meta takes no idempotency key, so a send whose answer is lost after Meta accepted it can reach the client twice (accepted risk, `integration-specs.md` section 2) |
 | Razorpay link create | Same as WhatsApp send (6 attempts) | Failed; lead stays in stage; staff alerted |
 | Invoice generate + send | 5 attempts | Failed; payment record unaffected; retry from Failed Actions |
 | Google Calendar write | 8 attempts up to 6 h | Failed; platform calendar still correct; resync on reconnect |
@@ -302,8 +302,8 @@ Inside the 24-hour customer-service window the system sends free-form messages; 
 **Rules**
 
 - Templates are created per business in their WhatsApp account during onboarding, from Northstar's starter set, in the business's language.
-- The sender checks the window at send time; outside it, it switches to the matching template or fails the action with a clear reason.
-- Opt-out (STOP and configured keywords) blocks all automated and promotional messages immediately. From step 2.5 every outbound action to an opted-out contact is refused, replies included (decided 21 Nov 2026); whether a reply to a message the client starts later may be sent is decided in step 2.6 or 2.9.
+- The sender checks the window at send time; outside it, it switches to the matching template or fails the action with a clear reason. Built in step 2.6a (`integration-specs.md` section 2): the window is read when the send runs and counts as open only while it has more than 2 minutes left; a text message outside it fails as `window_closed_no_template`; a template message is sent inside or outside it. The switch to the matching template is the Phase 3 engine's: a new template send, never a text send turned into one.
+- Opt-out (STOP and configured keywords) blocks all automated and promotional messages immediately. From step 2.5 every outbound action to an opted-out contact is refused, replies included (decided 21 Nov 2026); whether a reply to a message the client starts later may be sent is decided in step 2.9.
 - Message categories and pricing are set by Meta and can change; record the category returned on template approval.
 
 ## 13. Side flows
@@ -347,7 +347,7 @@ Each side flow below has a fixed sequence; the engine follows it the same way fo
 
 1. STOP (or configured keyword) → contact opt\_out\_at set.
 2. All scheduled outbound timers for that contact cancelled; no further automated messages.
-3. Stage unchanged; staff see an Opted out badge. From step 2.5 no outbound action to the contact is allowed at all, transactional replies included, until steps 2.6 / 2.9 decide whether a reply to a message the client writes first is allowed.
+3. Stage unchanged; staff see an Opted out badge. From step 2.5 no outbound action to the contact is allowed at all, transactional replies included, until step 2.9 decides whether a reply to a message the client writes first is allowed.
 
 How step 2.5 builds it (decided 21 Nov 2026):
 
@@ -356,7 +356,8 @@ How step 2.5 builds it (decided 21 Nov 2026):
 - **Effect,** in that same transaction: consent\_state `opted_out` and opt\_out\_at (WhatsApp's timestamp of the message) the first time only; every pending (due, scheduled or waiting for a retry), needs\_review and paused action whose recipient is the contact cancelled with reason `contact_opted_out`; the open lead joined (and linked to the conversation if it had none), its stage unchanged, and no lead ever opened by an opt-out message; the message stored in the conversation as usual; `optout.received` recorded instead of `message.received`, so the engine and the AI never see it as conversation. An attempt already processing cannot be recalled; its next claim is refused.
 - **Refused afterwards,** at three points: creating an action for the contact stores it cancelled (`contact_opted_out`) and never queues it; claiming one cancels it without calling its handler; and the database refuses a runnable action for an opted-out recipient (`actions_refuse_opted_out`, NSA01). Every action handler declares whether it messages a contact, and such a type cannot be created without its recipient.
 - **Final.** No step can clear an opt-out yet (`contacts_consent_guard`, NSC01); opting back in is a later step.
-- **Logs** carry IDs, codes and counts only, never the text or the keyword matched. No confirmation message is sent (step 2.6, wording to be approved).
+- **Logs** carry IDs, codes and counts only, never the text or the keyword matched. No confirmation message is sent (none in step 2.6a either; its wording would need approval).
+- **A cancelled send** (step 2.6a): its queued message is marked `failed` with `contact_opted_out` in the same transaction as the cancellation, wherever that happens (at creation, at claim, or by the opt-out). A send already processing when the opt-out lands is not recalled; if Meta accepts it, its message stays `sent`.
 
 ## 14. Industry templates
 

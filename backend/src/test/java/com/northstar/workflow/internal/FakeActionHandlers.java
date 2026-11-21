@@ -12,7 +12,8 @@ import org.springframework.context.annotation.Configuration;
 /**
  * Test-only (step 1.11): the fake provider and three action types over it, picked up by every test context. test.fake
  * allows 5 seconds per call; test.fake.quick allows 300 ms, for calls that hang past the timeout; test.fake.contact
- * (step 2.5) sends something to a contact, so it names its recipient and an opt-out refuses it.
+ * (step 2.5) sends something to a contact, so it names its recipient and an opt-out refuses it. Every one reports its
+ * closings to the {@link ClosedActionRecorder} (step 2.6a).
  */
 @Configuration(proxyBeanMethods = false)
 class FakeActionHandlers {
@@ -32,17 +33,23 @@ class FakeActionHandlers {
     }
 
     @Bean
-    ActionHandler fakeActionHandler(FakeProvider fakeProvider) {
-        return new FakeActionHandler(TYPE, Duration.ofSeconds(5), fakeProvider);
+    ClosedActionRecorder closedActionRecorder() {
+        return new ClosedActionRecorder();
     }
 
     @Bean
-    ActionHandler quickFakeActionHandler(FakeProvider fakeProvider) {
-        return new FakeActionHandler(QUICK_TYPE, Duration.ofMillis(300), fakeProvider);
+    ActionHandler fakeActionHandler(FakeProvider fakeProvider, ClosedActionRecorder closed) {
+        return new FakeActionHandler(TYPE, ActionRecipient.NONE, Duration.ofSeconds(5), fakeProvider, closed);
     }
 
     @Bean
-    ActionHandler contactFakeActionHandler(FakeProvider fakeProvider) {
-        return new FakeActionHandler(CONTACT_TYPE, ActionRecipient.CONTACT, Duration.ofSeconds(5), fakeProvider);
+    ActionHandler quickFakeActionHandler(FakeProvider fakeProvider, ClosedActionRecorder closed) {
+        return new FakeActionHandler(QUICK_TYPE, ActionRecipient.NONE, Duration.ofMillis(300), fakeProvider, closed);
+    }
+
+    @Bean
+    ActionHandler contactFakeActionHandler(FakeProvider fakeProvider, ClosedActionRecorder closed) {
+        return new FakeActionHandler(
+                CONTACT_TYPE, ActionRecipient.CONTACT, Duration.ofSeconds(5), fakeProvider, closed);
     }
 }

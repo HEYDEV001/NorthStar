@@ -7,6 +7,7 @@ import com.northstar.workflow.ActionAlerts;
 import com.northstar.workflow.ActionHandler;
 import com.northstar.workflow.ActionOutcome;
 import com.northstar.workflow.ActionRequest;
+import com.northstar.workflow.ClosedAction;
 import com.northstar.workflow.FailureClass;
 import com.northstar.workflow.OutboundCancellation;
 import com.northstar.workflow.RecipientConsent;
@@ -42,7 +43,10 @@ import org.springframework.transaction.support.TransactionTemplate;
  *   <li>Record the outcome, in a second short transaction, only if the action is still on this attempt.
  * </ol>
  *
- * <p>Alerts and the next attempt's job are created only after the recording transaction commits.
+ * <p>Alerts and the next attempt's job are created only after the recording transaction commits. An action that closes
+ * without succeeding (cancelled at claim, or failed for good) is reported to its handler's
+ * {@link ActionHandler#closed} inside the transaction that records it (step 2.6a), so the handler's own record of it,
+ * such as a message marked failed, commits with the action's status.
  *
  * <p>The claim reads the recipient's consent under the contact's shared lock before it locks the action: the inbound
  * job takes the contact's lock and then the contact's actions' locks to record an opt-out, so taking them in the same
@@ -143,6 +147,12 @@ class ActionExecutor implements DisposableBean {
         if (!due && !takeover) return null;
         if (optedOut) {
             action.cancel(OutboundCancellation.CONTACT_OPTED_OUT);
+            handlers.reportClosed(
+                    actionId,
+                    action.getType(),
+                    action.getPayload(),
+                    ClosedAction.Closing.CANCELLED,
+                    OutboundCancellation.CONTACT_OPTED_OUT);
             log.info(
                     "action.cancelled action_id={} type={} reason={} at=claim",
                     actionId,
@@ -253,8 +263,10 @@ class ActionExecutor implements DisposableBean {
         }
     }
 
+    /** Fails the action for good, and tells its handler in this same transaction (step 2.6a). */
     private void finalFailure(Action action, FailureClass failureClass, String code) {
         action.fail(failureClass.databaseValue(), code);
+        handlers.reportClosed(action.getId(), action.getType(), action.getPayload(), ClosedAction.Closing.FAILED, code);
         int attempts = action.getAttempts();
         afterCommit(() -> alerts.failed(
                 action.getTenantId(), action.getId(), action.getType(), attempts, failureClass.databaseValue(), code));

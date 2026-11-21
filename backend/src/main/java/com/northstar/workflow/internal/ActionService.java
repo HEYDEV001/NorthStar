@@ -12,6 +12,7 @@ import com.northstar.workflow.ActionHandler;
 import com.northstar.workflow.ActionRecipient;
 import com.northstar.workflow.ActionView;
 import com.northstar.workflow.Actions;
+import com.northstar.workflow.ClosedAction;
 import com.northstar.workflow.NewAction;
 import com.northstar.workflow.OutboundCancellation;
 import com.northstar.workflow.RecipientConsent;
@@ -31,7 +32,8 @@ import org.springframework.transaction.support.TransactionTemplate;
  * <p>An action that sends something to a contact names that contact, and one for a contact who has opted out is
  * created cancelled ({@value OutboundCancellation#CONTACT_OPTED_OUT}) and never queued (step 2.5, W32). The consent is
  * read under the contact's shared lock in the creating transaction, so an opt-out being recorded at the same time is
- * waited for and seen; the database refuses any runnable insert for such a contact as the backstop (NSA01).
+ * waited for and seen; the database refuses any runnable insert for such a contact as the backstop (NSA01). Its
+ * handler hears of the cancellation through {@link ActionHandler#closed} in the creating transaction (step 2.6a).
  */
 @Service
 class ActionService implements Actions {
@@ -102,6 +104,12 @@ class ActionService implements Actions {
                     actions.findByIdempotencyKey(request.idempotencyKey()).orElseThrow();
             if (inserted == 1 && Action.PENDING.equals(action.getStatus())) queue(action);
             if (inserted == 1 && optedOut) {
+                handlers.reportClosed(
+                        action.getId(),
+                        action.getType(),
+                        action.getPayload(),
+                        ClosedAction.Closing.CANCELLED,
+                        OutboundCancellation.CONTACT_OPTED_OUT);
                 log.info(
                         "action.cancelled action_id={} type={} reason={} at=create",
                         action.getId(),
