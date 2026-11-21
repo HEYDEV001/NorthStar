@@ -29,4 +29,16 @@ public interface ActionHandler {
     Duration timeout();
 
     ActionOutcome execute(ActionRequest request);
+
+    /**
+     * Called when one of this type's actions closes without succeeding (step 2.6a): it failed for good, or was cancelled
+     * (its recipient opted out), wherever that happens: at creation, at claim, by the opt-out, or when its last attempt
+     * fails or its lease runs out. Many of these never call {@link #execute}, so this is the one place a handler hears
+     * of them; a success is not reported here, since {@link #execute} already knows.
+     *
+     * <p>It runs inside the transaction that records the closing, as that transaction's actor and tenant, so whatever it
+     * writes commits or rolls back with the action's new status, and an exception rolls both back. It must not call a
+     * provider, open its own transaction or take a lock on another action. The default does nothing.
+     */
+    default void closed(ClosedAction action) {}
 }

@@ -1,11 +1,13 @@
 package com.northstar.workflow.internal;
 
 import com.northstar.workflow.ActionHandler;
+import com.northstar.workflow.ClosedAction;
 import java.time.Duration;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
+import java.util.UUID;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.stereotype.Component;
 
@@ -35,6 +37,15 @@ class ActionHandlers {
 
     Optional<ActionHandler> get(String type) {
         return Optional.ofNullable(byType.get(type));
+    }
+
+    /**
+     * Tells the type's handler that one of its actions has closed without succeeding (step 2.6a), inside the caller's
+     * transaction, which has just recorded the closing. A type with no handler has nobody to tell.
+     */
+    void reportClosed(UUID actionId, String type, String payloadJson, ClosedAction.Closing closing, String code) {
+        ActionHandler handler = byType.get(type);
+        if (handler != null) handler.closed(new ClosedAction(actionId, type, payloadJson, closing, code));
     }
 
     Duration lease() {

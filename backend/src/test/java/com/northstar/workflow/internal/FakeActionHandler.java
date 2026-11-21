@@ -5,6 +5,7 @@ import com.northstar.workflow.ActionHandler;
 import com.northstar.workflow.ActionOutcome;
 import com.northstar.workflow.ActionRecipient;
 import com.northstar.workflow.ActionRequest;
+import com.northstar.workflow.ClosedAction;
 import com.northstar.workflow.RetryPolicy;
 import java.time.Duration;
 
@@ -15,16 +16,23 @@ final class FakeActionHandler implements ActionHandler {
     private final ActionRecipient recipient;
     private final Duration timeout;
     private final FakeProvider provider;
+    private final ClosedActionRecorder closed;
 
     FakeActionHandler(String type, Duration timeout, FakeProvider provider) {
-        this(type, ActionRecipient.NONE, timeout, provider);
+        this(type, ActionRecipient.NONE, timeout, provider, new ClosedActionRecorder());
     }
 
-    FakeActionHandler(String type, ActionRecipient recipient, Duration timeout, FakeProvider provider) {
+    FakeActionHandler(
+            String type,
+            ActionRecipient recipient,
+            Duration timeout,
+            FakeProvider provider,
+            ClosedActionRecorder closed) {
         this.type = type;
         this.recipient = recipient;
         this.timeout = timeout;
         this.provider = provider;
+        this.closed = closed;
     }
 
     @Override
@@ -50,5 +58,10 @@ final class FakeActionHandler implements ActionHandler {
     @Override
     public ActionOutcome execute(ActionRequest request) {
         return provider.call(request);
+    }
+
+    @Override
+    public void closed(ClosedAction action) {
+        closed.record(action);
     }
 }

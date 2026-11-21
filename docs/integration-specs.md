@@ -80,7 +80,7 @@ How step 2.4b processes a stored WhatsApp message (step 6; decided 20 Nov 2026):
 **Outbound (actions)**
 
 - Every call is an `actions` row executed by the worker with an idempotency key; provider idempotency headers used where offered.
-- Provider errors are classified: **retryable** (timeouts, 429, 5xx) → backoff; **permanent** (invalid input, revoked auth) → Failed + alert; **auth** (expired token) → integration status error + pause dependent actions.
+- Provider errors are classified: **retryable** (timeouts, 429, 5xx) → backoff; **permanent** (invalid input, a request the provider will never accept) → Failed + alert; **auth** (a business's token expired, invalid or revoked, or a permission it granted removed) → integration status error + pause dependent actions until the integration reconnects (decided 21 Nov 2026, step 2.6). Auth is for a business's own connection, which reconnecting fixes; a rejected Northstar platform key (Resend's, section 6) has no connection to reconnect and stays permanent.
 - Rate limits respected per tenant and per provider with a token bucket in the worker.
 
 **Health**
@@ -125,7 +125,54 @@ Northstar operates as a Meta Tech Provider: each business connects its own Whats
 - Free-form text and media only inside the 24-hour customer-service window (`conversations.window_expires_at`); outside it, an approved template.
 - Quote and invoice PDFs sent as `document` messages with a signed URL or uploaded media ID.
 - Accept / Request Changes as interactive reply buttons (button IDs carry the quote version ID).
-- Opt-out keywords (STOP and tenant-configured words) checked on every inbound message before the AI sees it. Built in step 2.5 (`workflow-spec.md` section 13, Opt-out): a text or interactive reply whose whole normalised text is a keyword opts the contact out, in the inbound job's transaction; every outbound action to an opted-out contact is then refused, and the sender (step 2.6) must create its send actions with the contact as recipient.
+- Opt-out keywords (STOP and tenant-configured words) checked on every inbound message before the AI sees it. Built in step 2.5 (`workflow-spec.md` section 13, Opt-out): a text or interactive reply whose whole normalised text is a keyword opts the contact out, in the inbound job's transaction; every outbound action to an opted-out contact is then refused, and every send action names the contact as its recipient (step 2.6a).
+
+How step 2.6a sends (decided 21 Nov 2026):
+
+- **Queueing.** `integrations.WhatsAppMessages` queues a text or a template message for a conversation, as the system
+  actor (the sender is the system or the AI; staff replies are step 2.9). One transaction stores the message as
+  `queued` and creates a `whatsapp.send` action whose recipient is the conversation's contact and whose payload is the
+  message ID only, never the text, so retention clears the text in one place. The message ID is derived from the tenant
+  and the idempotency key, so queueing the same send twice stores one message and one action (P1). Another tenant's
+  conversation or template is not found (P9). Queueing share-locks the conversation's contact before it writes
+  anything, so it takes its locks in the inbound job's order (contact, conversation, actions, messages) and cannot
+  deadlock with an opt-out being processed. Text is 1 to 4,096 characters, Meta's limit for a text message. A
+  template's parameter values are stored on the message (`messages.template_params`), positional or named; named
+  parameters are lowercase letters and underscores, as Meta requires.
+- **The window, when the send runs.** The handler reads the conversation when the action runs, not when it was queued,
+  so a send that waited for approval, a retry or a reconnect sees the window as it is then. The window counts as open
+  only while `window_expires_at` is more than 2 minutes away on the database's clock (a margin for clock differences
+  and the time a send takes); a conversation with no inbound message has none. Inside it, free text is sent. Outside
+  it, a text message fails permanently as `window_closed_no_template` and its message is `failed` with that code (W33).
+  A template message is sent inside or outside the window.
+- **No automatic switch to a template.** A text send never turns into a template send. The switch in `workflow-spec.md`
+  section 12 is a new template send from the Phase 3 engine, so every message row records exactly what was sent.
+- **Template status.** A template that is not `approved` when the send runs fails it permanently as
+  `template_not_approved`, message `failed` (the half of W34 step 2.6 can do; syncing Meta's statuses is step 2.8).
+- **The connection.** The business's WhatsApp integration must be `connected` with a credential, or the send pauses
+  as auth `integration_not_connected` without calling Meta. The business token is decrypted only in the worker,
+  through the credential store (section 7), when the call is made, and is never logged. A credential that cannot be
+  decrypted pauses the send as auth `credential_unreadable` and sets the integration to `error`.
+- **Accepted.** Meta's message ID is stored once (`messages_set_once`) with status `sent` and `sent_at` (the database's
+  time), in one transaction with the integration's `last_success_at`. A re-run finds the ID and succeeds without
+  calling Meta again (P1). Delivery status webhooks move the message on from there (step 2.7).
+- **Failures,** classified as section 1 says. A retryable failure follows the WhatsApp send schedule
+  (`workflow-spec.md` section 10) and leaves the message `queued`; a permanent one fails the send at once. An auth
+  failure sets the integration's status to `error` with its code and pauses the send; every other send of the business
+  then pauses when it is claimed, without calling Meta, until the integration reconnects (resuming is the reconnect
+  step's). Every call to Meta updates the integration's health: `last_success_at`, or `last_error_code` and
+  `last_error_at`. A send that ends without success (failed, or cancelled because its contact opted out, at creation,
+  at claim or by the opt-out itself) marks its message `failed` with the action's code in the same transaction
+  (`contact_opted_out` for an opt-out). A message Meta has accepted is never marked failed.
+- **Duplicates, a known and accepted risk.** Meta's send API takes no idempotency key. A send whose answer is lost after
+  Meta accepted it (a client timeout, a dropped connection, or a failure storing the returned ID) is retried and can
+  reach the client twice. Permanent errors are never retried, the HTTP client gives up well before the handler's
+  timeout so an answer that arrives is always stored, and once the ID is stored no re-run sends again.
+- **Not yet:** the Cloud API adapter, the mapping of Meta's error codes and the pinned Graph API version are step 2.6b;
+  documents, media and interactive buttons are Phase 5. No opt-out confirmation is sent, and every send to an
+  opted-out contact stays refused, replies included (step 2.9 decides replies).
+- **Logs:** action and message IDs, attempt numbers, outcome classes and fixed codes only; never text, template
+  parameters, phone numbers, wamids, phone number IDs or tokens.
 
 **Quality and limits:** store the number's quality rating and messaging limit; alert the admin when quality drops.
 
@@ -304,7 +351,12 @@ Staging and production never share credentials, and staging uses only provider t
 - [ ] **Launch blocker to check:** inbound messages without a phone number in `from`. We understand Meta has announced
   WhatsApp usernames, which may mean a message whose sender is not identified by a phone number. Step 2.4b fails such a
   message permanently as `contact_phone_invalid` (P4 assumes every WhatsApp lead has a phone); confirm against Meta's
-  current webhook reference before launch and decide how such a contact is stored (noted 20 Nov 2026).
+  current webhook reference before launch and decide how such a contact is stored (noted 20 Nov 2026). Meta's
+  business-scoped user ID page says a user who adopts a username may arrive without `wa_id` or `from`, identified by
+  a business-scoped user ID (BSUID) in `user_id`, and that sends to a BSUID (`recipient` instead of `to`) have been
+  supported since July 2026 ([Meta: business-scoped user IDs](https://developers.facebook.com/documentation/business-messaging/whatsapp/business-scoped-user-ids.md),
+  checked 21 Nov 2026). Step 2.6a sends only to a contact's E.164 number in `to`. Still a launch blocker to decide
+  (noted 21 Nov 2026).
 
 ## Sources
 

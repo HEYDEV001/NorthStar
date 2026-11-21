@@ -353,6 +353,48 @@ class ConversationSchemaTests {
     }
 
     @Test
+    void templateParamsAreATemplateMessagesStringValuesOnly() {
+        TestData.Member owner = data.member("admin");
+        UUID tenant = owner.tenantId();
+        UUID conversation = data.conversation(tenant, data.contact(tenant), null);
+        UUID template = data.messageTemplate(tenant);
+        UUID text = insertQueued(tenant, conversation);
+        UUID templated = insertQueued(tenant, conversation);
+        assertThat(updateAsAdmin(templated, "type = 'template', template_id = '" + template + "'"))
+                .isOne();
+
+        // Step 2.6a: positional values (an array of strings) or named values (an object of strings), at most 8 KB,
+        // on a template message only.
+        for (String invalid : List.of(
+                "'[\"Asha\", 3]'",
+                "'[[\"Asha\"]]'",
+                "'{\"first_name\": {\"x\": \"Asha\"}}'",
+                "'{\"first_name\": null}'",
+                "'\"Asha\"'",
+                "'42'",
+                "to_jsonb(array[repeat('x', 8200)])")) {
+            assertThatThrownBy(() -> updateAsAdmin(templated, "template_params = " + invalid))
+                    .as(invalid)
+                    .rootCause()
+                    .hasMessageContaining("messages_template_params");
+        }
+        assertThatThrownBy(() -> updateAsAdmin(text, "template_params = '[\"Asha\"]'"))
+                .as("only a template message has template values")
+                .rootCause()
+                .hasMessageContaining("messages_template_params");
+        for (String valid : List.of("'[]'", "'[\"Asha\", \"Saturday\"]'", "'{\"first_name\": \"Asha\"}'", "null")) {
+            assertThat(updateAsAdmin(templated, "template_params = " + valid))
+                    .as(valid)
+                    .isOne();
+        }
+
+        // Written once, like body: inserted by the app, never updated by it, and never read by app_admin.
+        assertThat(appUserColumns("northstar.messages", "INSERT")).contains("template_params");
+        assertThat(appUserColumns("northstar.messages", "UPDATE")).doesNotContain("template_params");
+        assertThat(appAdminCanSelect("northstar.messages", "template_params")).isFalse();
+    }
+
+    @Test
     void templatesAreUniquePerNameAndLanguage() {
         UUID tenant = data.tenant();
         UUID other = data.tenant();
@@ -467,10 +509,13 @@ class ConversationSchemaTests {
     @Test
     void appAdminCannotReadMessageBodies() {
         assertThat(appAdminCanSelect("northstar.messages", "body")).isFalse();
+        assertThat(appAdminCanSelect("northstar.messages", "template_params")).isFalse();
         assertThat(appAdminColumnsWithout("northstar.messages", "body"))
-                .as("every other column stays readable for the admin panel")
-                .isEmpty();
+                .as("every other column but a template's values (step 2.6a) stays readable for the admin panel")
+                .containsExactly("template_params");
         assertThat(appAdminSelectRefused("select body from northstar.messages limit 1"))
+                .contains("permission denied");
+        assertThat(appAdminSelectRefused("select template_params from northstar.messages limit 1"))
                 .contains("permission denied");
         assertThat(appAdminSelectRefused("select id, status, created_at from northstar.messages limit 1"))
                 .isNull();

@@ -16,8 +16,9 @@ public interface OutboundCancellation {
      * Cancels every action whose recipient is this contact and that could still run: pending (due now, scheduled for
      * later, or waiting for a retry), needs_review and paused, each with {@value #CONTACT_OPTED_OUT}. An attempt already
      * processing is not cancelled, as it cannot be recalled; its next claim is refused instead. Their queued jobs are
-     * left to find the action cancelled and do nothing. Returns how many were cancelled; running it again cancels
-     * nothing more.
+     * left to find the action cancelled and do nothing. Each cancelled action's handler hears of it through
+     * {@link ActionHandler#closed}, in this transaction (step 2.6a). Returns how many were cancelled; running it again
+     * cancels nothing more.
      */
     int cancelForOptedOutContact(UUID contactId);
 }

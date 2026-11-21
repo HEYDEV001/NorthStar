@@ -59,12 +59,12 @@ public sealed interface FakeCall {
         return new Fail((ActionOutcome.Failed) ActionOutcome.retryableAfter("http_429", retryAfter));
     }
 
-    /** Invalid input or revoked authorisation: permanent. */
+    /** Invalid input, or a request the provider will never accept: permanent. */
     static FakeCall rejected(String code) {
         return new Fail((ActionOutcome.Failed) ActionOutcome.permanent(code));
     }
 
-    /** Expired credentials: the action pauses until the integration reconnects. */
+    /** Expired, invalid or revoked credentials: the action pauses until the integration reconnects. */
     static FakeCall authExpired() {
         return new Fail((ActionOutcome.Failed) ActionOutcome.auth("token_expired"));
     }
