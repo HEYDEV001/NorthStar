@@ -102,6 +102,7 @@ class WhatsAppSyncTests {
     private final CredentialStore credentials;
     private final WhatsAppConnection connection;
     private final WhatsAppAccountHealth accounts;
+    private final com.northstar.contacts.MessageTemplates templates;
     private final ObjectProvider<CredentialStore> credentialProvider;
     private final Jobs jobs;
     private final RequestWhatsAppSyncHandler scheduledSync;
@@ -120,6 +121,7 @@ class WhatsAppSyncTests {
             @Autowired CredentialStore credentials,
             @Autowired WhatsAppConnection connection,
             @Autowired WhatsAppAccountHealth accounts,
+            @Autowired com.northstar.contacts.MessageTemplates templates,
             @Autowired ObjectProvider<CredentialStore> credentialProvider,
             @Autowired Jobs jobs,
             @Autowired RequestWhatsAppSyncHandler scheduledSync,
@@ -134,6 +136,7 @@ class WhatsAppSyncTests {
         this.credentials = credentials;
         this.connection = connection;
         this.accounts = accounts;
+        this.templates = templates;
         this.credentialProvider = credentialProvider;
         this.jobs = jobs;
         this.scheduledSync = scheduledSync;
@@ -179,7 +182,7 @@ class WhatsAppSyncTests {
                 .extracting(FakeWhatsAppAccountReader.Read::phoneNumberId)
                 .containsExactly(business.number(0), business.number(1));
         assertThat(action(action.id())).isEqualTo("succeeded|1|||");
-        assertThat(result(action.id())).isEqualTo("{\"changed\": 2, \"numbers\": 2}");
+        assertThat(result(action.id())).startsWith("{\"changed\": 2, \"numbers\": 2, ");
         assertThat(integration(business.tenant())).isEqualTo("connected||true");
     }
 
@@ -295,7 +298,7 @@ class WhatsAppSyncTests {
         run(business, again);
 
         assertThat(action(again.id())).isEqualTo("succeeded|1|||");
-        assertThat(result(again.id())).isEqualTo("{\"changed\": 0, \"numbers\": 2}");
+        assertThat(result(again.id())).startsWith("{\"changed\": 0, \"numbers\": 2, ");
         assertThat(updatedAt(business.account(0))).as("not even rewritten").isEqualTo(updatedAt);
         assertThat(account(business.account(0))).isEqualTo("green|tier_2k");
     }
@@ -548,11 +551,16 @@ class WhatsAppSyncTests {
                         + " \"code\": 100, \"fbtrace_id\": \"AbC-123_xyz\"}}"
             });
             graph.answers().add(new String[] {"200", "{\"quality_rating\": \"YELLOW\", \"id\": \"1\"}"});
+            // Then the account's templates (step 2.8b): none.
+            graph.answers().add(new String[] {"200", "{\"data\": [], \"paging\": {\"cursors\": {}}}"});
+            CloudApiWhatsAppAccountReader cloudApi =
+                    new CloudApiWhatsAppAccountReader(http(), graph.base(), "v26.0", Duration.ofSeconds(5));
             WhatsAppSyncHandler handler = new WhatsAppSyncHandler(
                     connection,
                     accounts,
                     credentialProvider,
-                    new CloudApiWhatsAppAccountReader(http(), graph.base(), "v26.0", Duration.ofSeconds(5)),
+                    cloudApi,
+                    new WhatsAppTemplateSync(cloudApi, templates, transactionManager),
                     transactionManager);
             UUID actionId = UUID.randomUUID();
 
@@ -563,9 +571,11 @@ class WhatsAppSyncTests {
 
             assertThat(outcome).isInstanceOf(com.northstar.workflow.ActionOutcome.Succeeded.class);
             assertThat(graph.seen())
-                    .hasSize(2)
-                    .allSatisfy(request -> assertThat(request).startsWith("/v26.0/" + business.number(0) + "?"))
+                    .hasSize(3)
                     .allSatisfy(request -> assertThat(request).endsWith("|Bearer " + business.token()));
+            assertThat(graph.seen().subList(0, 2))
+                    .allSatisfy(request -> assertThat(request).startsWith("/v26.0/" + business.number(0) + "?"));
+            assertThat(graph.seen().get(2)).startsWith("/v26.0/" + business.waba() + "/message_templates?");
             assertThat(account(business.account(0))).isEqualTo("yellow|tier_2k");
             assertThat(output.getAll())
                     .contains("code=messaging_limit_absent reason=field_refused")

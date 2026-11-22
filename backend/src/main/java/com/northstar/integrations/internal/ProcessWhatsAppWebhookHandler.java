@@ -1,5 +1,6 @@
 package com.northstar.integrations.internal;
 
+import com.northstar.contacts.MessageTemplates;
 import com.northstar.jobs.JobTenantException;
 import com.northstar.jobs.TenantJobHandler;
 import com.northstar.tenancy.MissingTenantContextException;
@@ -12,8 +13,8 @@ import org.springframework.transaction.PlatformTransactionManager;
 import org.springframework.transaction.support.TransactionTemplate;
 
 /**
- * The job for a stored WhatsApp webhook event (steps 2.4b, 2.7 and 2.8a: a message, a delivery status or an
- * account-level change), run by the worker as the system actor in the event's tenant.
+ * The job for a stored WhatsApp webhook event (steps 2.4b, 2.7, 2.8a and 2.8b: a message, a delivery status, a
+ * messaging-limit change or a template change), run by the worker as the system actor in the event's tenant.
  * Queued once per stored row by step 2.2, and again by the webhook sweep ({@link TenantWebhookSweeper}) while the row
  * is unprocessed past the grace period.
  *
@@ -74,6 +75,8 @@ public class ProcessWhatsAppWebhookHandler extends TenantJobHandler<ProcessWhats
                 log.info("webhook.already_processed provider=whatsapp webhook_event_id={}", id);
             case WhatsAppInboundProcessor.StatusProcessed processed -> logStatus(id, processed.outcome());
             case WhatsAppInboundProcessor.AccountUpdateProcessed processed -> logAccountUpdate(id, processed.outcome());
+            case WhatsAppInboundProcessor.TemplateUpdateProcessed processed ->
+                logTemplateUpdate(id, processed.outcome());
             case WhatsAppInboundProcessor.Rejected rejected ->
                 log.error(
                         "webhook.failed provider=whatsapp webhook_event_id={} error={} final=true",
@@ -187,6 +190,105 @@ public class ProcessWhatsAppWebhookHandler extends TenantJobHandler<ProcessWhats
                         id,
                         rejected.errorCode());
             case WhatsAppAccountUpdateProcessor.Rejected rejected ->
+                log.error(
+                        "webhook.failed provider=whatsapp webhook_event_id={} error={} final=true",
+                        id,
+                        rejected.errorCode());
+        }
+    }
+
+    /**
+     * A template change's outcome (step 2.8b): Northstar's template and action IDs, statuses, Meta's categories and fixed
+     * codes only; never the template's name, text, Meta's template ID or the WABA ID. A template newly unable to send
+     * (rejected, paused, disabled, deleted or archived) is a WARN, the admin's alert until Phase 8.
+     */
+    private static void logTemplateUpdate(UUID id, WhatsAppTemplateUpdateProcessor.Outcome outcome) {
+        switch (outcome) {
+            case WhatsAppTemplateUpdateProcessor.StatusApplied status -> {
+                MessageTemplates.Applied applied = status.applied();
+                if (applied.outcome() == MessageTemplates.Outcome.STALE) {
+                    log.info(
+                            "webhook.template_stale provider=whatsapp webhook_event_id={} template_id={}",
+                            id,
+                            applied.templateId());
+                } else if (applied.statusChanged()) {
+                    TemplateLogs.statusChanged(
+                            applied.templateId(),
+                            applied.previousStatus(),
+                            applied.status(),
+                            "webhook",
+                            status.reason());
+                } else {
+                    log.info(
+                            "webhook.template_status_unchanged provider=whatsapp webhook_event_id={} template_id={}"
+                                    + " status={}",
+                            id,
+                            applied.templateId(),
+                            applied.status().code());
+                }
+            }
+            case WhatsAppTemplateUpdateProcessor.Noted noted
+            when "flagged".equals(noted.event()) ->
+                log.warn(
+                        "webhook.template_flagged provider=whatsapp webhook_event_id={} template_id={}",
+                        id,
+                        noted.templateId());
+            case WhatsAppTemplateUpdateProcessor.Noted noted ->
+                log.info(
+                        "webhook.template_noted provider=whatsapp webhook_event_id={} template_id={} event={}",
+                        id,
+                        noted.templateId(),
+                        noted.event());
+            case WhatsAppTemplateUpdateProcessor.SyncRequested requested
+            when "unarchived".equals(requested.code()) ->
+                log.info(
+                        "webhook.template_unarchived provider=whatsapp webhook_event_id={} template_id={}"
+                                + " sync_action_id={}",
+                        id,
+                        requested.templateId(),
+                        requested.syncActionId());
+            case WhatsAppTemplateUpdateProcessor.SyncRequested requested ->
+                log.warn(
+                        "webhook.{} provider=whatsapp webhook_event_id={} template_id={} error={} sync_action_id={}",
+                        requested.code(),
+                        id,
+                        requested.templateId(),
+                        requested.code(),
+                        requested.syncActionId());
+            case WhatsAppTemplateUpdateProcessor.CategoryApplied category -> {
+                MessageTemplates.Applied applied = category.applied();
+                if (applied.outcome() == MessageTemplates.Outcome.STALE) {
+                    log.info(
+                            "webhook.template_stale provider=whatsapp webhook_event_id={} template_id={}",
+                            id,
+                            applied.templateId());
+                } else if (applied.outcome() == MessageTemplates.Outcome.UPDATED) {
+                    TemplateLogs.categoryChanged(
+                            applied.templateId(), applied.previousCategory(), applied.category(), "webhook");
+                } else {
+                    log.info(
+                            "webhook.template_category_unchanged provider=whatsapp webhook_event_id={} template_id={}"
+                                    + " category={}",
+                            id,
+                            applied.templateId(),
+                            applied.category());
+                }
+            }
+            case WhatsAppTemplateUpdateProcessor.CategoryNotice notice ->
+                log.info(
+                        "whatsapp.template.category_change_notice template_id={} current={} upcoming={}"
+                                + " webhook_event_id={}",
+                        notice.templateId(),
+                        notice.current(),
+                        notice.upcoming(),
+                        id);
+            case WhatsAppTemplateUpdateProcessor.Rejected rejected
+            when WhatsAppTemplateUpdateProcessor.CATEGORY_UNRECOGNISED.equals(rejected.errorCode()) ->
+                log.warn(
+                        "webhook.template_category_unrecognised provider=whatsapp webhook_event_id={} error={}",
+                        id,
+                        rejected.errorCode());
+            case WhatsAppTemplateUpdateProcessor.Rejected rejected ->
                 log.error(
                         "webhook.failed provider=whatsapp webhook_event_id={} error={} final=true",
                         id,

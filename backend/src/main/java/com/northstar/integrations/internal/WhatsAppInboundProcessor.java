@@ -20,7 +20,8 @@ import org.springframework.stereotype.Component;
  * <ol>
  *   <li>lock the event row: one already processed is left alone (P1); a status row is handed to
  *       {@link WhatsAppStatusProcessor} (step 2.7) and an account-level change routed by WABA ID to
- *       {@link WhatsAppAccountUpdateProcessor} (step 2.8a), each of which does the rest for it; a row of any other kind
+ *       {@link WhatsAppAccountUpdateProcessor} (step 2.8a) or, for a template, {@link WhatsAppTemplateUpdateProcessor}
+ *       (step 2.8b), each of which does the rest for it; a row of any other kind
  *       but a message is closed as {@value #EVENT_UNSUPPORTED}, so the sweep never retries it forever;
  *   <li>read the message from the stored slice; an unusable one is closed with a fixed code and nothing else is
  *       written (P4);
@@ -68,6 +69,9 @@ class WhatsAppInboundProcessor {
     /** An account-level change, processed by {@link WhatsAppAccountUpdateProcessor} (step 2.8a). */
     record AccountUpdateProcessed(WhatsAppAccountUpdateProcessor.Outcome outcome) implements Outcome {}
 
+    /** A template change, processed by {@link WhatsAppTemplateUpdateProcessor} (step 2.8b). */
+    record TemplateUpdateProcessed(WhatsAppTemplateUpdateProcessor.Outcome outcome) implements Outcome {}
+
     /** Closed for good with this fixed code; nothing else was written. */
     record Rejected(String errorCode) implements Outcome {}
 
@@ -93,6 +97,7 @@ class WhatsAppInboundProcessor {
     private final EngineEvents events;
     private final WhatsAppStatusProcessor statuses;
     private final WhatsAppAccountUpdateProcessor accountUpdates;
+    private final WhatsAppTemplateUpdateProcessor templateUpdates;
 
     WhatsAppInboundProcessor(
             WebhookEventProcessing rows,
@@ -102,7 +107,8 @@ class WhatsAppInboundProcessor {
             OutboundCancellation cancellation,
             EngineEvents events,
             WhatsAppStatusProcessor statuses,
-            WhatsAppAccountUpdateProcessor accountUpdates) {
+            WhatsAppAccountUpdateProcessor accountUpdates,
+            WhatsAppTemplateUpdateProcessor templateUpdates) {
         this.rows = rows;
         this.contacts = contacts;
         this.consent = consent;
@@ -111,6 +117,7 @@ class WhatsAppInboundProcessor {
         this.events = events;
         this.statuses = statuses;
         this.accountUpdates = accountUpdates;
+        this.templateUpdates = templateUpdates;
     }
 
     /** Runs inside the caller's transaction. */
@@ -124,6 +131,9 @@ class WhatsAppInboundProcessor {
         }
         if (WhatsAppAccountUpdate.handles(row.providerEventId())) {
             return new AccountUpdateProcessed(accountUpdates.process(webhookEventId, row));
+        }
+        if (WhatsAppTemplateUpdate.handles(row.providerEventId())) {
+            return new TemplateUpdateProcessed(templateUpdates.process(webhookEventId, row));
         }
         if (!row.providerEventId().startsWith(MESSAGE_EVENT_PREFIX)) {
             rows.finish(webhookEventId, EVENT_UNSUPPORTED);

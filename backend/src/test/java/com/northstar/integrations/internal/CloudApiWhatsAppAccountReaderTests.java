@@ -248,6 +248,187 @@ class CloudApiWhatsAppAccountReaderTests {
                 .doesNotContain("OAuthException");
     }
 
+    // Template listing (step 2.8b).
+
+    private static final String WABA_ID = "102290129340398";
+    private static final String TEMPLATE_QUERY =
+            "fields=id,name,language,status,category,parameter_format,components&limit=100";
+
+    @Test
+    void aTemplatePageIsOneGetOfItsFieldsOnTheVersionedAccountWithTheBusinessToken() {
+        answer(
+                200,
+                templatePage(
+                        "[" + listed("\"1387372356726668\"", "reservation_confirmation", "APPROVED") + ","
+                                + listed("1387372356726669", "shoot_reminder", "PAUSED") + "]",
+                        "\"https://graph.facebook.com/v26.0/" + WABA_ID + "/message_templates?after=QVFIUmlZAZD\"",
+                        "QVFIUmlZAZD"));
+
+        WhatsAppAccountReader.TemplatePageRead read = list(null);
+
+        assertThat(seen).hasSize(1);
+        assertThat(seen.getFirst())
+                .containsEntry("method", "GET")
+                .containsEntry("path", "/v26.0/" + WABA_ID + "/message_templates")
+                .containsEntry("query", TEMPLATE_QUERY)
+                .containsEntry("authorization", "Bearer " + TOKEN);
+        assertThat(read).isInstanceOf(WhatsAppAccountReader.TemplatePage.class);
+        WhatsAppAccountReader.TemplatePage page = (WhatsAppAccountReader.TemplatePage) read;
+        assertThat(page.after()).isEqualTo("QVFIUmlZAZD");
+        assertThat(page.unreadable()).isZero();
+        assertThat(page.templates())
+                .containsExactly(
+                        new WhatsAppAccountReader.ListedTemplate(
+                                "1387372356726668",
+                                "reservation_confirmation",
+                                "en_US",
+                                "APPROVED",
+                                "UTILITY",
+                                "POSITIONAL",
+                                "Hi {{1}}, your shoot is on {{2}}."),
+                        new WhatsAppAccountReader.ListedTemplate(
+                                "1387372356726669",
+                                "shoot_reminder",
+                                "en_US",
+                                "PAUSED",
+                                "UTILITY",
+                                "POSITIONAL",
+                                "Hi {{1}}, your shoot is on {{2}}."));
+    }
+
+    @Test
+    void theNextPageIsAskedForWithMetasCursorAndMetasNextUrlIsNeverFollowed() {
+        answer(200, templatePage("[]", "\"http://127.0.0.2:9/elsewhere?access_token=leak\"", "QVFIUmlZAZD+/=="));
+
+        WhatsAppAccountReader.TemplatePageRead first = list(null);
+        list(((WhatsAppAccountReader.TemplatePage) first).after());
+
+        assertThat(seen).hasSize(2);
+        assertThat(seen.get(1))
+                .containsEntry("path", "/v26.0/" + WABA_ID + "/message_templates")
+                .containsEntry("query", TEMPLATE_QUERY + "&after=QVFIUmlZAZD%2B%2F%3D%3D");
+    }
+
+    @Test
+    void aPageWithoutNextIsTheLast() {
+        answer(200, templatePage("[]", null, "QVFIUmlZAZD"));
+        assertThat(list(null)).isEqualTo(new WhatsAppAccountReader.TemplatePage(java.util.List.of(), 0, null));
+
+        answer(200, "{\"data\": []}");
+        assertThat(list(null))
+                .as("no paging at all")
+                .isEqualTo(new WhatsAppAccountReader.TemplatePage(java.util.List.of(), 0, null));
+    }
+
+    @Test
+    void entriesWithoutAUsableIdAreCountedAndNeverGuessed() {
+        answer(
+                200,
+                templatePage(
+                        "[{\"name\": \"no_id\"}, {\"id\": \"abc\"}, {\"id\": 0}, {\"id\": {}}, \"not an object\", "
+                                + "{\"id\": 1387372356726670, \"name\": \"numeric_id\"}]",
+                        null,
+                        null));
+
+        WhatsAppAccountReader.TemplatePage page = (WhatsAppAccountReader.TemplatePage) list(null);
+
+        assertThat(page.unreadable()).isEqualTo(5);
+        assertThat(page.templates())
+                .containsExactly(new WhatsAppAccountReader.ListedTemplate(
+                        "1387372356726670", "numeric_id", null, null, null, null, null));
+    }
+
+    @Test
+    void aSuccessThatIsNotAPageIsRetryable() {
+        for (String body : List.of(
+                "not json",
+                "{}",
+                "{\"data\": {}}",
+                templatePage("[]", "\"https://graph.facebook.com/next\"", null),
+                templatePage("[]", "\"https://graph.facebook.com/next\"", "cursor with spaces"))) {
+            answer(200, body);
+            assertThat(list(null)).as(body).isEqualTo(failed(FailureClass.RETRYABLE, "response_unreadable", null));
+        }
+    }
+
+    @Test
+    void listingFailuresAreClassifiedAsReadsAre() {
+        answer(401, error(190, "Error validating access token"));
+        assertThat(list(null)).isEqualTo(failed(FailureClass.AUTH, "token_expired", null));
+        answer(403, error(200, "Permissions error"));
+        assertThat(list(null)).isEqualTo(failed(FailureClass.AUTH, "permission_missing", null));
+        answer(400, error(80008, "Too many calls to this WhatsApp Business account"));
+        assertThat(list(null)).isEqualTo(failed(FailureClass.RETRYABLE, "rate_limited_waba_management", null));
+        answer(400, error(100, "Invalid parameter"));
+        assertThat(list(null))
+                .as("no narrower read for a listing")
+                .isEqualTo(failed(FailureClass.PERMANENT, "invalid_parameter", null));
+        answer(503, "Service Unavailable");
+        assertThat(list(null)).isEqualTo(failed(FailureClass.RETRYABLE, "http_503", null));
+        assertThat(seen).hasSize(5);
+    }
+
+    @Test
+    void aWabaIdOrCursorThatIsNotOneCallsNothing() {
+        answer(200, templatePage("[]", null, null));
+        for (String id : java.util.Arrays.asList("waba-1", "123/../456", "123?fields=access_token", "", null)) {
+            assertThat(reader("v26.0", Duration.ofSeconds(5)).listTemplates(id, null, token()))
+                    .as(String.valueOf(id))
+                    .isEqualTo(failed(FailureClass.PERMANENT, "waba_id_invalid", null));
+        }
+        for (String cursor : List.of("a&access_token=x", "a b", "", "x".repeat(1025))) {
+            assertThat(list(cursor)).as(cursor).isEqualTo(failed(FailureClass.PERMANENT, "cursor_invalid", null));
+        }
+        assertThat(seen).isEmpty();
+    }
+
+    @Test
+    void listingLogsCarryCountsStatusesAndCodesOnly(CapturedOutput output) {
+        answer(
+                200,
+                templatePage(
+                        "[" + listed("\"1387372356726668\"", "reservation_confirmation", "APPROVED") + "]",
+                        "\"https://graph.facebook.com/next\"",
+                        "QVFIUmlZAZD"));
+        list(null);
+        answer(400, error(80008, "Too many calls for " + WABA_ID));
+        list("QVFIUmlZAZD");
+
+        assertThat(output.getAll())
+                .contains("whatsapp.cloud_api.templates_read status=200 templates=1 unreadable=0 last_page=false")
+                .contains("whatsapp.cloud_api.templates_failed status=400 meta_code=80008 class=retryable"
+                        + " code=rate_limited_waba_management")
+                .doesNotContain(TOKEN)
+                .doesNotContain(WABA_ID)
+                .doesNotContain("QVFIUmlZAZD")
+                .doesNotContain("reservation_confirmation")
+                .doesNotContain("1387372356726668")
+                .doesNotContain("your shoot");
+    }
+
+    private WhatsAppAccountReader.TemplatePageRead list(String after) {
+        return reader("v26.0", Duration.ofSeconds(5)).listTemplates(WABA_ID, after, token());
+    }
+
+    /** Meta's listing: these entries, and paging with this next URL and after cursor (null leaves either out). */
+    private static String templatePage(String data, String nextJson, String after) {
+        String cursors = after == null ? "{}" : "{\"before\": \"QVFIUm5\", \"after\": \"" + after + "\"}";
+        String next = nextJson == null ? "" : ", \"next\": " + nextJson;
+        return "{\"data\": " + data + ", \"paging\": {\"cursors\": " + cursors + next + "}}";
+    }
+
+    /** One listed template as Meta's template-management page shows it: header, body and buttons. */
+    private static String listed(String idJson, String name, String status) {
+        return "{\"name\": \"" + name + "\", \"parameter_format\": \"POSITIONAL\", \"components\": ["
+                + "{\"type\": \"HEADER\", \"format\": \"TEXT\", \"text\": \"Booking\"},"
+                + "{\"type\": \"BODY\", \"text\": \"Hi {{1}}, your shoot is on {{2}}.\","
+                + " \"example\": {\"body_text\": [[\"Asha\", \"Saturday\"]]}},"
+                + "{\"type\": \"BUTTONS\", \"buttons\": [{\"type\": \"QUICK_REPLY\", \"text\": \"Confirm\"}]}],"
+                + " \"language\": \"en_US\", \"status\": \"" + status + "\", \"category\": \"UTILITY\", \"id\": "
+                + idJson
+                + "}";
+    }
+
     // Helpers.
 
     private WhatsAppAccountReader.NumberRead read() {
