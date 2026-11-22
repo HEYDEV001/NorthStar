@@ -26,7 +26,7 @@ import org.springframework.transaction.annotation.Transactional;
 class WhatsAppAccountHealth {
 
     private static final String NUMBERS = """
-            select id, phone_number_id, quality_rating, messaging_limit from northstar.whatsapp_accounts
+            select id, phone_number_id, waba_id, quality_rating, messaging_limit from northstar.whatsapp_accounts
             where tenant_id = ?
             order by created_at, id""";
 
@@ -55,9 +55,13 @@ class WhatsAppAccountHealth {
         this.jdbc = jdbc;
     }
 
-    /** One of the tenant's numbers; empty values were never read from Meta. */
+    /** One of the tenant's numbers and the WABA it belongs to; empty values were never read from Meta. */
     record Number(
-            UUID accountId, String phoneNumberId, Optional<QualityRating> quality, Optional<MessagingLimit> limit) {
+            UUID accountId,
+            String phoneNumberId,
+            String wabaId,
+            Optional<QualityRating> quality,
+            Optional<MessagingLimit> limit) {
 
         @Override
         public String toString() {
@@ -91,6 +95,7 @@ class WhatsAppAccountHealth {
                 .query((row, n) -> new Number(
                         row.getObject("id", UUID.class),
                         row.getString("phone_number_id"),
+                        row.getString("waba_id"),
                         QualityRating.fromDatabase(row.getString("quality_rating")),
                         MessagingLimit.fromDatabase(row.getString("messaging_limit"))))
                 .list();

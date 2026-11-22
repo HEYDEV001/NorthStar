@@ -130,8 +130,8 @@ The API refuses to start without both secrets; set them before the first deploy 
    URL `https://<app>.ondigitalocean.app/webhooks/whatsapp`, Verify token: paste. Verify and save: Meta calls the GET
    handshake, which echoes its challenge only for the right token. Then `pbcopy < /dev/null`.
 4. **Webhook fields:** subscribe to `messages`, and, once a deploy includes step 2.8a, `business_capability_update`
-   (the business portfolio's messaging limit, routed by the WABA ID in `entry.id`). Subscribe
-   `message_template_status_update` and `template_category_update` only once step 2.8b ships. Leave
+   (the business portfolio's messaging limit, routed by the WABA ID in `entry.id`). Once a deploy includes step 2.8b,
+   subscribe `message_template_status_update` and `template_category_update` too. Leave
    `phone_number_quality_update` (onboarding and throughput upgrades only, so not stored), `account_update` and
    `message_template_quality_update` unsubscribed until Phase 8. The API answers every field with a 200 and stores only
    the ones it routes; the rest are counted as `ignored`.

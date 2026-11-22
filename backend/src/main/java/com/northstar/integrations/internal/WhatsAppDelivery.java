@@ -33,16 +33,16 @@ import tools.jackson.databind.node.ObjectNode;
  * another's slice.
  *
  * <p>Changes that name only their business account are routed by the WABA ID in {@code entry.id} instead (step 2.8a).
- * Stored so far: {@value #BUSINESS_CAPABILITY_FIELD}, the business portfolio's messaging limit. Meta gives these changes
+ * Stored: {@value #BUSINESS_CAPABILITY_FIELD}, the business portfolio's messaging limit (step 2.8a), and
+ * {@code message_template_status_update} and {@code template_category_update} (step 2.8b). Meta gives these changes
  * no event ID, so each change is one item keyed {@code <field>:<entry.id>:<entry.time>:<digest>}, the digest being the
  * first 32 hex digits of the SHA-256 of its {@code value} as stored: a retry of the same change, however Meta batches
  * it, has the same key (P1), and two changes of one account in the same second do not. Its slice is the envelope, the
  * entry's ID and time, and that one change.
  *
- * <p>Not stored, only counted as ignored: changes of any other field (template status and category updates wait for
- * step 2.8b; {@code phone_number_quality_update}, whose events are onboarding and throughput upgrades and whose
- * {@code max_daily_conversations_per_business} can then be a throughput level, and account and template-quality
- * updates are not subscribed), value-level {@code errors} (no item ID), items with no usable ID, changes with no usable
+ * <p>Not stored, only counted as ignored: changes of any other field ({@code phone_number_quality_update}, whose
+ * events are onboarding and throughput upgrades and whose {@code max_daily_conversations_per_business} can then be a
+ * throughput level, and account and template-quality updates, which are not subscribed), value-level {@code errors} (no item ID), items with no usable ID, changes with no usable
  * phone number ID, and account changes with no usable WABA ID or time. A body that is not JSON, or not a
  * {@code whatsapp_business_account} object, is unreadable.
  *
@@ -57,8 +57,12 @@ final class WhatsAppDelivery {
     /** The business portfolio's messaging limit, routed by WABA ID (step 2.8a). */
     static final String BUSINESS_CAPABILITY_FIELD = "business_capability_update";
 
-    /** The fields routed by WABA ID that are stored; every other field but {@value #MESSAGES_FIELD} is ignored. */
-    static final Set<String> ACCOUNT_FIELDS = Set.of(BUSINESS_CAPABILITY_FIELD);
+    /**
+     * The fields routed by WABA ID that are stored: the messaging limit (step 2.8a) and template status and category
+     * (step 2.8b). Every other field but {@value #MESSAGES_FIELD} is ignored.
+     */
+    static final Set<String> ACCOUNT_FIELDS = Set.of(
+            BUSINESS_CAPABILITY_FIELD, WhatsAppTemplateUpdate.STATUS_FIELD, WhatsAppTemplateUpdate.CATEGORY_FIELD);
 
     private static final Pattern ITEM_ID = Pattern.compile("[\\x21-\\x7e]{1,160}");
     private static final Pattern STATUS = Pattern.compile("[a-z_]{1,32}");

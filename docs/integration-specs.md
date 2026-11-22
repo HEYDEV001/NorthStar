@@ -110,10 +110,10 @@ Northstar operates as a Meta Tech Provider: each business connects its own Whats
 | Endpoint | `GET` and `POST /webhooks/whatsapp`, outside `/api/v1` (step 2.2) |
 | Verification | `GET` with `hub.mode`, `hub.verify_token`, `hub.challenge`; echo the challenge when the token matches. Built: `hub.mode` must be `subscribe` (Meta: "always set to subscribe"), the token is compared in constant time, and the challenge (Meta: "an int you must pass back") is echoed as plain text only if it is 1 to 64 digits; anything else is 403 `verification_failed` |
 | Signature | `X-Hub-Signature-256`: HMAC-SHA256 of the raw body with the app secret; reject on mismatch. Built: exactly `sha256=` and 64 lowercase hex digits, checked on the exact bytes received before any JSON parsing, in constant time; mismatch, missing or malformed → 401 `invalid_signature`, parked as metadata only (P15). The provider event ID of a bad-signature row stays null: an unverified body is never parsed |
-| Routing | `metadata.phone_number_id` → `whatsapp_accounts` → tenant, through the allowlisted `northstar.whatsapp_tenants()` (`data-model.md` section 12). A change that names only its business account (step 2.8a: `business_capability_update`) is routed by the WABA ID in `entry.id` instead, through `northstar.whatsapp_waba_tenants()`, in its own guard mode. A WABA belongs to one tenant (exclusion constraint `whatsapp_accounts_one_tenant_per_waba`); an unknown WABA ID is parked as `unknown_account` with the WABA ID as its routing key (P16) |
+| Routing | `metadata.phone_number_id` → `whatsapp_accounts` → tenant, through the allowlisted `northstar.whatsapp_tenants()` (`data-model.md` section 12). A change that names only its business account (`business_capability_update` since step 2.8a; `message_template_status_update` and `template_category_update` since 2.8b) is routed by the WABA ID in `entry.id` instead, through `northstar.whatsapp_waba_tenants()`, in its own guard mode. A WABA belongs to one tenant (exclusion constraint `whatsapp_accounts_one_tenant_per_waba`); an unknown WABA ID is parked as `unknown_account` with the WABA ID as its routing key (P16) |
 | Splitting | One delivery can carry several entries and changes, for several numbers and so several tenants, and Meta batches up to 1000 updates without guaranteeing the grouping. Each element of a change's `messages` or `statuses` is one item, stored as its own `webhook_events` row in its number's tenant (one transaction per tenant), with a Meta-shaped slice as payload: the envelope, the entry ID, one change with its `value` fields (metadata, contacts, messaging_product) and only that item. Items for unknown numbers are parked one by one with only their own slice. An account-level change (step 2.8a) is one item too, its slice the envelope, the entry's `id` and `time`, and that one change. U+0000 and unpaired surrogates in the slice become U+FFFD (jsonb cannot hold them) |
 | Dedupe | Message ID for messages; message ID + status for status updates. Built as `provider_event_id` = `message:<wamid>` (`messages[].id`) and `status:<wamid>:<status>` (`statuses[].id`, the sent message's wamid, and `statuses[].status`); per item, so a retry batched differently still dedupes (P1). An account-level change has no event ID from Meta, so it is keyed `<field>:<entry.id>:<entry.time>:<digest>`, the digest the first 32 hex digits of the SHA-256 of its `value` as stored: the same change has the same key however it is batched, and another value in the same second, or the same value at another time, is another change (step 2.8a). A change without a usable WABA ID or an integer `time` is not stored. A duplicate is not stored and queues nothing |
-| Not stored | 200, counted as `ignored` in the log: `message_template_status_update` and `template_category_update` (step 2.8b stores them); `phone_number_quality_update` (its events are now only `ONBOARDING` and `THROUGHPUT_UPGRADE`, and its `max_daily_conversations_per_business` can then be a throughput level, so limits come from `business_capability_update` and the sync instead, decided 22 Nov 2026); `account_update` and `message_template_quality_update` (Phase 8 alerts); any other field; value-level `errors` (no item ID); items without a usable ID; changes without a phone number ID. Subscribed in Meta's dashboard: `messages`, and `business_capability_update` from step 2.8a (`docs/staging-runbook.md`) |
+| Not stored | 200, counted as `ignored` in the log: `phone_number_quality_update` (its events are now only `ONBOARDING` and `THROUGHPUT_UPGRADE`, and its `max_daily_conversations_per_business` can then be a throughput level, so limits come from `business_capability_update` and the sync instead, decided 22 Nov 2026); `account_update` and `message_template_quality_update` (Phase 8 alerts); any other field; value-level `errors` (no item ID); items without a usable ID; changes without a phone number ID. Subscribed in Meta's dashboard: `messages`, `business_capability_update` from step 2.8a, and `message_template_status_update` and `template_category_update` from step 2.8b (`docs/staging-runbook.md`) |
 | Queueing | One `ProcessWhatsAppWebhook` job (IDs only) per stored row, created after the tenant's transaction commits; it processes the row (step 2.4b, section 1). Since step 2.4a the webhook sweep queues it again for a row still unprocessed past the grace period (section 1): message rows, status rows since 2.7, and every WhatsApp row since 2.8a. A row of a kind the job does not process is closed as `event_unsupported`, never retried |
 | Inbound types handled | Stored as (step 2.4b): text → `text`; interactive `button_reply` and `list_reply`, and a template's quick-reply `button` → `interactive`, body the reply's title or text (the button ID stays in the webhook payload for Phase 5); image and document → their type, body the caption; audio and location → their type, no body (media IDs and coordinates stay in the webhook payload, kept 30 days, for step 4.5); video, sticker, contacts, order, reaction, system and any other type → `unsupported`, no body. No media is downloaded yet. Reactions and system messages never open a lead on their own |
 | Status updates | sent, delivered, read, failed → `messages.status`, forward only; a failure sets `messages.error_code` and the send action stays succeeded (step 2.7, below) |
@@ -335,8 +335,8 @@ How step 2.8a does it (decided 22 Nov 2026; Meta's pages checked 21 and 22 Nov 2
   (routing never produces it; P9). An unusable slice, or one that does not match its key: `payload_invalid`.
 - **The sync** is a `whatsapp.sync` action (every external call is an action), with no recipient, run by the worker as
   the system actor with the business's decrypted token. It reads each of the business's numbers with
-  `GET /{version}/{phone-number-id}?fields=quality_rating,whatsapp_business_manager_messaging_limit` (step 2.8b adds the
-  templates), one after another, and records each number in its own transaction. Retries: 3 attempts, waiting 30 s and
+  `GET /{version}/{phone-number-id}?fields=quality_rating,whatsapp_business_manager_messaging_limit` (then, since step
+  2.8b, the templates: Template status from Meta, below), one after another, and records each number in its own transaction. Retries: 3 attempts, waiting 30 s and
   5 min (`workflow-spec.md` section 10); its timeout is 4 minutes, under the 5-minute lease.
 - **The pinned v26.0 and the limit field.** Meta does not say when `whatsapp_business_manager_messaging_limit` was
   added, and the Graph API answers a field a version does not have with error 100 rather than leaving it out. So a 100
@@ -349,7 +349,7 @@ How step 2.8a does it (decided 22 Nov 2026; Meta's pages checked 21 and 22 Nov 2
   for the current 6-hour block of UTC (00, 06, 12, 18); that job creates the action keyed
   `whatsapp-sync:scheduled:<block>`, so each business syncs once per block and a restart neither skips nor repeats one.
   On demand, `integrations.WhatsAppSync.request()` (system actor only) creates `whatsapp-sync:requested:<block>` per
-  10-minute block, so a burst of requests syncs once (P1); its first callers arrive in step 2.8b.
+  10-minute block, so a burst of requests syncs once (P1); since step 2.8b the template webhooks call it.
 - **Failures** are classified by the error table above, as for sends; 80008 ("Too many calls to this WhatsApp Business
   account") is retryable. A failed read stops the sync, and the integration's health is recorded after every call: an
   auth failure sets it to `error` and pauses the sync, which raises its auth alert; later syncs pause before calling
@@ -359,6 +359,75 @@ How step 2.8a does it (decided 22 Nov 2026; Meta's pages checked 21 and 22 Nov 2
   Since only the sync reads quality, a drop shows up as much as 6 hours late.
 - **Logs:** action, account and webhook event IDs, attempts, Northstar's values (`green`, `tier_2k`), classes and fixed
   codes; never the token, phone number IDs, WABA IDs, Meta's raw values or Meta's error text.
+
+**Template status from Meta** (step 2.8b, decided 22 Nov 2026; Meta's pages checked 21 and 22 Nov 2026, Sources).
+Read-only: Northstar pulls each business's templates from Meta and applies Meta's template webhooks; creating and
+submitting templates is onboarding's (Phase 8), with their wording approved first. Templates are written only through
+`contacts.MessageTemplates`, as the system actor.
+
+| Meta's status or event | Ours | Note |
+| --- | --- | --- |
+| `PENDING` | `submitted` | Waiting for Meta's review |
+| `IN_APPEAL` | `submitted` | A rejection under appeal |
+| `APPROVED` | `approved` | The only status a send goes out on |
+| `REINSTATED` | `approved` | "No longer flagged or disabled and can be sent in template messages again" |
+| `PAUSED` | `paused` | For low quality: 3 hours the first time, 6 the second; Meta unpauses it |
+| `REJECTED` | `rejected` | Meta's reason is logged as a fixed code |
+| `LIMIT_EXCEEDED` | `rejected` | Judgement: refused for the account's template limit, so it will not send as it stands |
+| `DISABLED` | `disabled` | After a third pause |
+| `PENDING_DELETION` | `deleted` | Deleted at Meta; Meta keeps delivering it for up to 30 days |
+| `DELETED` | `deleted` | Also any template missing from a complete listing |
+| `ARCHIVED` | `archived` | A year without sends; deleted after 28 days unless unarchived |
+| `FLAGGED` | unchanged | Low quality, not paused yet: WARN `webhook.template_flagged` |
+| `LOCKED` | unchanged | Cannot be edited: INFO `webhook.template_noted ... event=locked` |
+| `UNARCHIVED` | unchanged | Meta restores a status the event does not name: a sync is requested |
+
+Any other event (Meta documents no unpause event, for one) changes nothing, closes the row as
+`template_event_unsupported` and requests a sync, which reads the template's real status. `TemplateStatusesTests` fails
+if this table and the code differ.
+
+- **Order.** Meta retries webhooks for up to 7 days and does not keep them in order, so a late PAUSED could undo a newer
+  APPROVED. Every write from Meta carries Meta's time for it: a webhook's `entry.time`, or when a sync's listing started
+  (on the worker's clock). It applies only if that time is not older than the template's `meta_updated_at`; otherwise
+  nothing changes (INFO `..._stale`). A write that changes nothing else still moves `meta_updated_at` forward. Webhooks
+  and the sync use the same rule, so each sync corrects anything a webhook got wrong; a skew between Meta's clock and
+  ours can delay a correction to the next sync. One time covers status and category together.
+- **The sync** (the `whatsapp.sync` action of step 2.8a, after the numbers) lists each WABA of the business's numbers
+  with `GET /{version}/{waba-id}/message_templates?fields=id,name,language,status,category,parameter_format,components
+  &limit=100`, then `&after=<cursor>` from `paging.cursors.after` while the page has `paging.next`. The URL is always
+  built from the configured base; Meta's `next` URL is never followed. At most 100 pages per WABA, and no page is
+  requested more than 150 seconds after the sync started (its timeout is 4 minutes). A template listed twice counts
+  once, as first listed. Each template is then written in its own transaction:
+  - matched by Meta's ID; else by name and language when that row has no Meta ID yet (a draft, or onboarding's), which
+    takes the ID; else by name and language when that row's Meta ID is no longer listed (Meta deleted it and the name
+    was used again), which then follows the new template (`replaced=true`); else inserted. Two listed templates with
+    one name and language (two WABAs of one business) keep the first: WARN `whatsapp.sync.template_name_taken`;
+  - its body is the BODY component's text and its variables `{"format": "positional"|"named", "names": [...]}`, from
+    `parameter_format` (POSITIONAL when absent) and the body's own placeholders: numbers in order, or names in the
+    order they first appear. Headers and buttons are not stored (Phase 5). Nothing is invented: a value Meta did not
+    send keeps what is stored;
+  - a status or category Northstar does not recognise, or a missing name or language, skips the template (WARN
+    `whatsapp.sync.template_skipped` with a fixed code), and it is never deleted for being unread.
+  After a complete listing (every WABA to its last page, every entry with an ID), the tenant's templates with a Meta ID
+  the listing does not have are marked `deleted`. A partial listing applies what it read and deletes nothing (WARN
+  `whatsapp.sync.templates_partial` with the reason). A listing failure fails the sync like a number read.
+- **Status webhooks.** `message_template_status_update` (`message_template_id` an integer, `event`, `reason`) is applied
+  to the template with that Meta ID, by the table above. A template the tenant does not have is never created from a
+  webhook (it has no body): the row closes as `template_unknown` and a sync is requested, which inserts it. Locks: the
+  webhook row, then the template's row. `approved_at` is set at the first approval, from Meta's time, and kept.
+- **Category webhooks.** `template_category_update` with `previous_category` is a change Meta made: the template's
+  `category` becomes `new_category` (INFO `whatsapp.template.category_changed`; pricing and the engine use it: Phase 3,
+  8.4). With `correct_category` and `category_update_timestamp` it is a notice that Meta will move the template from
+  `new_category` (its current one, despite the name) to `correct_category` in 24 hours: logged only. A category not of
+  Meta's shape (uppercase letters and underscores) closes the row as `template_category_unrecognised`. The category in
+  a status webhook is not read.
+- **Requesting a sync** from a webhook uses `integrations.WhatsAppSync` (step 2.8a), shared per 10 minutes, so a burst
+  of unknown templates syncs once.
+- **Alerts and logs.** A template newly unable to send (rejected, paused, disabled, deleted or archived) is a WARN
+  `whatsapp.template.status_changed ... from=<status> to=<status> source=webhook|sync reason=<code>`, the admin's
+  alert until Phase 8; other changes are INFO. Logs carry Northstar's template, action and webhook event IDs,
+  statuses, Meta's categories, counts and fixed codes; never a template's name or text, Meta's template IDs, WABA IDs
+  or cursors. Sends that depend on a template follow its status in step 2.8c (W34).
 
 ## 3. Razorpay
 
@@ -580,5 +649,12 @@ Checked 21 and 22 Nov 2026 for step 2.8a (routing by WABA, quality and limits):
 - [Meta: `account_update` webhook](https://developers.facebook.com/documentation/business-messaging/whatsapp/webhooks/reference/account_update) (account events and calling quality; no messaging quality or limit)
 - [Meta: business phone numbers](https://developers.facebook.com/documentation/business-messaging/whatsapp/business-phone-numbers/phone-numbers) (`quality_rating` examples `GREEN`, `NA`, `UNKNOWN`; `GET /{WABA_ID}/phone_numbers`)
 - [Meta: `message_template_status_update` webhook](https://developers.facebook.com/documentation/business-messaging/whatsapp/webhooks/reference/message_template_status_update) and [message templates reference](https://developers.facebook.com/docs/graph-api/reference/whats-app-business-account/message_templates/) (for step 2.8b: `entry.id` the account; the events and statuses; errors 80008, 100, 200 and 190 for the template list)
+
+Checked 22 Nov 2026 for step 2.8b (template status from Meta):
+
+- [Meta: `message_template_status_update` webhook](https://developers.facebook.com/documentation/business-messaging/whatsapp/webhooks/reference/message_template_status_update) (`entry.id` the account, `entry.time` when it fired; `message_template_id` an integer; the 14 events; the 8 reasons, `null` when scheduled for deletion; `REINSTATED` "no longer flagged or disabled and can be sent in template messages again"; `other_info.title` `UNPAUSE` but no unpause event; its triggers list only some of the events)
+- [Meta: `template_category_update` webhook](https://developers.facebook.com/documentation/business-messaging/whatsapp/webhooks/reference/template_category_update) (a notice with `correct_category`, `new_category` as the current category, and `category_update_timestamp` 24 hours ahead; an applied change with `previous_category` and `new_category`)
+- [Meta: template management](https://developers.facebook.com/documentation/business-messaging/whatsapp/templates/template-management) (`GET /{WABA_ID}/message_templates` with `fields` and `limit`; `paging.cursors.before` and `after`, and `next`; components `HEADER`, `BODY` with `text`, `FOOTER`, `BUTTONS`; `parameter_format` `NAMED` or `POSITIONAL`; IDs shown as strings; `PENDING_DELETION` kept for 30 days)
+- [Meta: message templates reference](https://developers.facebook.com/docs/graph-api/reference/whats-app-business-account/message_templates/) (the statuses `APPROVED`, `IN_APPEAL`, `PENDING`, `REJECTED`, `PENDING_DELETION`, `DELETED`, `DISABLED`, `PAUSED`, `LIMIT_EXCEEDED`, `ARCHIVED`; errors 80008, 100, 200 and 190)
 
 Google API details are from general platform knowledge; confirm endpoints, scopes and quotas against current provider docs during build.

@@ -148,7 +148,7 @@ class WhatsAppDeliveryTests {
     }
 
     @Test
-    void phoneNumberQualityTemplateAndAccountChangesAreNotStored() {
+    void templateChangesAreStoredAndPhoneNumberQualityAndAccountChangesAreNot() {
         String waba = WhatsAppPayloads.wabaId();
         WhatsAppDelivery.Parsed parsed = parse(WhatsAppPayloads.delivery()
                 .accountChange(
@@ -169,8 +169,14 @@ class WhatsAppDeliveryTests {
                 .accountChange(waba, 1_748_454_394L, "message_template_quality_update", WhatsAppPayloads.object())
                 .json());
 
-        assertThat(parsed.items()).isEmpty();
-        assertThat(parsed.ignored()).isEqualTo(5);
+        assertThat(parsed.items())
+                .as("template status and category, since step 2.8b")
+                .extracting(WhatsAppDelivery.Item::providerEventId)
+                .satisfiesExactly(
+                        key -> assertThat(key).startsWith("message_template_status_update:" + waba + ":1748454394:"),
+                        key -> assertThat(key).startsWith("template_category_update:" + waba + ":1748454394:"));
+        assertThat(parsed.items()).extracting(WhatsAppDelivery.Item::route).containsOnly(WhatsAppDelivery.Route.WABA);
+        assertThat(parsed.ignored()).isEqualTo(3);
     }
 
     @Test

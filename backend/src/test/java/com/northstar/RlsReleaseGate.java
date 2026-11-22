@@ -168,7 +168,14 @@ record RlsReleaseGate(
                             Set.of("status", "ai_paused", "needs_human", "assigned_membership_id", "last_inbound_at"),
                     // A template's name and language are its identity.
                     "northstar.message_templates",
-                            Set.of("body", "variables", "category", "provider_template_id", "status", "approved_at")),
+                            Set.of(
+                                    "body",
+                                    "variables",
+                                    "category",
+                                    "provider_template_id",
+                                    "status",
+                                    "approved_at",
+                                    "meta_updated_at")),
             // SECURITY DEFINER functions, as "schema.name(argument types)". Each must also pin search_path and be
             // executable by app_user only.
             Set.of(

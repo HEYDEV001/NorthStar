@@ -268,7 +268,7 @@ class WhatsAppAccountWebhookTests {
                         .capabilityUpdate(account.waba(), TIME + 1, "TIER_2K")
                         .json());
         UUID empty = insertRow(account.tenant(), key.replace(":" + TIME + ":", ":" + (TIME + 2) + ":"), "{}");
-        UUID unknownKind = insertRow(account.tenant(), "message_template_status_update:" + UUID.randomUUID(), "{}");
+        UUID unknownKind = insertRow(account.tenant(), "account_update:" + UUID.randomUUID(), "{}");
 
         runJob(account.tenant(), mismatched);
         runJob(account.tenant(), empty);

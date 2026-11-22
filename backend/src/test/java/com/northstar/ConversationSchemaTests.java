@@ -471,7 +471,7 @@ class ConversationSchemaTests {
         insertTemplate(tenant, "booking_reminder", "hi");
         insertTemplate(other, "booking_reminder", "en");
         assertThatThrownBy(() -> admin.sql(
-                                "update northstar.message_templates set status = 'disabled' where tenant_id = :t")
+                                "update northstar.message_templates set status = 'flagged' where tenant_id = :t")
                         .param("t", tenant)
                         .update())
                 .rootCause()
@@ -479,6 +479,64 @@ class ConversationSchemaTests {
         assertThatThrownBy(() -> insertTemplate(tenant, "", "en"))
                 .rootCause()
                 .hasMessageContaining("message_templates_name_check");
+    }
+
+    @Test
+    void templatesTakeMetasStatusesOneRowPerMetaIdAndVariablesOfOneShape() {
+        UUID tenant = data.tenant();
+        UUID other = data.tenant();
+        insertTemplate(tenant, "status_probe", "en");
+        for (String status :
+                List.of("draft", "submitted", "approved", "rejected", "paused", "disabled", "deleted", "archived")) {
+            assertThat(admin.sql("update northstar.message_templates set status = :s where tenant_id = :t")
+                            .param("s", status)
+                            .param("t", tenant)
+                            .update())
+                    .as(status)
+                    .isOne();
+        }
+
+        insertTemplate(tenant, "id_probe_one", "en");
+        insertTemplate(tenant, "id_probe_two", "en");
+        insertTemplate(other, "id_probe_one", "en");
+        String setId = "update northstar.message_templates set provider_template_id = '1387372356726668'"
+                + " where tenant_id = :t and name = :name";
+        admin.sql(setId).param("t", tenant).param("name", "id_probe_one").update();
+        assertThatThrownBy(() -> admin.sql(setId)
+                        .param("t", tenant)
+                        .param("name", "id_probe_two")
+                        .update())
+                .as("one row per Meta template in a tenant")
+                .rootCause()
+                .hasMessageContaining("message_templates_provider_template_key");
+        assertThat(admin.sql(setId)
+                        .param("t", other)
+                        .param("name", "id_probe_one")
+                        .update())
+                .as("the key is per tenant")
+                .isOne();
+
+        String setVariables = "update northstar.message_templates set variables = cast(:v as jsonb)"
+                + " where tenant_id = :t and name = 'status_probe'";
+        for (String valid : List.of(
+                "{\"format\": \"positional\", \"names\": [\"1\", \"2\"]}", "{\"format\": \"named\", \"names\": []}")) {
+            assertThat(admin.sql(setVariables)
+                            .param("v", valid)
+                            .param("t", tenant)
+                            .update())
+                    .as(valid)
+                    .isOne();
+        }
+        for (String invalid :
+                List.of("[\"first_name\"]", "{\"format\": \"other\", \"names\": []}", "{\"format\": \"named\"}")) {
+            assertThatThrownBy(() -> admin.sql(setVariables)
+                            .param("v", invalid)
+                            .param("t", tenant)
+                            .update())
+                    .as(invalid)
+                    .rootCause()
+                    .hasMessageContaining("message_templates_variables_shape");
+        }
     }
 
     @Test
@@ -516,7 +574,13 @@ class ConversationSchemaTests {
                         "media_path");
         assertThat(appUserColumns("northstar.message_templates", "UPDATE"))
                 .containsExactlyInAnyOrder(
-                        "body", "variables", "category", "provider_template_id", "status", "approved_at");
+                        "body",
+                        "variables",
+                        "category",
+                        "provider_template_id",
+                        "status",
+                        "approved_at",
+                        "meta_updated_at");
         assertThat(appUserColumns("northstar.contact_sources", "UPDATE")).isEmpty();
 
         // Inserts name every column but the database's own: created_at, updated_at and the generated window.
@@ -528,7 +592,7 @@ class ConversationSchemaTests {
                 .contains("body", "provider_message_id", "sent_at");
         assertThat(appUserColumns("northstar.message_templates", "INSERT"))
                 .doesNotContain("created_at", "updated_at")
-                .contains("name", "language", "status");
+                .contains("name", "language", "status", "meta_updated_at");
         assertThat(appUserColumns("northstar.contact_sources", "INSERT"))
                 .contains("contact_id", "source", "first_seen_at");
         for (String table : List.of(
