@@ -200,7 +200,8 @@ public class ProcessWhatsAppWebhookHandler extends TenantJobHandler<ProcessWhats
     /**
      * A template change's outcome (step 2.8b): Northstar's template and action IDs, statuses, Meta's categories and fixed
      * codes only; never the template's name, text, Meta's template ID or the WABA ID. A template newly unable to send
-     * (rejected, paused, disabled, deleted or archived) is a WARN, the admin's alert until Phase 8.
+     * (rejected, paused, disabled, deleted or archived) is a WARN, the admin's alert until Phase 8. What its status did
+     * to its sends (step 2.8c) is counted.
      */
     private static void logTemplateUpdate(UUID id, WhatsAppTemplateUpdateProcessor.Outcome outcome) {
         switch (outcome) {
@@ -225,6 +226,9 @@ public class ProcessWhatsAppWebhookHandler extends TenantJobHandler<ProcessWhats
                             id,
                             applied.templateId(),
                             applied.status().code());
+                }
+                if (status.sends().any()) {
+                    TemplateLogs.sends(applied.templateId(), applied.status(), status.sends(), "webhook");
                 }
             }
             case WhatsAppTemplateUpdateProcessor.Noted noted

@@ -103,6 +103,7 @@ class WhatsAppSyncTests {
     private final WhatsAppConnection connection;
     private final WhatsAppAccountHealth accounts;
     private final com.northstar.contacts.MessageTemplates templates;
+    private final TemplateDependents dependents;
     private final ObjectProvider<CredentialStore> credentialProvider;
     private final Jobs jobs;
     private final RequestWhatsAppSyncHandler scheduledSync;
@@ -122,6 +123,7 @@ class WhatsAppSyncTests {
             @Autowired WhatsAppConnection connection,
             @Autowired WhatsAppAccountHealth accounts,
             @Autowired com.northstar.contacts.MessageTemplates templates,
+            @Autowired TemplateDependents dependents,
             @Autowired ObjectProvider<CredentialStore> credentialProvider,
             @Autowired Jobs jobs,
             @Autowired RequestWhatsAppSyncHandler scheduledSync,
@@ -137,6 +139,7 @@ class WhatsAppSyncTests {
         this.connection = connection;
         this.accounts = accounts;
         this.templates = templates;
+        this.dependents = dependents;
         this.credentialProvider = credentialProvider;
         this.jobs = jobs;
         this.scheduledSync = scheduledSync;
@@ -560,7 +563,7 @@ class WhatsAppSyncTests {
                     accounts,
                     credentialProvider,
                     cloudApi,
-                    new WhatsAppTemplateSync(cloudApi, templates, transactionManager),
+                    new WhatsAppTemplateSync(cloudApi, templates, dependents, transactionManager),
                     transactionManager);
             UUID actionId = UUID.randomUUID();
 

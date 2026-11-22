@@ -13,7 +13,8 @@ import org.springframework.stereotype.Component;
  *
  * <ul>
  *   <li>a status event that sets a status ({@link TemplateStatuses}) is applied to the template Meta knows by its ID,
- *       ordered by Meta's time for it ({@link MessageTemplates}): an older one changes nothing;
+ *       ordered by Meta's time for it ({@link MessageTemplates}): an older one changes nothing. Its sends then follow
+ *       the status the template has ({@link TemplateDependents}, step 2.8c), an older event's included;
  *   <li>FLAGGED and LOCKED leave the status, and are logged;
  *   <li>UNARCHIVED requests a sync ({@link WhatsAppSyncRequests}), since Meta restores a previous status it does not
  *       name; an event Meta does not document requests one too and closes the row as {@value #EVENT_UNSUPPORTED};
@@ -25,7 +26,8 @@ import org.springframework.stereotype.Component;
  *   <li>an unusable slice is closed as {@code payload_invalid}.
  * </ul>
  *
- * <p>Locks: the webhook row, then the template's row; a requested sync is a new action row. Nothing here logs; the job
+ * <p>Locks: the webhook row, then the template's row, then its sends' contacts, actions and messages; a requested sync
+ * is a new action row. Nothing here logs; the job
  * logs the outcome after the commit, with Northstar's IDs, statuses, categories and fixed codes only.
  */
 @Component
@@ -37,19 +39,28 @@ class WhatsAppTemplateUpdateProcessor {
 
     private final WebhookEventProcessing rows;
     private final MessageTemplates templates;
+    private final TemplateDependents dependents;
     private final WhatsAppSyncRequests syncs;
 
     WhatsAppTemplateUpdateProcessor(
-            WebhookEventProcessing rows, MessageTemplates templates, WhatsAppSyncRequests syncs) {
+            WebhookEventProcessing rows,
+            MessageTemplates templates,
+            TemplateDependents dependents,
+            WhatsAppSyncRequests syncs) {
         this.rows = rows;
         this.templates = templates;
+        this.dependents = dependents;
         this.syncs = syncs;
     }
 
     sealed interface Outcome {}
 
-    /** A status applied (or stale, or unchanged); reason is Meta's rejection reason as a fixed code. */
-    record StatusApplied(MessageTemplates.Applied applied, String reason) implements Outcome {}
+    /**
+     * A status applied (or stale, or unchanged); reason is Meta's rejection reason as a fixed code; sends is what the
+     * template's status then did to its sends (step 2.8c).
+     */
+    record StatusApplied(MessageTemplates.Applied applied, String reason, TemplateDependents.Result sends)
+            implements Outcome {}
 
     /** FLAGGED or LOCKED: the status stays. */
     record Noted(UUID templateId, String event) implements Outcome {}
@@ -81,8 +92,10 @@ class WhatsAppTemplateUpdateProcessor {
                 Optional<MessageTemplates.Applied> applied =
                         templates.applyStatus(providerId, set.status(), change.at());
                 if (applied.isEmpty()) return unknown(webhookEventId);
+                TemplateDependents.Result sends = dependents.apply(
+                        applied.get().templateId(), applied.get().status());
                 rows.finish(webhookEventId, null);
-                return new StatusApplied(applied.get(), TemplateStatuses.reasonCode(change.reason()));
+                return new StatusApplied(applied.get(), TemplateStatuses.reasonCode(change.reason()), sends);
             }
             case TemplateStatuses.Flagged flagged -> {
                 return noted(webhookEventId, providerId, "flagged");

@@ -15,6 +15,7 @@ import com.northstar.fakes.FakeClock;
 import com.northstar.fakes.Gate;
 import com.northstar.fakes.WhatsAppPayloads;
 import com.northstar.integrations.WhatsAppMessages;
+import com.northstar.integrations.WhatsAppSync;
 import com.northstar.jobs.SystemScope;
 import com.northstar.tenancy.MissingTenantContextException;
 import com.northstar.tenancy.Role;
@@ -76,7 +77,8 @@ import tools.jackson.databind.json.JsonMapper;
  * {@link ExecuteActionHandler}, exactly as the worker runs them, without waiting for JobRunr to poll (the worker is off
  * here, so queued jobs are only stored; the credential store is built for this test as the worker builds it).
  *
- * <p>Covers W33 (the window, read when the send runs), the W34 half 2.6 can do (a template that is not approved), P1 (a
+ * <p>Covers W33 (the window, read when the send runs), W34 as the send reads it (each status's code when the send runs,
+ * and Meta refusing the template; status changes reaching queued sends are TemplateDependentSendsTests), P1 (a
  * send that happened is never repeated once Meta's ID is stored; queueing twice), W32 (a cancelled send fails its
  * message), P9 (another tenant's conversation, template, message, number and token), P10, retries, auth pauses, the
  * accepted duplicate risk, and logs.
@@ -116,6 +118,7 @@ class WhatsAppSendTests {
     private final OutboundMessages outbound;
     private final WhatsAppConnection connection;
     private final ObjectProvider<CredentialStore> credentialProvider;
+    private final ObjectProvider<WhatsAppSync> syncProvider;
     private final JsonMapper json;
     private final PlatformTransactionManager transactionManager;
     private final TransactionTemplate transactions;
@@ -138,6 +141,7 @@ class WhatsAppSendTests {
             @Autowired OutboundMessages outbound,
             @Autowired WhatsAppConnection connection,
             @Autowired ObjectProvider<CredentialStore> credentialProvider,
+            @Autowired ObjectProvider<WhatsAppSync> syncProvider,
             @Autowired JsonMapper json,
             @Autowired PlatformTransactionManager transactionManager,
             @Autowired PostgresAdmin postgres) {
@@ -154,6 +158,7 @@ class WhatsAppSendTests {
         this.outbound = outbound;
         this.connection = connection;
         this.credentialProvider = credentialProvider;
+        this.syncProvider = syncProvider;
         this.json = json;
         this.transactionManager = transactionManager;
         this.transactions = new TransactionTemplate(transactionManager);
@@ -318,47 +323,73 @@ class WhatsAppSendTests {
                 .startsWith("sent||");
     }
 
-    // Template status (W34, the half step 2.6 can do)
+    // Template status (W34: the status read when the send runs; what a status change does to queued sends is in
+    // TemplateDependentSendsTests, step 2.8c)
 
     @Test
-    void W34_aTemplateThatIsNotApprovedWhenTheSendRunsFailsIt() {
+    void W34_aTemplateThatIsNotApprovedWhenTheSendRunsStopsItWithItsStatusCode() {
         Business business = business();
-        for (String status : List.of("draft", "submitted", "rejected", "paused")) {
+        Map<String, String> failures = Map.of(
+                "draft", "template_not_approved",
+                "submitted", "template_not_approved",
+                "rejected", "template_rejected",
+                "disabled", "template_disabled",
+                "deleted", "template_deleted",
+                "archived", "template_archived");
+        failures.forEach((status, code) -> {
             Template template = template(business.tenant(), "approved");
             WhatsAppMessages.Queued queued = queueTemplate(business, template, TemplateParameters.none());
-            // Its status changed after the send was queued (Meta's sync is step 2.8).
-            admin.sql("update northstar.message_templates set status = :s where id = :id")
-                    .param("s", status)
-                    .param("id", template.id())
-                    .update();
+            // Its status changed after the send was queued, and nothing applied it to the send.
+            setStatus(template, status);
 
             run(business, queued);
 
             assertThat(whatsApp.sent(queued.messageId())).as(status).isEmpty();
-            assertThat(message(queued.messageId())).as(status).isEqualTo("failed|template_not_approved|");
-            assertThat(action(queued.action().id())).as(status).isEqualTo("failed|1|permanent|template_not_approved|");
-        }
+            assertThat(message(queued.messageId())).as(status).isEqualTo("failed|" + code + "|");
+            assertThat(action(queued.action().id())).as(status).isEqualTo("failed|1|permanent|" + code + "|");
+        });
+
+        Template paused = template(business.tenant(), "approved");
+        WhatsAppMessages.Queued queued = queueTemplate(business, paused, TemplateParameters.none());
+        setStatus(paused, "paused");
+
+        run(business, queued);
+
+        assertThat(whatsApp.provider().calls(FakeWhatsAppSender.key(queued.messageId())))
+                .isZero();
+        assertThat(action(queued.action().id()))
+                .as("a paused template blocks the send without using its attempt, until it is approved again")
+                .isEqualTo("paused|0|blocked|template_paused|");
+        assertThat(message(queued.messageId())).isEqualTo("queued||");
     }
 
     @Test
-    void W34_aTemplateMetaRefusesFailsTheSendVisibly() {
+    void W34_aTemplateMetaRefusesFailsTheSendVisiblyAndRequestsASync() {
         Business business = business();
         Template template = template(business.tenant(), "approved");
         WhatsAppMessages.Queued queued = queueTemplate(business, template, TemplateParameters.none());
-        whatsApp.provider().script(FakeWhatsAppSender.key(queued.messageId()), FakeCall.rejected("template_paused"));
+        whatsApp.provider()
+                .script(
+                        FakeWhatsAppSender.key(queued.messageId()),
+                        new FakeCall.Fail(MetaErrors.classify(400, 132016, null)));
 
         run(business, queued);
 
         assertThat(whatsApp.sent(queued.messageId())).isEmpty();
-        assertThat(message(queued.messageId())).isEqualTo("failed|template_paused|");
-        assertThat(action(queued.action().id())).isEqualTo("failed|1|permanent|template_paused|");
+        assertThat(message(queued.messageId())).isEqualTo("failed|template_disabled|");
+        assertThat(action(queued.action().id())).isEqualTo("failed|1|permanent|template_disabled|");
         assertThat(SystemScope.call(business.tenant(), actions::failed))
                 .as("on the Failed Actions list")
                 .extracting(ActionView::id)
                 .contains(queued.action().id());
         assertThat(integration(business.tenant()))
                 .as("the call's error is recorded on the integration, which stays connected")
-                .isEqualTo("connected|template_paused|false");
+                .isEqualTo("connected|template_disabled|false");
+        assertThat(count("""
+                        select count(*) from northstar.actions
+                        where tenant_id = :t and type = 'whatsapp.sync' and idempotency_key like 'whatsapp-sync:requested:%'""", business.tenant()))
+                .as("Meta's refusal means the template's status here is out of date: a sync reads it")
+                .isOne();
     }
 
     // A send that happened is never repeated (P1)
@@ -1044,6 +1075,7 @@ class WhatsAppSendTests {
                 outbound,
                 connection,
                 credentialProvider,
+                syncProvider,
                 new CloudApiWhatsAppSender(http, meta.base(), "v26.0", Duration.ofSeconds(5)),
                 json,
                 transactionManager);
@@ -1087,6 +1119,14 @@ class WhatsAppSendTests {
                 .query(UUID.class)
                 .single();
         return new Template(id, name);
+    }
+
+    /** Sets the template's status directly, as if Meta changed it and nothing applied the change to its sends. */
+    private void setStatus(Template template, String status) {
+        admin.sql("update northstar.message_templates set status = :s where id = :id")
+                .param("s", status)
+                .param("id", template.id())
+                .update();
     }
 
     private WhatsAppMessages.Queued queueText(Business business, String text) {

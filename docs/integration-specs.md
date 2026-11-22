@@ -80,7 +80,7 @@ How step 2.4b processes a stored WhatsApp message (step 6; decided 20 Nov 2026):
 **Outbound (actions)**
 
 - Every call is an `actions` row executed by the worker with an idempotency key; provider idempotency headers used where offered.
-- Provider errors are classified: **retryable** (timeouts, 429, 5xx) → backoff; **permanent** (invalid input, a request the provider will never accept) → Failed + alert; **auth** (a business's token expired, invalid or revoked, or a permission it granted removed) → integration status error + pause dependent actions until the integration reconnects (decided 21 Nov 2026, step 2.6). Auth is for a business's own connection, which reconnecting fixes; a rejected Northstar platform key (Resend's, section 6) has no connection to reconnect and stays permanent.
+- Provider errors are classified: **retryable** (timeouts, 429, 5xx) → backoff; **permanent** (invalid input, a request the provider will never accept) → Failed + alert; **auth** (a business's token expired, invalid or revoked, or a permission it granted removed) → integration status error + pause dependent actions until the integration reconnects (decided 21 Nov 2026, step 2.6). Auth is for a business's own connection, which reconnecting fixes; a rejected Northstar platform key (Resend's, section 6) has no connection to reconnect and stays permanent. **blocked** (step 2.8c) → something the action depends on is unavailable for now (a WhatsApp template Meta paused, Meta's 132015): the action pauses without using an attempt or raising the auth alert, and resumes when that dependency is back (`workflow-spec.md` section 10); a reconnect never resumes it.
 - Rate limits respected per tenant and per provider with a token bucket in the worker.
 
 **Health**
@@ -147,8 +147,12 @@ How step 2.6a sends (decided 21 Nov 2026):
   A template message is sent inside or outside the window.
 - **No automatic switch to a template.** A text send never turns into a template send. The switch in `workflow-spec.md`
   section 12 is a new template send from the Phase 3 engine, so every message row records exactly what was sent.
-- **Template status.** A template that is not `approved` when the send runs fails it permanently as
-  `template_not_approved`, message `failed` (the half of W34 step 2.6 can do; syncing Meta's statuses is step 2.8).
+- **Template status,** read when the send runs (W34; step 2.6a, by status since step 2.8c). Approved sends. Paused
+  blocks the send as `template_paused` without calling Meta (its message stays `queued`) until the template is
+  approved again. Rejected, disabled, deleted and archived fail it permanently as `template_rejected`,
+  `template_disabled`, `template_deleted` or `template_archived`, and draft and submitted as `template_not_approved`,
+  message `failed` with that code. A template's status change also reaches its sends already queued (Template status
+  from Meta, Dependent sends, below).
 - **The connection.** The business's WhatsApp integration must be `connected` with a credential, or the send pauses
   as auth `integration_not_connected` without calling Meta. The business token is decrypted only in the worker,
   through the credential store (section 7), when the call is made, and is never logged. A credential that cannot be
@@ -157,7 +161,9 @@ How step 2.6a sends (decided 21 Nov 2026):
   time), in one transaction with the integration's `last_success_at`. A re-run finds the ID and succeeds without
   calling Meta again (P1). Delivery status webhooks move the message on from there (step 2.7).
 - **Failures,** classified as section 1 says. A retryable failure follows the WhatsApp send schedule
-  (`workflow-spec.md` section 10) and leaves the message `queued`; a permanent one fails the send at once. An auth
+  (`workflow-spec.md` section 10) and leaves the message `queued`; a permanent one fails the send at once. Meta refusing
+  the template itself (132001, 132015, 132016) requests a sync (step 2.8c), so the template's status here and its other
+  sends catch up; 132015 blocks the send as `template_paused` rather than failing it. An auth
   failure sets the integration's status to `error` with its code and pauses the send; every other send of the business
   then pauses when it is claimed, without calling Meta, until the integration reconnects (resuming is the reconnect
   step's). Every call to Meta updates the integration's health: `last_success_at`, or `last_error_code` and
@@ -256,12 +262,12 @@ management endpoints the sync calls (step 2.8a). "Judgement" marks a class Meta'
 | 131049 | permanent | `held_for_ecosystem` | Marketing message held for ecosystem health; "Retrying does not guarantee delivery" (judgement: our retries end within 81.5 minutes) |
 | 130472 | permanent | `held_for_experiment` | Not sent, as part of an experiment |
 | 132000 | permanent | `template_param_count` | The number of values does not match the template |
-| 132001 | permanent | `template_not_found` | The template does not exist in that language, or is not approved |
+| 132001 | permanent | `template_not_found` | The template does not exist in that language, or is not approved (step 2.8c: also requests a sync) |
 | 132005 | permanent | `template_text_too_long` | Translated text is too long |
 | 132007 | permanent | `template_policy_violation` | Template content violates a WhatsApp policy |
 | 132012 | permanent | `template_param_format` | Values formatted incorrectly |
-| 132015 | permanent | `template_paused` | Template paused for low quality |
-| 132016 | permanent | `template_disabled` | Template paused too many times and now permanently disabled |
+| 132015 | blocked | `template_paused` | Template paused for low quality (step 2.8c: the send waits until the template is approved again, and a sync is requested) |
+| 132016 | permanent | `template_disabled` | Template paused too many times and now permanently disabled (step 2.8c: also requests a sync) |
 | 131063 | permanent | `marketing_disabled_on_cloud_api` | Marketing templates are disabled for the business's Cloud API |
 | 131042 | permanent | `payment_method_error` | An error with the payment method |
 | 368 | permanent | `account_restricted` | The account is restricted or disabled for a policy violation |
@@ -427,7 +433,27 @@ if this table and the code differ.
   `whatsapp.template.status_changed ... from=<status> to=<status> source=webhook|sync reason=<code>`, the admin's
   alert until Phase 8; other changes are INFO. Logs carry Northstar's template, action and webhook event IDs,
   statuses, Meta's categories, counts and fixed codes; never a template's name or text, Meta's template IDs, WABA IDs
-  or cursors. Sends that depend on a template follow its status in step 2.8c (W34).
+  or cursors.
+- **Dependent sends** (step 2.8c, W34, decided 22 Nov 2026). After every template the sync or a status webhook writes
+  from Meta, in the same transaction, the template's sends still queued follow the status it then has, whether or not
+  this write changed it (an unchanged sync or an older webhook included):
+  - approved: sends blocked as `template_paused` resume, at the later of the time they were due and now;
+  - paused: pending sends (due now, scheduled for later, or waiting for a retry) are blocked as `template_paused`,
+    keeping their time and attempts; a send waiting for review keeps waiting, and is blocked if it runs while paused;
+  - rejected, disabled, deleted or archived: pending, waiting-for-review and paused sends (auth pauses included) fail
+    permanently with the template's code (`template_rejected`, `template_disabled`, `template_deleted`,
+    `template_archived`), each message `failed` with it through the send's closing hook, each alerted and listed on
+    Failed Actions;
+  - draft or submitted: nothing; a send fails as `template_not_approved` when it runs.
+  The sends are found by their queued messages (`messages_queued_by_template`). A send processing an attempt is left
+  to it: it reads the status when it runs. Lock order: the template, its queued messages' contacts (shared, in ID
+  order), their actions, their messages; an opt-out locks the contact, then its actions and messages, so the two
+  never deadlock, and a status change during an opt-out waits for it and then finds its sends cancelled. A reconnect
+  resumes auth pauses only, and approval resumes template blocks only. One gap, accepted: a send that read `paused`
+  in the moment its template was approved again stays blocked until the template's next write from Meta (any of its
+  webhooks, or the next sync, at most 6 hours). Logs: INFO `whatsapp.template.sends template_id=<id> status=<status>
+  blocked=<n> resumed=<n> failed=<n> source=webhook|sync` when any send changed, and `action.blocked`,
+  `action.unblocked` per action with IDs and codes.
 
 ## 3. Razorpay
 

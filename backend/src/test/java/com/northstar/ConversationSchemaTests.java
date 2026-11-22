@@ -540,6 +540,17 @@ class ConversationSchemaTests {
     }
 
     @Test
+    void W34_aTemplatesQueuedMessagesAreFoundByAnIndexOfQueuedMessagesOnly() {
+        assertThat(admin.sql("""
+                        select indexdef from pg_indexes
+                        where schemaname = 'northstar' and indexname = 'messages_queued_by_template'""").query(String.class).single())
+                .as("step 2.8c: a template's status change finds its sends by their queued messages")
+                .contains("ON northstar.messages")
+                .contains("(tenant_id, template_id)")
+                .contains("WHERE (status = 'queued'::text)");
+    }
+
+    @Test
     void contactSourcesAreRecordedOncePerSource() {
         UUID tenant = data.tenant();
         UUID contact = data.contact(tenant);

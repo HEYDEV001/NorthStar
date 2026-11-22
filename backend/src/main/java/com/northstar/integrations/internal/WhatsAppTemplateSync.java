@@ -31,6 +31,8 @@ import org.springframework.transaction.support.TransactionTemplate;
  *   <li>{@link #apply}: writes each listed template through {@link MessageTemplates}, each in its own short
  *       transaction, as of when the listing started; then, after a complete listing only, marks deleted the tenant's
  *       templates Meta no longer lists. A partial listing deletes nothing, so a cut-off sync never deletes a template.
+ *       In each of those transactions the template's sends then follow the status it has ({@link TemplateDependents},
+ *       step 2.8c), whether or not it changed.
  * </ol>
  *
  * <p>Body and variables come from Meta's answer only ({@link TemplateVariables}); a template whose status, name or
@@ -50,14 +52,22 @@ class WhatsAppTemplateSync {
 
     private final WhatsAppAccountReader reader;
     private final MessageTemplates templates;
+    private final TemplateDependents dependents;
     private final TransactionTemplate transactions;
 
     WhatsAppTemplateSync(
-            WhatsAppAccountReader reader, MessageTemplates templates, PlatformTransactionManager transactionManager) {
+            WhatsAppAccountReader reader,
+            MessageTemplates templates,
+            TemplateDependents dependents,
+            PlatformTransactionManager transactionManager) {
         this.reader = reader;
         this.templates = templates;
+        this.dependents = dependents;
         this.transactions = new TransactionTemplate(transactionManager);
     }
+
+    /** One template written, and what its status then did to its sends. */
+    private record Written(MessageTemplates.Applied applied, TemplateDependents.Result sends) {}
 
     sealed interface Fetch {}
 
@@ -123,22 +133,30 @@ class WhatsAppTemplateSync {
                 skipped++;
                 continue;
             }
-            MessageTemplates.Applied applied =
-                    transactions.execute(status -> templates.applyListed(usable.get(), fetched.listedIds(), asOf));
-            if (logApplied(actionId, applied)) changed++;
+            Written written = transactions.execute(status -> {
+                MessageTemplates.Applied applied = templates.applyListed(usable.get(), fetched.listedIds(), asOf);
+                return new Written(applied, dependents.apply(applied.templateId(), applied.status()));
+            });
+            if (logApplied(actionId, written.applied())) changed++;
+            logSends(written);
         }
         int deleted = 0;
         if (fetched.complete()) {
             List<UUID> missing = transactions.execute(status -> templates.missingFrom(fetched.listedIds()));
             for (UUID templateId : missing) {
-                Optional<MessageTemplates.Applied> applied =
-                        transactions.execute(status -> templates.markDeleted(templateId, asOf));
-                if (applied.isPresent() && applied.get().outcome() == MessageTemplates.Outcome.UPDATED) {
+                Optional<Written> written = transactions.execute(status -> templates
+                        .markDeleted(templateId, asOf)
+                        .map(applied ->
+                                new Written(applied, dependents.apply(applied.templateId(), applied.status()))));
+                if (written.isEmpty()) continue;
+                MessageTemplates.Applied applied = written.get().applied();
+                if (applied.outcome() == MessageTemplates.Outcome.UPDATED) {
                     deleted++;
                     log.info("whatsapp.sync.template_missing action_id={} template_id={}", actionId, templateId);
                     TemplateLogs.statusChanged(
-                            templateId, applied.get().previousStatus(), TemplateStatus.DELETED, "sync", "none");
+                            templateId, applied.previousStatus(), TemplateStatus.DELETED, "sync", "none");
                 }
+                logSends(written.get());
             }
         } else {
             log.warn(
@@ -185,6 +203,12 @@ class WhatsAppTemplateSync {
                 template.body(),
                 TemplateVariables.json(template.parameterFormat(), template.body()),
                 status.get()));
+    }
+
+    private static void logSends(Written written) {
+        if (written.sends().any()) {
+            TemplateLogs.sends(written.applied().templateId(), written.applied().status(), written.sends(), "sync");
+        }
     }
 
     /** Logs what applying one template did; true if it changed anything stored. */

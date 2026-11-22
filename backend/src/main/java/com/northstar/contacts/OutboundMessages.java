@@ -2,6 +2,7 @@ package com.northstar.contacts;
 
 import java.time.Duration;
 import java.time.Instant;
+import java.util.List;
 import java.util.Optional;
 import java.util.UUID;
 
@@ -52,6 +53,17 @@ public interface OutboundMessages {
      * clock; a conversation with no inbound message has no window.
      */
     Optional<MessageToSend> toSend(UUID messageId, Duration windowMargin);
+
+    /**
+     * The template's outbound messages still queued (step 2.8c, W34): the sends its status change applies to, in ID
+     * order. Their contacts are share-locked first, in contact ID order, before anything else is read, so this takes
+     * its locks in the opt-out's order (the contact, then its actions, then their messages) and waits for an opt-out in
+     * progress, then sees its result: a message the opt-out failed is no longer queued. Only messages of the locked
+     * contacts are returned, so one queued meanwhile for another contact is left to its send, which reads the template
+     * when it runs. Call it with the template's row already locked, so two changes of one template run one after the
+     * other. Locks nothing on the messages themselves.
+     */
+    List<UUID> lockQueuedForTemplate(UUID templateId);
 
     /**
      * Records that Meta accepted the message: its provider ID (set once, messages_set_once), status sent and sent_at

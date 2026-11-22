@@ -175,7 +175,7 @@ class CloudApiWhatsAppSenderTests {
         assertThat(sendText()).isEqualTo(rejected(FailureClass.RETRYABLE, "rate_limited_pair", null));
 
         answer(400, error(132015, "Template is paused"));
-        assertThat(sendText()).isEqualTo(rejected(FailureClass.PERMANENT, "template_paused", null));
+        assertThat(sendText()).isEqualTo(rejected(FailureClass.BLOCKED, "template_paused", null));
 
         answer(400, error(2494100, "Account is in maintenance mode."));
         assertThat(sendText())
