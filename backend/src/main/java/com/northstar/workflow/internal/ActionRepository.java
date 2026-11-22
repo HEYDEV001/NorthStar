@@ -2,6 +2,7 @@ package com.northstar.workflow.internal;
 
 import jakarta.persistence.LockModeType;
 import java.time.Instant;
+import java.util.Collection;
 import java.util.List;
 import java.util.Optional;
 import java.util.UUID;
@@ -65,5 +66,41 @@ interface ActionRepository extends JpaRepository<Action, UUID> {
 
     List<Action> findByStatusOrderByLastAttemptAtDesc(String status);
 
-    List<Action> findByStatusAndType(String status, String type);
+    /** This type's actions in this status whose last error has this class: a reconnect resumes auth pauses only. */
+    List<Action> findByStatusAndTypeAndLastErrorClass(String status, String type, String lastErrorClass);
+
+    /**
+     * The tenant's actions of this type, in these statuses, whose payload's field holds one of the values (step 2.8c,
+     * {@link com.northstar.workflow.DependentActions}), locked in ID order (select ... for update). An action that
+     * changes status while this waits for its lock is re-checked once the lock is granted, so one just claimed
+     * (processing) is left out. Native SQL for the payload field; the tenant is bound explicitly, and RLS checks it
+     * again. Values must not be empty.
+     */
+    @Query(nativeQuery = true, value = """
+            select * from northstar.actions
+            where tenant_id = :tenantId and type = :type and status in (:statuses)
+              and payload ->> cast(:field as text) in (:values)
+            order by id
+            for update""")
+    List<Action> findDependentsLocked(
+            @Param("tenantId") UUID tenantId,
+            @Param("type") String type,
+            @Param("statuses") Collection<String> statuses,
+            @Param("field") String field,
+            @Param("values") Collection<String> values);
+
+    /** As {@link #findDependentsLocked}, for the ones paused as blocked with this code. Values must not be empty. */
+    @Query(nativeQuery = true, value = """
+            select * from northstar.actions
+            where tenant_id = :tenantId and type = :type and status = 'paused'
+              and last_error_class = 'blocked' and last_error_code = :code
+              and payload ->> cast(:field as text) in (:values)
+            order by id
+            for update""")
+    List<Action> findBlockedDependentsLocked(
+            @Param("tenantId") UUID tenantId,
+            @Param("type") String type,
+            @Param("code") String code,
+            @Param("field") String field,
+            @Param("values") Collection<String> values);
 }

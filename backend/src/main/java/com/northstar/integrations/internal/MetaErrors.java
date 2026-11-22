@@ -5,13 +5,14 @@ import com.northstar.workflow.FailureClass;
 import java.time.Duration;
 import java.util.Map;
 import java.util.Optional;
+import java.util.Set;
 
 /**
- * Meta's WhatsApp Cloud API error codes as retryable, permanent or auth (step 2.6b; integration-specs.md section 2, the
- * error table; Meta's error-code page, checked 21 Nov 2026; 80008 from the message templates reference, for the
- * management endpoints the sync calls, step 2.8a). Built on {@code error.code}, as Meta advises ("Build your
- * app's error handling around error codes instead of subcodes or HTTP response status codes"); the HTTP status decides
- * only for a code that is not listed here, or an answer without one.
+ * Meta's WhatsApp Cloud API error codes as retryable, permanent, auth or blocked (step 2.6b, blocked from step 2.8c;
+ * integration-specs.md section 2, the error table; Meta's error-code page, checked 21 Nov 2026; 80008 from the message
+ * templates reference, for the management endpoints the sync calls, step 2.8a). Built on {@code error.code}, as Meta
+ * advises ("Build your app's error handling around error codes instead of subcodes or HTTP response status codes"); the
+ * HTTP status decides only for a code that is not listed here, or an answer without one.
  *
  * <p>Only codes Meta documents for sending, and 80008 for the management endpoints, are mapped. Anything else falls back on the status: 5xx, 408 and 429 are
  * retryable, a 401 is auth, and any other answer is permanent, keeping Meta's code in ours ({@code meta_<code>}) so it
@@ -65,8 +66,9 @@ final class MetaErrors {
             Map.entry(132005, permanent("template_text_too_long")),
             Map.entry(132007, permanent("template_policy_violation")),
             Map.entry(132012, permanent("template_param_format")),
-            Map.entry(132015, permanent("template_paused")),
-            Map.entry(132016, permanent("template_disabled")),
+            // Blocked (step 2.8c): the send waits until the template is approved again, as for a template paused here.
+            Map.entry(132015, blocked(TemplateStatuses.TEMPLATE_PAUSED)),
+            Map.entry(132016, permanent(TemplateStatuses.TEMPLATE_DISABLED)),
             Map.entry(131063, permanent("marketing_disabled_on_cloud_api")),
             Map.entry(131042, permanent("payment_method_error")),
             Map.entry(368, permanent("account_restricted")),
@@ -138,5 +140,21 @@ final class MetaErrors {
 
     private static Mapping permanent(String code) {
         return new Mapping(FailureClass.PERMANENT, code);
+    }
+
+    private static Mapping blocked(String code) {
+        return new Mapping(FailureClass.BLOCKED, code);
+    }
+
+    /** Meta refused the template itself (132001, 132015, 132016): our codes for them. */
+    private static final Set<String> TEMPLATE_REFUSALS =
+            Set.of("template_not_found", TemplateStatuses.TEMPLATE_PAUSED, TemplateStatuses.TEMPLATE_DISABLED);
+
+    /**
+     * Whether a send refused with this code should request a sync (step 2.8c): Meta refused the template itself (not
+     * found or not approved, paused, disabled), so its status here is out of date and its other sends should follow.
+     */
+    static boolean requestsTemplateSync(String code) {
+        return TEMPLATE_REFUSALS.contains(code);
     }
 }

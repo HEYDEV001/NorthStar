@@ -37,6 +37,18 @@ final class TemplateLogs {
         }
     }
 
+    /** What a template's status did to its sends (step 2.8c): counts only, logged when there are any. */
+    static void sends(UUID templateId, TemplateStatus status, TemplateDependents.Result sends, String source) {
+        log.info(
+                "whatsapp.template.sends template_id={} status={} blocked={} resumed={} failed={} source={}",
+                templateId,
+                status.code(),
+                sends.blocked(),
+                sends.resumed(),
+                sends.failed(),
+                source);
+    }
+
     static void categoryChanged(UUID templateId, String from, String to, String source) {
         log.info(
                 "whatsapp.template.category_changed template_id={} from={} to={} source={}",

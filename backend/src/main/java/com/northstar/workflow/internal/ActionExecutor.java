@@ -43,8 +43,9 @@ import org.springframework.transaction.support.TransactionTemplate;
  *   <li>Record the outcome, in a second short transaction, only if the action is still on this attempt.
  * </ol>
  *
- * <p>Alerts and the next attempt's job are created only after the recording transaction commits. An action that closes
- * without succeeding (cancelled at claim, or failed for good) is reported to its handler's
+ * <p>An attempt that fails as auth or blocked pauses the action and gives the attempt back (blocked raises no alert,
+ * step 2.8c). Alerts and the next attempt's job are created only after the recording transaction commits. An action
+ * that closes without succeeding (cancelled at claim, or failed for good) is reported to its handler's
  * {@link ActionHandler#closed} inside the transaction that records it (step 2.6a), so the handler's own record of it,
  * such as a message marked failed, commits with the action's status.
  *
@@ -236,9 +237,19 @@ class ActionExecutor implements DisposableBean {
         String errorClass = failed.failureClass().databaseValue();
         switch (failed.failureClass()) {
             case AUTH -> {
-                action.pause(failed.code());
+                action.pause(FailureClass.AUTH, failed.code());
                 afterCommit(
                         () -> alerts.authFailed(action.getTenantId(), action.getId(), action.getType(), failed.code()));
+                return;
+            }
+            case BLOCKED -> {
+                // No alert: what it waits for (a template Meta paused, step 2.8c) is reported where it changes.
+                action.pause(FailureClass.BLOCKED, failed.code());
+                log.info(
+                        "action.blocked action_id={} type={} code={} at=attempt",
+                        action.getId(),
+                        action.getType(),
+                        failed.code());
                 return;
             }
             case PERMANENT -> finalFailure(action, failed.failureClass(), failed.code());
@@ -273,7 +284,7 @@ class ActionExecutor implements DisposableBean {
     }
 
     /** Runs once the current transaction commits; never if it rolls back, so an alert fires at most once. */
-    private static void afterCommit(Runnable work) {
+    static void afterCommit(Runnable work) {
         TransactionSynchronizationManager.registerSynchronization(new TransactionSynchronization() {
             @Override
             public void afterCommit() {

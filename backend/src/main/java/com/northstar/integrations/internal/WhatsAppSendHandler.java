@@ -2,11 +2,14 @@ package com.northstar.integrations.internal;
 
 import com.northstar.contacts.MessageToSend;
 import com.northstar.contacts.OutboundMessages;
+import com.northstar.contacts.TemplateStatus;
 import com.northstar.integrations.WhatsAppMessages;
+import com.northstar.integrations.WhatsAppSync;
 import com.northstar.workflow.ActionHandler;
 import com.northstar.workflow.ActionOutcome;
 import com.northstar.workflow.ActionRecipient;
 import com.northstar.workflow.ActionRequest;
+import com.northstar.workflow.ActionView;
 import com.northstar.workflow.ClosedAction;
 import com.northstar.workflow.FailureClass;
 import com.northstar.workflow.RetryPolicy;
@@ -30,13 +33,17 @@ import tools.jackson.databind.json.JsonMapper;
  *   <li>reads the message, its conversation's window and number, the contact's number, the template and the
  *       integration, when the send runs (never when it was queued). Meta's ID already stored: the send happened, and it
  *       succeeds without calling Meta again (P1). A text message outside the window fails as
- *       {@value #WINDOW_CLOSED_NO_TEMPLATE} (W33); a template that is not approved fails as
- *       {@value #TEMPLATE_NOT_APPROVED} (W34); a business whose WhatsApp is not connected pauses it as auth
- *       {@value #INTEGRATION_NOT_CONNECTED}, without calling Meta;
+ *       {@value #WINDOW_CLOSED_NO_TEMPLATE} (W33). A template that is not approved stops it by its status (W34, step
+ *       2.8c): paused blocks it as {@value TemplateStatuses#TEMPLATE_PAUSED} until the template is approved again
+ *       ({@link TemplateDependents}); rejected, disabled, deleted and archived fail it with their own codes; draft and
+ *       submitted fail it as {@value #TEMPLATE_NOT_APPROVED}. A business whose WhatsApp is not connected pauses it as
+ *       auth {@value #INTEGRATION_NOT_CONNECTED}, without calling Meta;
  *   <li>decrypts the business token through the worker's credential store, and calls Meta through the
  *       {@link WhatsAppSender} outside any transaction;
  *   <li>stores Meta's message ID at once, in its own transaction, then the integration's health. An auth failure sets
- *       the integration to error, so the business's other sends pause before calling Meta.
+ *       the integration to error, so the business's other sends pause before calling Meta. Meta refusing the template
+ *       ({@link MetaErrors#requestsTemplateSync}: 132001, 132015 paused, which blocks the send, and 132016) requests a
+ *       sync, which reads the template's status and applies it to its other sends.
  * </ol>
  *
  * <p>When a send closes without succeeding (failed, or cancelled because its contact opted out), {@link #closed} marks
@@ -62,13 +69,17 @@ class WhatsAppSendHandler implements ActionHandler {
     static final String MESSAGE_NOT_QUEUED = "message_not_queued";
     static final String MESSAGE_TYPE_UNSUPPORTED = "message_type_unsupported";
     static final String WINDOW_CLOSED_NO_TEMPLATE = "window_closed_no_template";
-    static final String TEMPLATE_NOT_APPROVED = "template_not_approved";
+    static final String TEMPLATE_NOT_APPROVED = TemplateStatuses.TEMPLATE_NOT_APPROVED;
     static final String INTEGRATION_NOT_CONNECTED = "integration_not_connected";
     static final String CREDENTIAL_UNREADABLE = "credential_unreadable";
+
+    /** The payload's one field (step 2.3): the message ID, never the text. */
+    static final String PAYLOAD_MESSAGE_ID = "messageId";
 
     private final OutboundMessages messages;
     private final WhatsAppConnection connection;
     private final ObjectProvider<CredentialStore> credentials;
+    private final ObjectProvider<WhatsAppSync> syncs;
     private final WhatsAppSender sender;
     private final JsonMapper json;
     private final TransactionTemplate transactions;
@@ -76,18 +87,21 @@ class WhatsAppSendHandler implements ActionHandler {
 
     /**
      * The credential store exists only on the worker, but every process needs this handler: creating a send reads its
-     * {@link #recipient()}. Only the worker ever runs it. The sender is the Cloud API adapter (step 2.6b).
+     * {@link #recipient()}. Only the worker ever runs it. The sender is the Cloud API adapter (step 2.6b). The sync is
+     * looked up when it is requested (step 2.8c): it creates an action, and actions are built from every handler.
      */
     WhatsAppSendHandler(
             OutboundMessages messages,
             WhatsAppConnection connection,
             ObjectProvider<CredentialStore> credentials,
+            ObjectProvider<WhatsAppSync> syncs,
             WhatsAppSender sender,
             JsonMapper json,
             PlatformTransactionManager transactionManager) {
         this.messages = messages;
         this.connection = connection;
         this.credentials = credentials;
+        this.syncs = syncs;
         this.sender = sender;
         this.json = json;
         this.transactions = new TransactionTemplate(transactionManager);
@@ -97,7 +111,7 @@ class WhatsAppSendHandler implements ActionHandler {
 
     /** The action's payload: the message ID only, never the text (step 2.3). */
     static String payloadFor(UUID messageId) {
-        return "{\"messageId\": \"" + messageId + "\"}";
+        return "{\"" + PAYLOAD_MESSAGE_ID + "\": \"" + messageId + "\"}";
     }
 
     @Override
@@ -178,8 +192,13 @@ class WhatsAppSendHandler implements ActionHandler {
             }
             case "template" -> {
                 MessageToSend.Template template = message.template();
-                if (!"approved".equals(template.status())) {
-                    return refused(request, messageId, TEMPLATE_NOT_APPROVED);
+                Optional<TemplateStatus> status = TemplateStatus.fromCode(template.status());
+                Optional<String> refusal = status.isEmpty()
+                        ? Optional.of(TEMPLATE_NOT_APPROVED)
+                        : TemplateStatuses.sendRefusal(status.get());
+                if (refusal.isPresent()) {
+                    if (status.orElse(null) == TemplateStatus.PAUSED) return blocked(request, messageId, refusal.get());
+                    return refused(request, messageId, refusal.get());
                 }
                 body = new WhatsAppSender.Template(template.name(), template.language(), template.parameters());
             }
@@ -264,9 +283,45 @@ class WhatsAppSendHandler implements ActionHandler {
                         request.attempt(),
                         failure.failureClass().databaseValue(),
                         failure.code());
+                if (MetaErrors.requestsTemplateSync(failure.code())) requestSync(request, messageId, failure.code());
                 yield failure;
             }
         };
+    }
+
+    /**
+     * Meta refused the template, so its status here is out of date: a sync reads it from Meta and applies it to the
+     * template's other sends (step 2.8c). Requests in the same 10 minutes share one sync. A request that fails is
+     * logged and leaves the send's outcome as Meta gave it; the next scheduled sync reads the template anyway.
+     */
+    private void requestSync(ActionRequest request, UUID messageId, String code) {
+        try {
+            ActionView sync = syncs.getObject().request();
+            log.info(
+                    "whatsapp.send.sync_requested action_id={} message_id={} code={} sync_action_id={}",
+                    request.actionId(),
+                    messageId,
+                    code,
+                    sync.id());
+        } catch (RuntimeException e) {
+            log.warn(
+                    "whatsapp.send.sync_request_failed action_id={} message_id={} code={} exception={}",
+                    request.actionId(),
+                    messageId,
+                    code,
+                    e.getClass().getName());
+        }
+    }
+
+    /** A send whose template Meta has paused: blocked, without calling Meta, until the template is approved again. */
+    private Done blocked(ActionRequest request, UUID messageId, String code) {
+        log.info(
+                "whatsapp.send.blocked action_id={} message_id={} attempt={} code={}",
+                request.actionId(),
+                messageId,
+                request.attempt(),
+                code);
+        return new Done(ActionOutcome.blocked(code));
     }
 
     /** A send that can never succeed as it stands: permanent, without calling Meta. */
@@ -281,7 +336,8 @@ class WhatsAppSendHandler implements ActionHandler {
     }
 
     private UUID messageId(String payloadJson) {
-        return UUID.fromString(json.readTree(payloadJson).get("messageId").asString());
+        return UUID.fromString(
+                json.readTree(payloadJson).get(PAYLOAD_MESSAGE_ID).asString());
     }
 
     private static String result(UUID messageId, String outcome) {

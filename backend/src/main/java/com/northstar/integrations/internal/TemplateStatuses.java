@@ -45,7 +45,39 @@ final class TemplateStatuses {
             TemplateStatus.DELETED,
             TemplateStatus.ARCHIVED);
 
+    /** A send of a template that is not approved yet (step 2.6a): draft or submitted. */
+    static final String TEMPLATE_NOT_APPROVED = "template_not_approved";
+
+    /** A send of a paused template is blocked until Meta approves it again (step 2.8c); also Meta's 132015. */
+    static final String TEMPLATE_PAUSED = "template_paused";
+
+    static final String TEMPLATE_REJECTED = "template_rejected";
+
+    /** Also Meta's 132016, the same status seen at send time. */
+    static final String TEMPLATE_DISABLED = "template_disabled";
+
+    static final String TEMPLATE_DELETED = "template_deleted";
+    static final String TEMPLATE_ARCHIVED = "template_archived";
+
     private TemplateStatuses() {}
+
+    /**
+     * The fixed code a send stops with on this status (step 2.8c, W34; decided 22 Nov 2026), or empty for approved, the
+     * one status a send goes out on. {@value #TEMPLATE_PAUSED} blocks the send until the template is approved again;
+     * every other code fails it.
+     */
+    static Optional<String> sendRefusal(TemplateStatus status) {
+        return Optional.ofNullable(
+                switch (status) {
+                    case APPROVED -> null;
+                    case DRAFT, SUBMITTED -> TEMPLATE_NOT_APPROVED;
+                    case PAUSED -> TEMPLATE_PAUSED;
+                    case REJECTED -> TEMPLATE_REJECTED;
+                    case DISABLED -> TEMPLATE_DISABLED;
+                    case DELETED -> TEMPLATE_DELETED;
+                    case ARCHIVED -> TEMPLATE_ARCHIVED;
+                });
+    }
 
     /** What a status webhook's event does. */
     sealed interface Event {}

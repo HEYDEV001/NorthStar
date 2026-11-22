@@ -42,4 +42,9 @@ public sealed interface ActionOutcome {
     static ActionOutcome auth(String code) {
         return new Failed(FailureClass.AUTH, code, null);
     }
+
+    /** A dependency is unavailable for now (step 2.8c): the action pauses until it is unblocked. */
+    static ActionOutcome blocked(String code) {
+        return new Failed(FailureClass.BLOCKED, code, null);
+    }
 }

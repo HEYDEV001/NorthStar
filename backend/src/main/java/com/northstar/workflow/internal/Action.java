@@ -1,6 +1,7 @@
 package com.northstar.workflow.internal;
 
 import com.northstar.workflow.ActionView;
+import com.northstar.workflow.FailureClass;
 import jakarta.persistence.Column;
 import jakarta.persistence.Entity;
 import jakarta.persistence.Id;
@@ -120,14 +121,39 @@ public class Action {
         lastErrorCode = code;
     }
 
-    /** Auth failures pause the action and give the attempt back: they don't count toward the retry budget. */
-    void pause(String code) {
+    /**
+     * An attempt that failed as auth or blocked pauses the action and gives the attempt back: it doesn't count toward
+     * the retry budget.
+     */
+    void pause(FailureClass failureClass, String code) {
+        if (failureClass != FailureClass.AUTH && failureClass != FailureClass.BLOCKED) {
+            throw new IllegalArgumentException("Only auth and blocked failures pause an action");
+        }
         status = PAUSED;
         attempts--;
         nextAttemptAt = null;
         leaseExpiresAt = null;
-        lastErrorClass = "auth";
+        lastErrorClass = failureClass.databaseValue();
         lastErrorCode = code;
+    }
+
+    /**
+     * Blocked while waiting to run (step 2.8c): paused as blocked with this code, keeping its attempts and the time it
+     * was due, so unblocking it keeps its schedule.
+     */
+    void block(String code) {
+        status = PAUSED;
+        lastErrorClass = FailureClass.BLOCKED.databaseValue();
+        lastErrorCode = code;
+    }
+
+    /**
+     * What it was blocked on is back (step 2.8c): pending again at the later of the time it was due and now (now for
+     * one blocked during an attempt, which kept no time). Its error stays as the record of why it waited.
+     */
+    void unblock(Instant now) {
+        status = PENDING;
+        nextAttemptAt = nextAttemptAt == null || nextAttemptAt.isBefore(now) ? now : nextAttemptAt;
     }
 
     void approve(UUID approverMembershipId, Instant now) {

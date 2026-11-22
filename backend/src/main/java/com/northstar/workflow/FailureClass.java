@@ -11,9 +11,15 @@ public enum FailureClass {
     PERMANENT("permanent"),
     /**
      * A business's credentials expired, invalid or revoked, or a permission removed (decided 21 Nov 2026): the action
-     * pauses without using an attempt and resumes when the integration reconnects.
+     * pauses without using an attempt and resumes when the integration reconnects ({@link Actions#resumePaused}).
      */
-    AUTH("auth");
+    AUTH("auth"),
+    /**
+     * Something the action depends on is unavailable for now, such as a WhatsApp template Meta has paused (step 2.8c,
+     * W34): the action pauses without using an attempt and without the auth alert, and resumes when that dependency is
+     * back ({@link DependentActions#unblock}). A reconnect never resumes it; unblocking never resumes an auth pause.
+     */
+    BLOCKED("blocked");
 
     private final String databaseValue;
 

@@ -28,6 +28,10 @@ public interface Actions {
     /** Failed actions, most recent first: the Failed Actions screen's list. */
     List<ActionView> failed();
 
-    /** Resumes this type's paused actions once their integration reconnects (the trigger lands in Phase 2 / 7). */
+    /**
+     * Resumes this type's actions paused on an auth failure, once their integration reconnects (the trigger is step
+     * 7.5). Actions paused as blocked (step 2.8c) are left paused: only what they depend on resumes them
+     * ({@link DependentActions#unblock}).
+     */
     int resumePaused(String type);
 }

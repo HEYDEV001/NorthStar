@@ -13,6 +13,7 @@ import com.northstar.workflow.ActionRecipient;
 import com.northstar.workflow.ActionView;
 import com.northstar.workflow.Actions;
 import com.northstar.workflow.ClosedAction;
+import com.northstar.workflow.FailureClass;
 import com.northstar.workflow.NewAction;
 import com.northstar.workflow.OutboundCancellation;
 import com.northstar.workflow.RecipientConsent;
@@ -157,7 +158,9 @@ class ActionService implements Actions {
     public int resumePaused(String type) {
         TenantScope.require();
         return transactions.execute(status -> {
-            List<Action> paused = actions.findByStatusAndType(Action.PAUSED, type);
+            // Auth pauses only: an action blocked on what it depends on resumes when that is back (step 2.8c).
+            List<Action> paused = actions.findByStatusAndTypeAndLastErrorClass(
+                    Action.PAUSED, type, FailureClass.AUTH.databaseValue());
             Instant now = ActionExecutor.now();
             for (Action action : paused) {
                 action.resume(now);

@@ -38,7 +38,8 @@ import tools.jackson.databind.json.JsonMapper;
  * <p>Lock order, the same on every path: the contact, then its conversation, its actions and their messages. Queueing
  * share-locks the contact before writing anything; marking sent or failed locks only the message, inside a transaction
  * that already holds whatever comes before it; a delivery status (step 2.7) locks only the message, after its webhook
- * row.
+ * row; a template's status change (step 2.8c) holds the template's lock and share-locks its queued messages' contacts,
+ * in ID order, before their actions and messages.
  */
 @Service
 @Transactional(propagation = Propagation.MANDATORY)
@@ -91,6 +92,27 @@ class OutboundMessagesService implements OutboundMessages {
             join northstar.contacts ct on ct.tenant_id = c.tenant_id and ct.id = c.contact_id
             left join northstar.message_templates t on t.tenant_id = m.tenant_id and t.id = m.template_id
             where m.tenant_id = ? and m.id = ? and m.direction = 'out'""";
+
+    // A template's queued messages (step 2.8c): their contacts share-locked in ID order first, as the opt-out locks the
+    // contact before its actions and messages. The partial index messages_queued_by_template finds them.
+    private static final String LOCK_QUEUED_CONTACTS = """
+            select ct.id from northstar.contacts ct
+            where ct.tenant_id = :tenant
+              and ct.id in (select c.contact_id
+                            from northstar.messages m
+                            join northstar.conversations c on c.tenant_id = m.tenant_id and c.id = m.conversation_id
+                            where m.tenant_id = :tenant and m.template_id = :template and m.status = 'queued'
+                              and m.direction = 'out')
+            order by ct.id
+            for share""";
+
+    private static final String QUEUED_FOR_TEMPLATE = """
+            select m.id
+            from northstar.messages m
+            join northstar.conversations c on c.tenant_id = m.tenant_id and c.id = m.conversation_id
+            where m.tenant_id = :tenant and m.template_id = :template and m.status = 'queued' and m.direction = 'out'
+              and c.contact_id = any (cast(:contacts as uuid[]))
+            order by m.id""";
 
     private static final String MARK_SENT = """
             update northstar.messages set provider_message_id = ?, status = 'sent', sent_at = now()
@@ -209,6 +231,24 @@ class OutboundMessagesService implements OutboundMessages {
                 .param(messageId)
                 .query((row, n) -> toSend(row))
                 .optional();
+    }
+
+    @Override
+    public List<UUID> lockQueuedForTemplate(UUID templateId) {
+        Objects.requireNonNull(templateId, "templateId");
+        UUID tenant = systemTenant();
+        List<UUID> contacts = jdbc.sql(LOCK_QUEUED_CONTACTS)
+                .param("tenant", tenant)
+                .param("template", templateId)
+                .query(UUID.class)
+                .list();
+        if (contacts.isEmpty()) return List.of();
+        return jdbc.sql(QUEUED_FOR_TEMPLATE)
+                .param("tenant", tenant)
+                .param("template", templateId)
+                .param("contacts", contacts.stream().map(UUID::toString).toArray(String[]::new))
+                .query(UUID.class)
+                .list();
     }
 
     @Override

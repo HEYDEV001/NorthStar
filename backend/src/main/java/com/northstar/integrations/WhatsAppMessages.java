@@ -31,7 +31,9 @@ public interface WhatsAppMessages {
 
     /**
      * One of the business's templates with its values, sent inside or outside the window, if the template is approved
-     * when the send runs (W34; otherwise the send fails as {@code template_not_approved}).
+     * when the send runs (W34). Otherwise its status decides (step 2.8c): paused blocks the send until the template is
+     * approved again, and any other status fails it with its own code ({@code template_rejected},
+     * {@code template_not_approved} and so on).
      */
     Queued queueTemplate(
             UUID conversationId,

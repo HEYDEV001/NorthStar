@@ -57,7 +57,7 @@ class MetaErrorsTests {
             entry(132005, "permanent|template_text_too_long"),
             entry(132007, "permanent|template_policy_violation"),
             entry(132012, "permanent|template_param_format"),
-            entry(132015, "permanent|template_paused"),
+            entry(132015, "blocked|template_paused"),
             entry(132016, "permanent|template_disabled"),
             entry(131063, "permanent|marketing_disabled_on_cloud_api"),
             entry(131042, "permanent|payment_method_error"),
@@ -149,7 +149,8 @@ class MetaErrorsTests {
     void theSpecsTableListsExactlyWhatTheCodeDoes() throws IOException {
         String spec = Files.readString(Path.of("../docs/integration-specs.md"));
         List<String> rows = spec.lines()
-                .filter(line -> line.matches("\\| [0-9–]+ \\| (auth|retryable|permanent) \\| `[a-z0-9_]+` \\|.*"))
+                .filter(line ->
+                        line.matches("\\| [0-9–]+ \\| (auth|retryable|permanent|blocked) \\| `[a-z0-9_]+` \\|.*"))
                 .toList();
 
         EXPECTED.forEach((code, expected) -> {
