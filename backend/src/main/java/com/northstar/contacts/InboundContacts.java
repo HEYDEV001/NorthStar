@@ -18,8 +18,8 @@ public interface InboundContacts {
     /**
      * The contact with this E.164 number, created if it is new, and locked ({@code select ... for update}) until the
      * transaction ends, so one contact's messages are processed one at a time and the lead decision cannot race (P3).
-     * A profile name fills an empty name only, cleaned of control characters and capped at
-     * {@value #MAX_NAME_LENGTH} characters, and never replaces a name already there; null leaves the name alone.
+     * A profile name fills an empty name only, cleaned as {@link ContactNames#clean} says, and never replaces a name
+     * already there; null leaves the name alone.
      */
     UUID lockContact(String normalizedPhone, String profileName);
 
@@ -59,8 +59,8 @@ public interface InboundContacts {
     /** The stored inbound message, and whether storing it reopened its closed conversation. */
     record StoredInbound(UUID messageId, boolean reopened) {}
 
-    /** The longest profile name kept, in characters (code points). */
-    int MAX_NAME_LENGTH = 200;
+    /** The longest profile name kept, in characters (code points): {@link ContactNames#MAX_LENGTH}. */
+    int MAX_NAME_LENGTH = ContactNames.MAX_LENGTH;
 
     /** A conversation and its assignee (null: unassigned). */
     record Conversation(UUID id, UUID assignedMembershipId) {}

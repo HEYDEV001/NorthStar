@@ -522,6 +522,11 @@ class WhatsAppSyncTests {
             }
 
             @Override
+            public boolean lockActiveMembership(UUID membershipId) {
+                throw new UnsupportedOperationException();
+            }
+
+            @Override
             public List<UUID> tenantsWithDueActions() {
                 throw new UnsupportedOperationException();
             }

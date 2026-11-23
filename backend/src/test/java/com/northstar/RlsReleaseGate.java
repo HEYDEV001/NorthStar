@@ -87,9 +87,10 @@ record RlsReleaseGate(
                     "northstar.conversations", Set.of(staffSeeAssigned("conversations")),
                     "northstar.messages", Set.of(staffSeeMessagesOfAssignedConversations()),
                     "northstar.events", Set.of(staffSeeEventsOfAssignedLeads()),
-                    "northstar.contacts", Set.of(staffSeeContactsOfTheirWork("contacts", "id")),
+                    "northstar.contacts", staffContactPolicies(),
                     "northstar.contact_sources", Set.of(staffSeeContactsOfTheirWork("contact_sources", "contact_id")),
-                    "northstar.message_templates", adminOrSystemWrites("message_templates")),
+                    "northstar.message_templates", adminOrSystemWrites("message_templates"),
+                    "northstar.request_keys", Set.of(staffSeeOwnRequestKeys())),
             // app_user may insert and read, never update or delete.
             Set.of(
                     "northstar.workflow_versions",
@@ -97,7 +98,8 @@ record RlsReleaseGate(
                     "northstar.audit_log",
                     "northstar.lead_score_history",
                     "northstar.credit_notes",
-                    "northstar.contact_sources"),
+                    "northstar.contact_sources",
+                    "northstar.request_keys"),
             // app_user may never delete or update the whole row; only the listed status and processing columns are
             // updatable. Each list is filled in by the migration that creates the table.
             Map.of(
@@ -199,6 +201,7 @@ record RlsReleaseGate(
                     "northstar.whatsapp_waba_tenants(p_waba_ids text[])",
                     "northstar.tenants_with_whatsapp()",
                     "northstar.park_invalid_signature(p_provider text, p_body_bytes integer)",
+                    "northstar.contact_for_new_lead(p_phone text)",
                     "northstar.park_unknown_account(p_provider text, p_provider_event_id text, p_routing_key text,"
                             + " p_body_bytes integer, p_payload jsonb)"),
             // Schemas that belong to one login role: no other app or browser role may use the schema or anything in
@@ -271,16 +274,45 @@ record RlsReleaseGate(
     }
 
     /**
-     * The restrictive policy on contacts and contact_sources (step 2.3): staff see a contact while one of its leads,
-     * open or closed, or its conversation is assigned to them. contactId is the table's column naming the contact.
+     * Staff see a contact and its sources while one of its leads, open or closed, or its conversation is assigned to
+     * them (step 2.3). contactId is the table's column naming the contact.
      */
-    private static String staffSeeContactsOfTheirWork(String table, String contactId) {
-        String assigned = "(" + ADMIN_OR_SYSTEM + " OR (" + STAFF + " AND ((EXISTS ( SELECT FROM northstar.leads l"
+    private static String contactOfTheirWork(String table, String contactId) {
+        return "(" + ADMIN_OR_SYSTEM + " OR (" + STAFF + " AND ((EXISTS ( SELECT FROM northstar.leads l"
                 + " WHERE ((l.tenant_id = " + table + ".tenant_id) AND (l.contact_id = " + table + "." + contactId
                 + ") AND (l.assigned_membership_id = " + MY_ACTIVE_MEMBERSHIP + ")))) OR (EXISTS ( SELECT FROM"
                 + " northstar.conversations c WHERE ((c.tenant_id = " + table + ".tenant_id) AND (c.contact_id = "
                 + table + "." + contactId + ") AND (c.assigned_membership_id = " + MY_ACTIVE_MEMBERSHIP + ")))))))";
+    }
+
+    /** The restrictive policy on contact_sources (step 2.3): the same expression guards reads and writes. */
+    private static String staffSeeContactsOfTheirWork(String table, String contactId) {
+        String assigned = contactOfTheirWork(table, contactId);
         return restrictivePolicy(table + "_staff_assigned", "ALL", assigned, assigned);
+    }
+
+    /**
+     * The restrictive policies on contacts (step 2.10, split from step 2.3's one): select, update and delete keep the
+     * step 2.3 expression; insert is open to staff with an active membership, so manual lead entry can add a contact
+     * before its lead exists. An insert never makes a row visible, so reads are unchanged.
+     */
+    private static Set<String> staffContactPolicies() {
+        String assigned = contactOfTheirWork("contacts", "id");
+        String activeStaffMember = "(" + ADMIN_OR_SYSTEM + " OR (" + STAFF + " AND (EXISTS ( SELECT FROM"
+                + " northstar.memberships m WHERE ((m.tenant_id = (current_setting('app.tenant_id'::text,"
+                + " true))::uuid) AND (m.user_id = (NULLIF(current_setting('app.user_id'::text, true),"
+                + " ''::text))::uuid) AND (m.status = 'active'::text))))))";
+        return Set.of(
+                restrictivePolicy("contacts_staff_assigned_select", "SELECT", assigned, null),
+                restrictivePolicy("contacts_staff_assigned_update", "UPDATE", assigned, assigned),
+                restrictivePolicy("contacts_staff_assigned_delete", "DELETE", assigned, null),
+                restrictivePolicy("contacts_staff_insert", "INSERT", null, activeStaffMember));
+    }
+
+    /** The restrictive policy on request_keys (step 2.10): staff see and write only their own keys. */
+    private static String staffSeeOwnRequestKeys() {
+        String own = "(" + ADMIN_OR_SYSTEM + " OR (" + STAFF + " AND (membership_id = " + MY_ACTIVE_MEMBERSHIP + ")))";
+        return restrictivePolicy("request_keys_staff_own", "ALL", own, own);
     }
 
     /** The restrictive policies that limit insert, update and delete to admins and the system actor (step 2.3). */

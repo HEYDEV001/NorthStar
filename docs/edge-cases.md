@@ -13,7 +13,7 @@ Every case below has a defined behaviour and an automated test before launch; th
 | P1 | Same lead webhook arrives twice | `webhook_events` unique on provider event ID; the second copy returns 200, is not stored and does nothing else: no new contact, lead or message | 2 |
 | P2 | Meta authorisation expires or is revoked | Integration status → error; banner in dashboard with Reconnect; dependent actions pause (not fail) and resume after reconnect | 7 |
 | P3 | Server fails while saving a lead | Webhook event already stored before processing; job retries; no lost lead, no partial lead (single transaction) | 2 |
-| P4 | Phone number missing | WhatsApp leads always have one; manual lead entry rejected without a valid E.164 phone | 2 |
+| P4 | Phone number missing | WhatsApp leads always have one; manual lead entry rejected without a valid E.164 phone (step 2.10: a number in E.164, under +91 with exactly 10 digits after it, the first 1 to 9, or a 10-digit Indian mobile starting 6 to 9, with spaces, dashes and +91, 91 or 0 allowed, normalised to +91; anything else, a missing phone included, is 400 `phone_invalid`) | 2 |
 | P5 | Lead reassigned to another user | `assigned_membership_id` updated; old and new owner, actor and time written to timeline; both notified | 3 |
 | P6 | User deletes a lead | Admin only; soft delete with `deleted_at` and audit entry; financial records untouched; retention rules apply | 3 |
 | P7 | Two users edit the same lead at once | Optimistic lock on `version`; second save gets a conflict with the latest values; nothing silently overwritten | 3 |
