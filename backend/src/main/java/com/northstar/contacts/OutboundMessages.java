@@ -52,6 +52,8 @@ public interface OutboundMessages {
      * @throws com.northstar.api.NotFoundException if the conversation, or a template message's template, is not
      *     visible in the current tenant
      * @throws IllegalArgumentException if a template message's values do not match the template's variables
+     * @throws AutomationPausedException if a staff member has taken the conversation over (step 2.9c); nothing is
+     *     stored. A repeat of a send queued before the take over still returns it (its send was cancelled then)
      */
     Queued queue(UUID messageId, UUID conversationId, Sender sender, OutboundContent content);
 

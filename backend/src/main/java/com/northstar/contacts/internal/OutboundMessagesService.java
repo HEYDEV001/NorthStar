@@ -5,6 +5,7 @@ import com.northstar.api.ConflictException;
 import com.northstar.api.ForbiddenException;
 import com.northstar.api.NotFoundException;
 import com.northstar.api.UnprocessableException;
+import com.northstar.contacts.AutomationPausedException;
 import com.northstar.contacts.DeliveryStatus;
 import com.northstar.contacts.MessageToSend;
 import com.northstar.contacts.OutboundContent;
@@ -89,6 +90,14 @@ class OutboundMessagesService implements OutboundMessages {
     private static final String TOUCH_CONVERSATION = """
             update northstar.conversations set last_message_at = now()
             where tenant_id = ? and id = ? and last_message_at < now()""";
+
+    // An automated send (step 2.9c): the conversation, locked after its contact's shared lock (LOCK_RECIPIENT), so a
+    // take
+    // over in progress (which holds this lock while it cancels the queued automated sends) is waited for and then seen.
+    private static final String LOCK_FOR_AUTOMATED_SEND = """
+            select automation_paused from northstar.conversations
+            where tenant_id = ? and id = ?
+            for no key update""";
 
     // A staff reply (step 2.9b): the conversation, locked after its contact's shared lock (LOCK_RECIPIENT), with what
     // the reply's checks need, each window with the sender's margin on the database's clock. The staff reply exception
@@ -247,6 +256,14 @@ class OutboundMessagesService implements OutboundMessages {
         // that may have changed since (P1).
         Optional<UUID> storedRecipient = storedRecipient(tenant, messageId);
         if (storedRecipient.isPresent()) return new Queued(messageId, storedRecipient.get(), false);
+        // A conversation a staff member has taken over takes nothing automated until it is handed back (step 2.9c).
+        if (Boolean.TRUE.equals(jdbc.sql(LOCK_FOR_AUTOMATED_SEND)
+                .param(tenant)
+                .param(conversationId)
+                .query(Boolean.class)
+                .single())) {
+            throw new AutomationPausedException(conversationId);
+        }
         String type;
         String body = null;
         UUID templateId = null;

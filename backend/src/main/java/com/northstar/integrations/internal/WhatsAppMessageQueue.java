@@ -12,10 +12,14 @@ import com.northstar.tenancy.TenantDirectory;
 import com.northstar.tenancy.TenantScope;
 import com.northstar.workflow.ActionMode;
 import com.northstar.workflow.Actions;
+import com.northstar.workflow.DependentActions;
 import com.northstar.workflow.NewAction;
 import java.nio.charset.StandardCharsets;
+import java.util.Collection;
 import java.util.Objects;
+import java.util.Set;
 import java.util.UUID;
+import java.util.stream.Collectors;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.stereotype.Service;
@@ -49,6 +53,7 @@ class WhatsAppMessageQueue implements WhatsAppMessages {
 
     private final OutboundMessages messages;
     private final Actions actions;
+    private final DependentActions dependents;
     private final TenantDirectory tenants;
     private final AuditTrail audit;
     private final TransactionTemplate transactions;
@@ -56,11 +61,13 @@ class WhatsAppMessageQueue implements WhatsAppMessages {
     WhatsAppMessageQueue(
             OutboundMessages messages,
             Actions actions,
+            DependentActions dependents,
             TenantDirectory tenants,
             AuditTrail audit,
             PlatformTransactionManager transactionManager) {
         this.messages = messages;
         this.actions = actions;
+        this.dependents = dependents;
         this.tenants = tenants;
         this.audit = audit;
         this.transactions = new TransactionTemplate(transactionManager);
@@ -121,6 +128,17 @@ class WhatsAppMessageQueue implements WhatsAppMessages {
                     message.reopened());
             return new Queued(messageId, created.action(), message.stored());
         });
+    }
+
+    @Override
+    public int cancelQueuedSends(Collection<UUID> messageIds, String reason) {
+        Objects.requireNonNull(messageIds, "messageIds");
+        Objects.requireNonNull(reason, "reason");
+        Set<String> ids = messageIds.stream().map(UUID::toString).collect(Collectors.toUnmodifiableSet());
+        // The send's payload names its message as messageId (WhatsAppSendHandler.payloadFor), so its actions are found
+        // by that field; workflow never reads the messages.
+        return dependents.cancel(
+                new DependentActions.Dependents(SEND_TYPE, WhatsAppSendHandler.PAYLOAD_MESSAGE_ID, ids), reason);
     }
 
     /** The message's ID for this send: the same tenant and key always give the same ID, and nothing else gives it. */

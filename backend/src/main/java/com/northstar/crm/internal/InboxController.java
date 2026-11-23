@@ -36,6 +36,9 @@ import org.springframework.web.bind.annotation.RestController;
  * <p>A reply needs an {@value #IDEMPOTENCY_KEY} header (P21): 201 with the queued message the first time, 200 with the
  * same message when the same request comes again, 422 {@code idempotency_key_reused} when the key comes with another
  * reply. The send runs later, on the worker, and checks the window again then (W33).
+ *
+ * <p>Take over and hand back (step 2.9c) answer 200 with the conversation as it is afterwards; doing either again
+ * changes nothing and answers the same.
  */
 @RestController
 class InboxController {
@@ -50,10 +53,12 @@ class InboxController {
 
     private final ConversationInbox inbox;
     private final WhatsAppMessages whatsApp;
+    private final ConversationTakeover takeover;
 
-    InboxController(ConversationInbox inbox, WhatsAppMessages whatsApp) {
+    InboxController(ConversationInbox inbox, WhatsAppMessages whatsApp, ConversationTakeover takeover) {
         this.inbox = inbox;
         this.whatsApp = whatsApp;
+        this.takeover = takeover;
     }
 
     @GetMapping("/conversations")
@@ -105,5 +110,17 @@ class InboxController {
                 .orElseThrow(() -> new NotFoundException("message", queued.messageId()));
         return ResponseEntity.status(queued.created() ? HttpStatus.CREATED : HttpStatus.OK)
                 .body(message);
+    }
+
+    @PostMapping("/conversations/{conversationId}/take-over")
+    ConversationResponse takeOver(@PathVariable UUID conversationId) {
+        takeover.takeOver(conversationId);
+        return conversation(conversationId);
+    }
+
+    @PostMapping("/conversations/{conversationId}/hand-back")
+    ConversationResponse handBack(@PathVariable UUID conversationId) {
+        takeover.handBack(conversationId);
+        return conversation(conversationId);
     }
 }

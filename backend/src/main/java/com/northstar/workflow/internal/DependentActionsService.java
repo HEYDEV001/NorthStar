@@ -1,6 +1,7 @@
 package com.northstar.workflow.internal;
 
 import com.northstar.jobs.Jobs;
+import com.northstar.tenancy.Role;
 import com.northstar.tenancy.TenantContext;
 import com.northstar.tenancy.TenantScope;
 import com.northstar.workflow.ActionAlerts;
@@ -118,8 +119,42 @@ class DependentActionsService implements DependentActions {
         return found.size();
     }
 
+    @Override
+    public int cancel(Dependents dependents, String reason) {
+        UUID tenant = cancellingTenant();
+        requireCode(reason);
+        if (dependents.values().isEmpty()) return 0;
+        List<Action> found =
+                actions.findDependentsLocked(tenant, dependents.type(), OPEN, dependents.field(), dependents.values());
+        for (Action action : found) {
+            action.cancel(reason);
+            handlers.getObject()
+                    .reportClosed(
+                            action.getId(),
+                            action.getType(),
+                            action.getPayload(),
+                            ClosedAction.Closing.CANCELLED,
+                            reason);
+            log.info(
+                    "action.cancelled action_id={} type={} reason={} at=dependency",
+                    action.getId(),
+                    action.getType(),
+                    reason);
+        }
+        return found.size();
+    }
+
     private static void requireCode(String code) {
         if (code == null || !code.matches("[a-z0-9_]{1,64}")) throw new IllegalArgumentException("A fixed code");
+    }
+
+    /** The system, or since step 2.9c an admin or staff member whose own request cancels them (a take over). */
+    private static UUID cancellingTenant() {
+        TenantContext context = TenantScope.require();
+        if (!context.isSystem() && context.role() != Role.ADMIN && context.role() != Role.STAFF) {
+            throw new IllegalStateException("Dependent actions are cancelled by the system actor, admins and staff");
+        }
+        return Objects.requireNonNull(context.tenantId());
     }
 
     private static UUID systemTenant() {

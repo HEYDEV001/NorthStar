@@ -9,8 +9,8 @@ import java.util.regex.Pattern;
 /**
  * The engine's input log ({@code events}, data-model.md section 6, workflow-spec.md section 6). Each event is recorded
  * once per dedupe key, so recording it again has no effect (P1); the engine (Phase 3) reads them and sets
- * processed_at. Every method runs only inside the caller's transaction and only as the system actor, in the current
- * tenant.
+ * processed_at. Every method runs only inside the caller's transaction, in the current tenant, and as the system actor,
+ * except {@link #recordStaffAction}, which only an admin or a staff member records (step 2.9c).
  *
  * <p>Payloads hold IDs, fixed codes and timestamps only, never message text, names or phone numbers: each event type
  * is a record of exactly those, so free text has nowhere to go.
@@ -36,6 +36,66 @@ public interface EngineEvents {
      * (sent, delivered, read, failed; a late delivered after read included). Returns false if it was already recorded.
      */
     boolean recordMessageStatus(MessageStatus event);
+
+    /**
+     * Records {@code staff.action} for a member's take over or hand back of a conversation (step 2.9c,
+     * workflow-spec.md section 6), on the open lead of the conversation's contact, when there is one the caller can
+     * see: the engine acts on leads only (Phase 3 treats a take over as a global trigger and cancels the lead's timers).
+     * Without such a lead nothing is recorded, and the caller's audit entry is the record. The dedupe key is
+     * {@code staff.action:<action>:<conversation>:<take over time in microseconds>}, unique for each take over and the
+     * hand back that ends it. Returns false if nothing was recorded (no lead, or recorded before).
+     */
+    boolean recordStaffAction(StaffAction event);
+
+    /** What a member did to a conversation's automation (step 2.9c). */
+    enum StaffActionKind {
+        TAKE_OVER("take_over", "conversation_taken_over"),
+        HAND_BACK("hand_back", "conversation_handed_back");
+
+        private final String code;
+        private final String reason;
+
+        StaffActionKind(String code, String reason) {
+            this.code = code;
+            this.reason = reason;
+        }
+
+        public String code() {
+            return code;
+        }
+
+        /** The fixed reason recorded with it: there is no other (decided 22 Nov 2026, the 2.9 plan). */
+        public String reason() {
+            return reason;
+        }
+    }
+
+    /**
+     * A take over or hand back (step 2.9c): the conversation, its contact, the member who did it, how many automated
+     * sends it cancelled (always 0 for a hand back), when it happened, and when the take over it began or ended began,
+     * which names it in the dedupe key.
+     */
+    record StaffAction(
+            StaffActionKind kind,
+            UUID conversationId,
+            UUID contactId,
+            UUID membershipId,
+            int cancelledSends,
+            Instant at,
+            Instant takeOverAt) {
+
+        public StaffAction {
+            Objects.requireNonNull(kind, "kind");
+            Objects.requireNonNull(conversationId, "conversationId");
+            Objects.requireNonNull(contactId, "contactId");
+            Objects.requireNonNull(membershipId, "membershipId");
+            Objects.requireNonNull(at, "at");
+            Objects.requireNonNull(takeOverAt, "takeOverAt");
+            if (cancelledSends < 0 || (kind == StaffActionKind.HAND_BACK && cancelledSends != 0)) {
+                throw new IllegalArgumentException("Only a take over cancels sends");
+            }
+        }
+    }
 
     /**
      * A delivery status of an outbound message (step 2.7). status is sent, delivered, read or failed; errorCode is the

@@ -147,7 +147,7 @@ Every input to the engine is a normalised event with a unique ID; the same event
 | `payment.failed` | Razorpay webhook | payment ID |
 | `refund.processed` | Razorpay webhook | refund ID |
 | `timer.fired` (follow-up, reminder, expiry, hold release) | Job queue | timer ID |
-| `staff.action` (approve, reject, mark done, take over, hand back, move stage, reassign, cancel) | Dashboard / WhatsApp | request ID |
+| `staff.action` (approve, reject, mark done, take over, hand back, move stage, reassign, cancel) | Dashboard / WhatsApp | request ID; for take over and hand back (step 2.9c) `staff.action:<action>:<conversation ID>:<take over time in microseconds>` (action `take_over` or `hand_back`), unique for each take over and the hand back that ends it, as a client can choose its own request ID |
 | `calendar.changed` | Google Calendar sync | event ID + updated time |
 | `sheet.edited` (opted-in fields only) | Sheets poll | row ID + version |
 | `integration.disconnected` | Any connector | provider + tenant + time |
@@ -201,7 +201,7 @@ All timers are tenant-configurable; the values below are proposed starting defau
 
 **Quiet hours:** default 21:00–09:00 tenant time; a timer firing inside quiet hours is delayed to the next allowed time, except job reminders due within 2 hours.
 
-**Cancellation of timers:** any reply from the client, a stage change, opt-out, takeover or cancellation re-checks and cancels pending timers that no longer apply.
+**Cancellation of timers:** any reply from the client, a stage change, opt-out, takeover or cancellation re-checks and cancels pending timers that no longer apply. A take over (step 2.9c) already cancels the conversation's queued automated sends; its lead's timers are cancelled from its `staff.action` event once timers exist (step 3.6).
 
 ## 9. Approval mode vs automatic mode
 
@@ -367,6 +367,14 @@ The one exception, step 2.9b (decided 22 Nov 2026):
 - **What counts as writing again.** Every inbound message but a reaction or a system message (the ones that never open a lead either, step 2.4b). A message in the same second as the latest opt-out does not count (WhatsApp's timestamps are in seconds). The times are WhatsApp's, so a late or redelivered webhook never reorders them.
 - **Another opt-out closes it.** `opt_out_at` keeps the first opt-out; `last_opt_out_at` moves forward with every later one. A STOP after the client wrote again cancels a reply still waiting to be sent (as every opt-out cancels the contact's pending actions) and refuses new ones until the client writes again.
 - **Checked three times,** as every send is: when the reply is requested (409 `contact_opted_out`, nothing stored), when its action is created and when it is claimed (cancelled with `contact_opted_out` once the window has passed or the client opted out again). The database's backstop (`actions_refuse_opted_out`, NSA01) refuses a runnable action for an opted-out recipient unless it is a `whatsapp.send` of exactly such a message, through the function `northstar.staff_reply_allowed_after_opt_out`, which the app calls too, with the margin. Only the inbound job writes the two times (`contacts_consent_guard`, NSC01; `conversations_inbound_times_guard`, NSV01).
+
+**Take over and hand back** (step 2.9c, decided 22 Nov 2026; the per-conversation kill switch of build-document.md section 15)
+
+1. An admin takes over any conversation of the business, a staff member their assigned ones (through the inbox). Taking over pauses automation for the conversation (`conversations.automation_paused`) and records who and when; a conversation already taken over is left as it is, its first taker and time kept.
+2. In the same transaction, the conversation's automated sends not yet sent (from the system or the AI; pending, waiting for review, or paused for auth or a blocked template) are cancelled as `conversation_taken_over` and their messages failed with that code. Staff replies continue, and a send already being attempted is left to finish.
+3. While it is taken over, queueing refuses automated sends to the conversation, and the engine (Phase 3) and the AI (Phase 4) do not act on it. Inbound messages, staff replies and timers never hand it back.
+4. Only a hand back resumes automation; nothing it cancelled is re-queued. Handing back a conversation that is not taken over changes nothing.
+5. Each take over and hand back writes an audit entry (`conversation.taken_over` / `conversation.handed_back`, from and to `automated` and `taken_over`) and, when the conversation's contact has an open lead the member can see, a `staff.action` event on it with its fixed reason (`conversation_taken_over` / `conversation_handed_back`): the engine acts on leads only.
 
 ## 14. Industry templates
 

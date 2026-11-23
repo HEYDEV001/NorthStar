@@ -168,7 +168,9 @@ record RlsReleaseGate(
                     "northstar.conversations",
                             Set.of(
                                     "status",
-                                    "ai_paused",
+                                    "automation_paused",
+                                    "taken_over_by_membership_id",
+                                    "taken_over_at",
                                     "needs_human",
                                     "assigned_membership_id",
                                     "last_inbound_at",
