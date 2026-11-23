@@ -177,12 +177,32 @@ class RlsReleaseGateTests {
 
         @Test
         void droppedStaffPoliciesOnContactsFail() {
-            sql("drop policy contacts_staff_assigned on northstar.contacts");
+            sql("drop policy contacts_staff_assigned_select on northstar.contacts");
             sql("drop policy contact_sources_staff_assigned on northstar.contact_sources");
             assertThat(gate())
                     .hasSize(2)
                     .anySatisfy(v -> assertThat(v).startsWith("northstar.contacts: declared policy missing"))
                     .anySatisfy(v -> assertThat(v).startsWith("northstar.contact_sources: declared policy missing"));
+        }
+
+        @Test
+        void aStaffInsertRuleOnContactsThatAnyoneCanPassFails() {
+            // Step 2.10: the insert rule must keep the webhook actor, unknown roles and inactive staff out.
+            sql("drop policy contacts_staff_insert on northstar.contacts");
+            sql("create policy contacts_staff_insert on northstar.contacts as restrictive for insert to app_user"
+                    + " with check (true)");
+            assertThat(gate())
+                    .hasSize(2)
+                    .anySatisfy(v -> assertThat(v).startsWith("northstar.contacts: undeclared or changed policy"))
+                    .anySatisfy(v -> assertThat(v).startsWith("northstar.contacts: declared policy missing"));
+        }
+
+        @Test
+        void aRequestKeysPolicyLettingStaffSeeEveryKeyFails() {
+            sql("drop policy request_keys_staff_own on northstar.request_keys");
+            assertThat(gate())
+                    .singleElement()
+                    .satisfies(v -> assertThat(v).startsWith("northstar.request_keys: declared policy missing"));
         }
 
         @Test

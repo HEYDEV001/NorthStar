@@ -207,17 +207,24 @@ class ConversationIsolationTests {
                 .isOne();
         assertThat(asStaff(shop, "update northstar.contacts set name = 'Asha' where id = :id", colleagues))
                 .isZero();
-        assertThatThrownBy(() -> app.run(
-                        tenant,
-                        shop.staffUser(),
-                        "staff",
-                        jdbc -> jdbc.sql("insert into northstar.contacts (tenant_id, normalized_phone) values (:t, :p)")
-                                .param("t", tenant)
-                                .param("p", "+9198" + (10_000_000 + (int) (Math.random() * 89_999_999)))
-                                .update()))
-                .as("staff cannot create contacts until manual lead entry decides how (step 2.10)")
-                .rootCause()
-                .hasMessageContaining("row-level security");
+        UUID added = UUID.randomUUID();
+        Integer inserted = app.as(
+                tenant,
+                shop.staffUser(),
+                "staff",
+                jdbc -> jdbc.sql("""
+                                        insert into northstar.contacts (id, tenant_id, normalized_phone)
+                                        values (:id, :t, :p)""")
+                        .param("id", added)
+                        .param("t", tenant)
+                        .param("p", "+9198" + (10_000_000 + (int) (Math.random() * 89_999_999)))
+                        .update());
+        assertThat(inserted)
+                .as("staff may add a contact for manual lead entry (step 2.10)")
+                .isOne();
+        assertThat(idsSeenBy(tenant, shop.staffUser(), "staff", "northstar.contacts"))
+                .as("but see it only once a lead of theirs exists: reads are unchanged")
+                .containsExactlyInAnyOrder(viaOpenLead, viaClosedLead, viaConversation);
         assertThatThrownBy(() -> app.run(
                         tenant,
                         shop.staffUser(),

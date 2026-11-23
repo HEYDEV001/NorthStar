@@ -1,5 +1,6 @@
 package com.northstar.contacts.internal;
 
+import com.northstar.contacts.ContactNames;
 import com.northstar.contacts.ContactSource;
 import com.northstar.contacts.InboundContacts;
 import com.northstar.contacts.InboundMessage;
@@ -108,7 +109,7 @@ class InboundContactsService implements InboundContacts {
     public UUID lockContact(String normalizedPhone, String profileName) {
         if (!PhoneNumbers.isE164(normalizedPhone)) throw new IllegalArgumentException("Not an E.164 phone number");
         UUID tenant = systemTenant();
-        String name = cleanName(profileName);
+        String name = ContactNames.clean(profileName);
         jdbc.sql(INSERT_CONTACT)
                 .param(tenant)
                 .param(normalizedPhone)
@@ -202,32 +203,6 @@ class InboundContactsService implements InboundContacts {
                 == 1;
         jdbc.sql(TOUCH_CONVERSATION).param(tenant).param(conversationId).update();
         return new StoredInbound(messageId, reopened);
-    }
-
-    /**
-     * A profile name as kept: control characters and runs of white space become one space, trimmed, at most
-     * {@link #MAX_NAME_LENGTH} code points; null when nothing is left. Never logged.
-     */
-    static String cleanName(String profileName) {
-        if (profileName == null) return null;
-        StringBuilder kept = new StringBuilder();
-        int length = 0;
-        boolean gap = false;
-        for (int codePoint : profileName.codePoints().toArray()) {
-            if (Character.isISOControl(codePoint)
-                    || Character.isWhitespace(codePoint)
-                    || Character.isSpaceChar(codePoint)) {
-                gap = !kept.isEmpty();
-                continue;
-            }
-            int needed = gap ? 2 : 1;
-            if (length + needed > MAX_NAME_LENGTH) break;
-            if (gap) kept.append(' ');
-            kept.appendCodePoint(codePoint);
-            length += needed;
-            gap = false;
-        }
-        return kept.isEmpty() ? null : kept.toString();
     }
 
     private static UUID systemTenant() {

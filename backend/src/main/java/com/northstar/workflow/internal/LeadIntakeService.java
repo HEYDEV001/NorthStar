@@ -31,7 +31,8 @@ class LeadIntakeService implements LeadIntake {
             where tenant_id = ? and id = ?""";
 
     // At most two rows: one means the tenant's workflow, two means more than one is published (no lead is opened).
-    private static final String PUBLISHED_VERSIONS = """
+    // Manual lead entry (LeadEntryService, step 2.10) reads it too.
+    static final String PUBLISHED_VERSIONS = """
             select current_version_id from northstar.workflows
             where tenant_id = ? and current_version_id is not null
             order by id

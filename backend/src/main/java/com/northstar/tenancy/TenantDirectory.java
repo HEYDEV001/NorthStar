@@ -5,7 +5,10 @@ import java.util.List;
 import java.util.Optional;
 import java.util.UUID;
 
-/** What background jobs need to know about tenants before they have, or to choose, a tenant scope (step 1.10). */
+/**
+ * What background jobs need to know about tenants before they have, or to choose, a tenant scope (step 1.10), and who
+ * the current member is.
+ */
 public interface TenantDirectory {
 
     /** Whether the current scope's tenant exists. Requires a tenant scope; RLS shows only that tenant's own row. */
@@ -13,6 +16,14 @@ public interface TenantDirectory {
 
     /** The current member's active membership in the scope's tenant; empty for the system and webhook actors. */
     Optional<UUID> currentMembershipId();
+
+    /**
+     * Whether this is an active membership of the scope's tenant, holding it with a shared row lock until the caller's
+     * transaction ends, so it cannot be deactivated before what the caller assigns to it commits (step 2.10: an admin
+     * assigning a manual lead). False for a missing, invited or deactivated membership and another tenant's, alike.
+     * Runs only inside the caller's transaction, as an admin.
+     */
+    boolean lockActiveMembership(UUID membershipId);
 
     /**
      * Tenants with actions due to run: pending and past their next attempt, or processing with an expired lease. Runs
