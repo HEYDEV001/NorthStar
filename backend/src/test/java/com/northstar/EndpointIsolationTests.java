@@ -42,7 +42,9 @@ class EndpointIsolationTests {
     private static final Map<String, String> TABLE_FOR_VARIABLE = Map.of();
 
     /** A valid body per request body type, so validation passes and the lookup is what is tested. */
-    private static final Map<String, String> SAMPLE_BODIES = Map.of("ChangeRoleRequest", "{\"role\": \"staff\"}");
+    private static final Map<String, String> SAMPLE_BODIES = Map.of(
+            "ChangeRoleRequest", "{\"role\": \"staff\"}",
+            "StaffReplyRequest", "{\"type\": \"text\", \"text\": \"Hello\"}");
 
     private final RequestMappingHandlerMapping mappings;
     private final MockMvcTester mvc;
@@ -154,7 +156,9 @@ class EndpointIsolationTests {
         var request = mvc.method(HttpMethod.valueOf(endpoint.method()))
                 .uri(uri)
                 .header(HttpHeaders.AUTHORIZATION, "Bearer " + tokens.forUser(user))
-                .header(LogContext.REQUEST_ID_HEADER, "p9-endpoints");
+                .header(LogContext.REQUEST_ID_HEADER, "p9-endpoints")
+                // Endpoints that need one (step 2.9b's reply) check it before the lookup; the rest ignore it.
+                .header("Idempotency-Key", "p9-" + id);
         if (endpoint.bodyType() != null) {
             request = request.contentType(MediaType.APPLICATION_JSON).content(SAMPLE_BODIES.get(endpoint.bodyType()));
         }

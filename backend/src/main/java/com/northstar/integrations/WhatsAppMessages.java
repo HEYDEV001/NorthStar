@@ -1,5 +1,6 @@
 package com.northstar.integrations;
 
+import com.northstar.contacts.OutboundContent;
 import com.northstar.contacts.OutboundMessages;
 import com.northstar.contacts.TemplateParameters;
 import com.northstar.workflow.ActionView;
@@ -11,9 +12,10 @@ import java.util.UUID;
  * if it has one): its recipient is the conversation's contact, so an opt-out refuses it (W32), and its payload is the
  * message ID only, never the text. The worker sends it later and checks the 24-hour window then, not now (W33).
  *
- * <p>Runs in the caller's tenant scope, as the system actor only until step 2.9 adds staff replies. The idempotency key
- * names the send: queueing again with the same key stores no second message and creates no second action, and returns
- * the first (P1). Another tenant's conversation or template is not found (P9).
+ * <p>Runs in the caller's tenant scope: {@link #queueText} and {@link #queueTemplate} as the system actor (the engine,
+ * the AI), {@link #queueStaffReply} as an admin or staff member (step 2.9b). The idempotency key names the send:
+ * queueing again with the same key stores no second message and creates no second action, and returns the first (P1,
+ * P21). Another tenant's conversation or template is not found (P9).
  */
 public interface WhatsAppMessages {
 
@@ -22,6 +24,24 @@ public interface WhatsAppMessages {
 
     /** The queued message and its send action; created is false when the key had been queued before. */
     record Queued(UUID messageId, ActionView action, boolean created) {}
+
+    /** The longest Idempotency-Key a staff reply takes. */
+    int MAX_STAFF_KEY_LENGTH = 100;
+
+    /**
+     * A reply from the caller, an admin or a staff member (step 2.9b, build-document.md section 3): free text inside
+     * the 24-hour window, an approved template with its values outside it, and to an opted-out contact only free text
+     * inside the window the client opened by writing again after opting out (W32), audited as
+     * {@code message.sent_after_opt_out}. The sender is the caller's own membership. A closed conversation is reopened.
+     *
+     * <p>The key is the request's Idempotency-Key, scoped to the caller's membership, so the same request sent twice
+     * (a double click, two tabs, a retry) queues one message and one send (P21); the same key with another reply is
+     * refused as {@code idempotency_key_reused}. The send checks the window again when it runs (W33).
+     *
+     * @param idempotencyKey 1 to {@value #MAX_STAFF_KEY_LENGTH} characters
+     * @see com.northstar.contacts.OutboundMessages#queueStaffReply for the refusals
+     */
+    Queued queueStaffReply(UUID conversationId, OutboundContent content, String idempotencyKey);
 
     /**
      * Free text, 1 to 4,096 characters. It is sent only if the window is open when the send runs; otherwise the send

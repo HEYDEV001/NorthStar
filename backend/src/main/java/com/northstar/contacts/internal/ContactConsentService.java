@@ -6,6 +6,7 @@ import com.northstar.contacts.InboundMessageType;
 import com.northstar.tenancy.TenantContext;
 import com.northstar.tenancy.TenantScope;
 import com.northstar.tenancy.TenantSettings;
+import java.time.Duration;
 import java.time.Instant;
 import java.time.OffsetDateTime;
 import java.time.ZoneOffset;
@@ -44,16 +45,24 @@ class ContactConsentService implements ContactConsent {
             where tenant_id = ? and id = ?
             for update""";
 
-    // opt_out_at keeps its first value (the database refuses moving it, NSC01).
+    // opt_out_at keeps its first value (the database refuses moving it, NSC01); last_opt_out_at (step 2.9b) moves
+    // forward to every later opt-out message, and never back for one that arrives late.
     private static final String RECORD_OPT_OUT = """
-            update northstar.contacts set consent_state = 'opted_out', opt_out_at = coalesce(opt_out_at, ?)
-            where tenant_id = ? and id = ?""";
+            update northstar.contacts
+            set consent_state = 'opted_out', opt_out_at = coalesce(opt_out_at, :at),
+                last_opt_out_at = greatest(coalesce(last_opt_out_at, :at), :at)
+            where tenant_id = :tenant and id = :id""";
 
     // A shared lock: it waits for an opt-out in progress (the update lock above) and then reads its result.
     private static final String READ_CONSENT = """
             select consent_state = 'opted_out' from northstar.contacts
             where tenant_id = ? and id = ?
             for share""";
+
+    // The database's own rule (step 2.9b, northstar.staff_reply_allowed_after_opt_out), the one the backstop
+    // actions_refuse_opted_out applies with no margin, so the app and the database can never disagree on it.
+    private static final String STAFF_REPLY_ALLOWED = """
+            select northstar.staff_reply_allowed_after_opt_out(?, ?, ?, cast(? as integer) * interval '1 second')""";
 
     private final JdbcClient jdbc;
     private final TenantSettings settings;
@@ -88,13 +97,12 @@ class ContactConsentService implements ContactConsent {
                 .query(String.class)
                 .optional()
                 .orElseThrow(() -> new IllegalStateException("The contact to opt out is not in this tenant"));
-        if (OPTED_OUT.equals(state)) return false;
         jdbc.sql(RECORD_OPT_OUT)
-                .param(OffsetDateTime.ofInstant(optedOutAt, ZoneOffset.UTC))
-                .param(tenant)
-                .param(contactId)
+                .param("at", OffsetDateTime.ofInstant(optedOutAt, ZoneOffset.UTC))
+                .param("tenant", tenant)
+                .param("id", contactId)
                 .update();
-        return true;
+        return !OPTED_OUT.equals(state);
     }
 
     @Override
@@ -106,6 +114,20 @@ class ContactConsentService implements ContactConsent {
                 .query(Boolean.class)
                 .optional()
                 .orElseThrow(() -> new NotFoundException("contact", contactId));
+    }
+
+    @Override
+    public boolean staffReplyAllowed(UUID contactId, UUID messageId, Duration margin) {
+        Objects.requireNonNull(contactId, "contactId");
+        Objects.requireNonNull(messageId, "messageId");
+        if (margin == null || margin.isNegative()) throw new IllegalArgumentException("margin < 0");
+        return Boolean.TRUE.equals(jdbc.sql(STAFF_REPLY_ALLOWED)
+                .param(TenantScope.require().tenantId())
+                .param(contactId)
+                .param(messageId)
+                .param(Math.toIntExact(margin.toSeconds()))
+                .query(Boolean.class)
+                .single());
     }
 
     private static UUID systemTenant() {

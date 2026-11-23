@@ -727,6 +727,46 @@ class InboundWhatsAppJobTests {
     }
 
     @Test
+    void W32_whenTheClientLastWroteSkipsReactionsAndSystemMessagesAndOnlyMovesForward() {
+        Business business = business();
+        Instant first = Instant.parse("2026-11-20T10:00:00Z");
+        Instant later = Instant.parse("2026-11-20T10:05:00Z");
+        run(
+                business.tenant(),
+                store(WhatsAppPayloads.inbound(business.number()).sentAt(first).text("Hi")));
+        UUID conversation = conversation(business.tenant(), contactId(business.tenant(), CUSTOMER))
+                .id();
+        assertThat(lastContactMessageAt(conversation)).isEqualTo(first);
+
+        run(
+                business.tenant(),
+                store(WhatsAppPayloads.inbound(business.number())
+                        .sentAt(later)
+                        .typed("reaction", "{\"message_id\":\"wamid.REACTED\",\"emoji\":\"\\u2764\"}")));
+        run(
+                business.tenant(),
+                store(WhatsAppPayloads.inbound(business.number())
+                        .sentAt(later.plusSeconds(60))
+                        .typed("system", "{\"body\":\"Number changed\",\"type\":\"customer_changed_number\"}")));
+        assertThat(lastContactMessageAt(conversation))
+                .as("step 2.9b: a reaction or a system message is not the client writing")
+                .isEqualTo(first);
+        assertThat(conversation(business.tenant(), contactId(business.tenant(), CUSTOMER))
+                        .lastInboundAt()
+                        .toInstant())
+                .as("while every inbound message still moves the window")
+                .isEqualTo(later.plusSeconds(60));
+
+        run(
+                business.tenant(),
+                store(WhatsAppPayloads.inbound(business.number()).sentAt(later).text("Photo?")));
+        run(
+                business.tenant(),
+                store(WhatsAppPayloads.inbound(business.number()).sentAt(first).text("Late copy")));
+        assertThat(lastContactMessageAt(conversation)).as("forward only").isEqualTo(later);
+    }
+
+    @Test
     void P1_aDuplicateLeavesAClosedConversationClosedAndItsActivityAsItWas() {
         Business business = business();
         UUID row = store(WhatsAppPayloads.inbound(business.number()));
@@ -1100,6 +1140,14 @@ class InboundWhatsAppJobTests {
                         rs.getObject("last_inbound_at", OffsetDateTime.class),
                         rs.getObject("window_expires_at", OffsetDateTime.class)))
                 .single();
+    }
+
+    private Instant lastContactMessageAt(UUID conversation) {
+        return admin.sql("select last_contact_message_at from northstar.conversations where id = :id")
+                .param("id", conversation)
+                .query(OffsetDateTime.class)
+                .single()
+                .toInstant();
     }
 
     /** Closes the conversation and backdates its latest activity, as an operator could today (no step closes one). */

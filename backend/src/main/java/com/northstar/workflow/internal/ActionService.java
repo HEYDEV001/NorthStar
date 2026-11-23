@@ -31,7 +31,8 @@ import org.springframework.transaction.support.TransactionTemplate;
  * {@link Actions}: creating, approving, listing and resuming actions in the current tenant.
  *
  * <p>An action that sends something to a contact names that contact, and one for a contact who has opted out is
- * created cancelled ({@value OutboundCancellation#CONTACT_OPTED_OUT}) and never queued (step 2.5, W32). The consent is
+ * created cancelled ({@value OutboundCancellation#CONTACT_OPTED_OUT}) and never queued (step 2.5, W32), unless it is
+ * the one exception {@link RecipientConsent} allows (step 2.9b: a staff member's reply after the client wrote again). The consent is
  * read under the contact's shared lock in the creating transaction, so an opt-out being recorded at the same time is
  * waited for and seen; the database refuses any runnable insert for such a contact as the backstop (NSA01). Its
  * handler hears of the cancellation through {@link ActionHandler#closed} in the creating transaction (step 2.6a).
@@ -83,7 +84,8 @@ class ActionService implements Actions {
         }
         return transactions.execute(status -> {
             Instant now = ActionExecutor.now();
-            boolean optedOut = toContact && consent.isOptedOut(request.recipientContactId());
+            boolean optedOut = toContact
+                    && !consent.mayMessage(request.recipientContactId(), request.type(), request.payloadJson());
             String initialStatus;
             if (optedOut) initialStatus = Action.CANCELLED;
             else if (request.needsReview()) initialStatus = Action.NEEDS_REVIEW;

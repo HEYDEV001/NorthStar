@@ -121,6 +121,251 @@ class ConsentSchemaTests {
                 .hasMessageContaining("not visible");
     }
 
+    // Step 2.9b: the one exception, a staff member's text reply after the client wrote again (NSA01)
+
+    @Test
+    void W32_theDatabaseLetsThroughOnlyAStaffTextReplyInTheWindowTheClientOpenedAfterOptingOut() {
+        Reply reply = replyAfterOptOut();
+        UUID tenant = reply.tenant();
+
+        asSystem(
+                tenant,
+                jdbc -> assertThat(insertSend(jdbc, tenant, reply.contact(), reply.staffText(), "pending"))
+                        .as("a staff member's text inside the window")
+                        .isNotNull());
+        assertThat(insertSend(admin, tenant, reply.contact(), reply.staffText(), "pending"))
+                .as("for every role")
+                .isNotNull();
+        for (UUID refused : List.of(reply.staffTemplate(), reply.systemText(), reply.aiText(), reply.elsewhere())) {
+            assertThatThrownBy(() ->
+                            asSystem(tenant, jdbc -> insertSend(jdbc, tenant, reply.contact(), refused, "pending")))
+                    .as("a template, a system or AI text, or a staff text in another contact's conversation")
+                    .rootCause()
+                    .satisfies(e -> assertThat(((SQLException) e).getSQLState()).isEqualTo("NSA01"));
+            assertThatThrownBy(() -> insertSend(admin, tenant, reply.contact(), refused, "pending"))
+                    .as("for every role, the owner included")
+                    .rootCause()
+                    .hasMessageContaining("opted out");
+        }
+        for (String payload : List.of("{}", "{\"messageId\": \"not-a-uuid\"}", "[\"" + reply.staffText() + "\"]")) {
+            assertThatThrownBy(() -> asSystem(
+                            tenant,
+                            jdbc -> insertAction(jdbc, tenant, reply.contact(), "whatsapp.send", payload, "pending")))
+                    .as(payload)
+                    .rootCause()
+                    .hasMessageContaining("opted out");
+        }
+        assertThatThrownBy(() -> asSystem(
+                        tenant,
+                        jdbc -> insertAction(
+                                jdbc,
+                                tenant,
+                                reply.contact(),
+                                "test.fake.contact",
+                                "{\"messageId\": \"" + reply.staffText() + "\"}",
+                                "pending")))
+                .as("another type naming the staff text")
+                .rootCause()
+                .hasMessageContaining("opted out");
+        assertThat(this.<Boolean>asSystem(
+                        tenant,
+                        jdbc -> jdbc.sql("""
+                                select northstar.opt_out_reply_until(:t, :c)
+                                  = (select last_contact_message_at + interval '24 hours'
+                                     from northstar.conversations where id = :c)""")
+                                .param("t", tenant)
+                                .param("c", reply.conversation())
+                                .query(Boolean.class)
+                                .single()))
+                .isTrue();
+    }
+
+    @Test
+    void W32_theExceptionClosesWithTheWindowAnotherOptOutOrAMessageInTheSameSecond() {
+        for (String close : List.of(
+                "update northstar.conversations set last_contact_message_at = now() - interval '24 hours'"
+                        + " - interval '1 second' where id = :conversation",
+                "update northstar.contacts set last_opt_out_at = now() where id = :contact",
+                "update northstar.conversations set last_contact_message_at = (select last_opt_out_at from"
+                        + " northstar.contacts where id = :contact) where id = :conversation")) {
+            Reply reply = replyAfterOptOut();
+            UUID claimable = asSystem(
+                    reply.tenant(),
+                    jdbc -> insertSend(jdbc, reply.tenant(), reply.contact(), reply.staffText(), "pending"));
+            admin.sql(close)
+                    .param("conversation", reply.conversation())
+                    .param("contact", reply.contact())
+                    .update();
+
+            assertThatThrownBy(() -> asSystem(reply.tenant(), jdbc -> claim(jdbc, claimable)))
+                    .as(close)
+                    .rootCause()
+                    .satisfies(e -> assertThat(((SQLException) e).getSQLState()).isEqualTo("NSA01"));
+            assertThat(this.<Boolean>asSystem(
+                            reply.tenant(),
+                            jdbc -> jdbc.sql("select coalesce(northstar.opt_out_reply_until(:t, :c) <= now(), true)")
+                                    .param("t", reply.tenant())
+                                    .param("c", reply.conversation())
+                                    .query(Boolean.class)
+                                    .single()))
+                    .as("closed (no end, or an end already past): " + close)
+                    .isTrue();
+        }
+        Reply open = replyAfterOptOut();
+        UUID claimable = asSystem(
+                open.tenant(), jdbc -> insertSend(jdbc, open.tenant(), open.contact(), open.staffText(), "pending"));
+        assertThat(this.<Integer>asSystem(open.tenant(), jdbc -> claim(jdbc, claimable)))
+                .as("claimed while the exception is open")
+                .isOne();
+        assertThat(this.<String>asSystem(
+                        open.tenant(),
+                        jdbc -> jdbc.sql("""
+                                select northstar.staff_reply_allowed_after_opt_out(:t, :c, :m, interval '0')
+                                  || '|' || northstar.staff_reply_allowed_after_opt_out(:t, :c, :m, interval '1 day')""")
+                                .param("t", open.tenant())
+                                .param("c", open.contact())
+                                .param("m", open.staffText())
+                                .query(String.class)
+                                .single()))
+                .as("the margin narrows the window")
+                .isEqualTo("true|false");
+    }
+
+    // Step 2.9b: the latest opt-out (NSC01) and when the client wrote (NSV01)
+
+    @Test
+    void W32_theLatestOptOutIsTheSystemsAndOnlyMovesForward() {
+        UUID tenant = data.tenant();
+        UUID contact = data.contact(tenant);
+        asSystem(
+                tenant,
+                jdbc -> updateContact(
+                        jdbc,
+                        contact,
+                        "consent_state = 'opted_out', opt_out_at = now() - interval '1 hour',"
+                                + " last_opt_out_at = now() - interval '1 hour'"));
+
+        for (String change : List.of("last_opt_out_at = now() - interval '2 hours'", "last_opt_out_at = null")) {
+            for (JdbcClientRunner who :
+                    List.<JdbcClientRunner>of(work -> asSystem(tenant, work), work -> work.apply(admin))) {
+                assertThatThrownBy(() -> who.run(jdbc -> updateContact(jdbc, contact, change)))
+                        .as(change)
+                        .rootCause()
+                        .satisfies(e ->
+                                assertThat(((SQLException) e).getSQLState()).isEqualTo("NSC01"));
+            }
+        }
+        TestData.Member owner = data.member("admin");
+        UUID ownersContact = data.contact(owner.tenantId());
+        admin.sql("""
+                        update northstar.contacts set consent_state = 'opted_out', opt_out_at = now(),
+                          last_opt_out_at = now() where id = :id""").param("id", ownersContact).update();
+        assertThatThrownBy(() -> app.as(
+                        owner.tenantId(),
+                        owner.userId(),
+                        "admin",
+                        jdbc -> updateContact(jdbc, ownersContact, "last_opt_out_at = now() + interval '1 minute'")))
+                .as("an admin")
+                .rootCause()
+                .satisfies(e -> assertThat(((SQLException) e).getSQLState()).isEqualTo("NSC01"));
+        assertThat(this.<Integer>asSystem(tenant, jdbc -> updateContact(jdbc, contact, "last_opt_out_at = now()")))
+                .as("the system moves it forward")
+                .isOne();
+
+        UUID fresh = data.contact(tenant);
+        assertThatThrownBy(() -> updateContact(admin, fresh, "consent_state = 'opted_out', opt_out_at = now()"))
+                .rootCause()
+                .hasMessageContaining("contacts_last_opt_out_complete");
+        assertThatThrownBy(() -> updateContact(
+                        admin,
+                        fresh,
+                        "consent_state = 'opted_out', opt_out_at = now(),"
+                                + " last_opt_out_at = now() - interval '1 minute'"))
+                .rootCause()
+                .hasMessageContaining("contacts_last_opt_out_after_first");
+    }
+
+    @Test
+    void W32_whenTheClientWroteIsTheSystemsToRecordAndOnlyMovesForward() {
+        TestData.Member owner = data.member("admin");
+        UUID tenant = owner.tenantId();
+        UUID staffUser = data.user();
+        UUID staff = data.membership(tenant, staffUser, "staff", "active");
+        UUID conversation = data.conversation(tenant, data.contact(tenant), data.whatsAppNumber(tenant), staff);
+
+        for (String column : List.of("last_inbound_at", "last_contact_message_at")) {
+            String set = "update northstar.conversations set " + column + " = now() where id = :id";
+            assertThatThrownBy(() -> app.as(
+                            tenant,
+                            owner.userId(),
+                            "admin",
+                            jdbc -> jdbc.sql(set).param("id", conversation).update()))
+                    .as("an admin: " + column)
+                    .rootCause()
+                    .satisfies(e -> assertThat(((SQLException) e).getSQLState()).isEqualTo("NSV01"));
+            assertThatThrownBy(() -> app.as(
+                            tenant,
+                            staffUser,
+                            "staff",
+                            jdbc -> jdbc.sql(set).param("id", conversation).update()))
+                    .as("the assigned staff member: " + column)
+                    .rootCause()
+                    .satisfies(e -> assertThat(((SQLException) e).getSQLState()).isEqualTo("NSV01"));
+            assertThat(this.<Integer>asSystem(
+                            tenant,
+                            jdbc -> jdbc.sql(set).param("id", conversation).update()))
+                    .as("the system: " + column)
+                    .isOne();
+            for (String back : List.of("now() - interval '1 hour'", "null")) {
+                assertThatThrownBy(() -> asSystem(
+                                tenant,
+                                jdbc -> jdbc.sql("update northstar.conversations set " + column + " = " + back
+                                                + " where id = :id")
+                                        .param("id", conversation)
+                                        .update()))
+                        .as("the system moving " + column + " to " + back)
+                        .rootCause()
+                        .satisfies(e ->
+                                assertThat(((SQLException) e).getSQLState()).isEqualTo("NSV01"));
+            }
+            assertThat(admin.sql("update northstar.conversations set " + column + " = now() - interval '1 day'"
+                                    + " where id = :id")
+                            .param("id", conversation)
+                            .update())
+                    .as("an operator, as fixtures and repairs do")
+                    .isOne();
+        }
+        assertThat(app.<Integer>as(
+                        tenant,
+                        owner.userId(),
+                        "admin",
+                        jdbc -> jdbc.sql("update northstar.conversations set needs_human = true where id = :id")
+                                .param("id", conversation)
+                                .update()))
+                .as("other columns are unaffected")
+                .isOne();
+        assertThatThrownBy(() -> app.as(
+                        tenant,
+                        owner.userId(),
+                        "admin",
+                        jdbc -> jdbc.sql("""
+                                insert into northstar.conversations
+                                  (tenant_id, contact_id, channel, whatsapp_phone_number_id, last_inbound_at)
+                                values (:t, :c, 'whatsapp', :n, now())""")
+                                .param("t", tenant)
+                                .param("c", data.contact(tenant))
+                                .param("n", data.whatsAppNumber(tenant))
+                                .update()))
+                .as("inserting with a time")
+                .rootCause()
+                .satisfies(e -> assertThat(((SQLException) e).getSQLState()).isEqualTo("NSV01"));
+        assertThat(admin.sql("""
+                        select string_agg(privilege_type, ',' order by privilege_type)
+                        from information_schema.column_privileges
+                        where table_schema = 'northstar' and table_name = 'conversations'
+                          and column_name = 'last_contact_message_at' and grantee = 'app_user'""").query(String.class).single()).isEqualTo("SELECT,UPDATE");
+    }
+
     // The recipient and the cancel reason
 
     @Test
@@ -176,7 +421,7 @@ class ConsentSchemaTests {
         asSystem(
                 tenant,
                 jdbc -> assertThat(jdbc.sql("""
-                                update northstar.contacts set consent_state = 'opted_out', opt_out_at = now()
+                                update northstar.contacts set consent_state = 'opted_out', opt_out_at = now(), last_opt_out_at = now()
                                 where id = :id""").param("id", contact).update()).isOne());
 
         for (String change : List.of(
@@ -212,7 +457,7 @@ class ConsentSchemaTests {
         UUID contact = data.contact(tenant);
 
         for (String change : List.of(
-                "consent_state = 'opted_out', opt_out_at = now()",
+                "consent_state = 'opted_out', opt_out_at = now(), last_opt_out_at = now()",
                 "consent_state = 'opted_in', opted_in_at = now()",
                 "opted_in_at = now()")) {
             assertThatThrownBy(() ->
@@ -248,7 +493,7 @@ class ConsentSchemaTests {
     void anOptedOutContactHasItsOptOutTime() {
         UUID tenant = data.tenant();
         UUID contact = data.contact(tenant);
-        assertThatThrownBy(() -> updateContact(admin, contact, "consent_state = 'opted_out'"))
+        assertThatThrownBy(() -> updateContact(admin, contact, "consent_state = 'opted_out', last_opt_out_at = now()"))
                 .rootCause()
                 .hasMessageContaining("contacts_opted_out_has_time");
     }
@@ -307,7 +552,8 @@ class ConsentSchemaTests {
     }
 
     private void optOut(UUID contact) {
-        admin.sql("update northstar.contacts set consent_state = 'opted_out', opt_out_at = now() where id = :id")
+        admin.sql(
+                        "update northstar.contacts set consent_state = 'opted_out', opt_out_at = now(), last_opt_out_at = now() where id = :id")
                 .param("id", contact)
                 .update();
     }
@@ -325,6 +571,96 @@ class ConsentSchemaTests {
                 .param("key", "schema:" + UUID.randomUUID())
                 .param("recipient", recipient)
                 .param("reason", reason)
+                .query(UUID.class)
+                .single();
+    }
+
+    /** Runs work through one login or another, so a test can check several with the same steps. */
+    @FunctionalInterface
+    private interface JdbcClientRunner {
+        int run(Function<JdbcClient, Integer> work);
+    }
+
+    /**
+     * An opted-out contact (an hour ago) who wrote again ten minutes ago, in a conversation assigned to a staff member,
+     * with queued outbound messages of every kind: the staff member's text and template, a system and an AI text, and
+     * a staff text in another contact's conversation.
+     */
+    private record Reply(
+            UUID tenant,
+            UUID contact,
+            UUID conversation,
+            UUID staffText,
+            UUID staffTemplate,
+            UUID systemText,
+            UUID aiText,
+            UUID elsewhere) {}
+
+    private Reply replyAfterOptOut() {
+        TestData.Member owner = data.member("admin");
+        UUID tenant = owner.tenantId();
+        UUID staff = data.membership(tenant, data.user(), "staff", "active");
+        String number = data.whatsAppNumber(tenant);
+        UUID contact = data.contact(tenant);
+        UUID conversation = data.conversation(tenant, contact, number, staff);
+        UUID otherConversation = data.conversation(tenant, data.contact(tenant), number, staff);
+        admin.sql("""
+                        update northstar.contacts set consent_state = 'opted_out', opt_out_at = now() - interval '1 hour',
+                          last_opt_out_at = now() - interval '1 hour' where id = :id""").param("id", contact).update();
+        admin.sql("""
+                        update northstar.conversations
+                        set last_inbound_at = now() - interval '10 minutes',
+                            last_contact_message_at = now() - interval '10 minutes'
+                        where id in (:a, :b)""").param("a", conversation).param("b", otherConversation).update();
+        UUID template = data.messageTemplate(tenant);
+        return new Reply(
+                tenant,
+                contact,
+                conversation,
+                outbound(tenant, conversation, "staff", staff, "text", null),
+                outbound(tenant, conversation, "staff", staff, "template", template),
+                outbound(tenant, conversation, "system", null, "text", null),
+                outbound(tenant, conversation, "ai", null, "text", null),
+                outbound(tenant, otherConversation, "staff", staff, "text", null));
+    }
+
+    private UUID outbound(UUID tenant, UUID conversation, String sender, UUID membership, String type, UUID template) {
+        return admin.sql("""
+                        insert into northstar.messages
+                          (tenant_id, conversation_id, direction, sender_type, sender_membership_id, type, body,
+                           template_id, status)
+                        values (:t, :c, 'out', :sender, :membership, :type, 'Reply', :template, 'queued')
+                        returning id""")
+                .param("t", tenant)
+                .param("c", conversation)
+                .param("sender", sender)
+                .param("membership", membership)
+                .param("type", type)
+                .param("template", template)
+                .query(UUID.class)
+                .single();
+    }
+
+    /** A whatsapp.send action for this message, as WhatsAppMessages creates one (its payload the message ID only). */
+    private static UUID insertSend(JdbcClient jdbc, UUID tenant, UUID recipient, UUID message, String status) {
+        return insertAction(jdbc, tenant, recipient, "whatsapp.send", "{\"messageId\": \"" + message + "\"}", status);
+    }
+
+    private static UUID insertAction(
+            JdbcClient jdbc, UUID tenant, UUID recipient, String type, String payload, String status) {
+        return jdbc.sql("""
+                        insert into northstar.actions
+                          (tenant_id, type, status, idempotency_key, mode, payload, next_attempt_at,
+                           recipient_contact_id)
+                        values (:t, :type, :status, :key, 'automatic', cast(:payload as jsonb),
+                                case when :status = 'pending' then now() end, :recipient)
+                        returning id""")
+                .param("t", tenant)
+                .param("type", type)
+                .param("status", status)
+                .param("key", "schema:" + UUID.randomUUID())
+                .param("payload", payload)
+                .param("recipient", recipient)
                 .query(UUID.class)
                 .single();
     }

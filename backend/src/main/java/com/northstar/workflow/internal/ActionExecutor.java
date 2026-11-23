@@ -38,7 +38,8 @@ import org.springframework.transaction.support.TransactionTemplate;
  *       attempt, or processing with an expired lease, when the lost attempt still counts). Anything else, a succeeded
  *       or cancelled action included, is left alone, so running the same job twice performs the side effect once. A
  *       due action whose recipient has opted out is cancelled instead ({@value OutboundCancellation#CONTACT_OPTED_OUT},
- *       step 2.5, W32), and its handler is never called.
+ *       step 2.5, W32), and its handler is never called, unless it is the one exception {@link RecipientConsent}
+ *       allows (step 2.9b: a staff member's reply after the client wrote again).
  *   <li>Call the handler outside any transaction, on its own thread, for at most its timeout.
  *   <li>Record the outcome, in a second short transaction, only if the action is still on this attempt.
  * </ol>
@@ -131,8 +132,9 @@ class ActionExecutor implements DisposableBean {
     private Claim claim(UUID actionId) {
         UUID tenantId = TenantScope.require().tenantId();
         // The recipient's consent first, under the contact's shared lock, then the action's lock (see the class note).
-        boolean optedOut = actions.findRecipientContactId(tenantId, actionId)
-                .map(consent::isOptedOut)
+        boolean optedOut = actions.findRecipient(tenantId, actionId)
+                .map(recipient -> !consent.mayMessage(
+                        recipient.getRecipientContactId(), recipient.getType(), recipient.getPayload()))
                 .orElse(false);
         Optional<Action> found = actions.findLockedById(actionId);
         if (found.isEmpty()) {

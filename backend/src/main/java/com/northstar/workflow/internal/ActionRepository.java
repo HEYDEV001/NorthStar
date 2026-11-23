@@ -41,15 +41,26 @@ interface ActionRepository extends JpaRepository<Action, UUID> {
             @Param("recipientContactId") UUID recipientContactId,
             @Param("cancelReason") String cancelReason);
 
+    /** An action's recipient, with the type and payload that say what it sends (steps 2.5 and 2.9b). */
+    interface Recipient {
+        UUID getRecipientContactId();
+
+        String getType();
+
+        String getPayload();
+    }
+
     /**
-     * The action's recipient (step 2.5), read as a plain value without loading the action into the persistence
-     * context, so the claim can read the recipient's consent before it locks the action. Empty when the action has no
-     * recipient or is not in the tenant. The recipient is written once, so reading it unlocked is safe.
+     * The action's recipient, type and payload (steps 2.5 and 2.9b), read as plain values without loading the action
+     * into the persistence context, so the claim can read the recipient's consent before it locks the action. Empty
+     * when the action has no recipient or is not in the tenant. All three are written once, so reading them unlocked is
+     * safe.
      */
     @Query(nativeQuery = true, value = """
-            select recipient_contact_id from northstar.actions
+            select recipient_contact_id as recipientContactId, type, payload::text as payload
+            from northstar.actions
             where tenant_id = :tenantId and id = :id and recipient_contact_id is not null""")
-    Optional<UUID> findRecipientContactId(@Param("tenantId") UUID tenantId, @Param("id") UUID id);
+    Optional<Recipient> findRecipient(@Param("tenantId") UUID tenantId, @Param("id") UUID id);
 
     Optional<Action> findByIdempotencyKey(String idempotencyKey);
 

@@ -1,12 +1,18 @@
 package com.northstar.contacts.internal;
 
+import com.northstar.api.BadRequestException;
+import com.northstar.api.ConflictException;
+import com.northstar.api.ForbiddenException;
 import com.northstar.api.NotFoundException;
+import com.northstar.api.UnprocessableException;
 import com.northstar.contacts.DeliveryStatus;
 import com.northstar.contacts.MessageToSend;
 import com.northstar.contacts.OutboundContent;
 import com.northstar.contacts.OutboundMessages;
 import com.northstar.contacts.TemplateParameters;
+import com.northstar.tenancy.Role;
 import com.northstar.tenancy.TenantContext;
+import com.northstar.tenancy.TenantDirectory;
 import com.northstar.tenancy.TenantScope;
 import java.nio.charset.StandardCharsets;
 import java.sql.ResultSet;
@@ -21,6 +27,7 @@ import java.util.Map;
 import java.util.Objects;
 import java.util.Optional;
 import java.util.UUID;
+import java.util.function.Function;
 import org.springframework.jdbc.core.simple.JdbcClient;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Propagation;
@@ -82,6 +89,44 @@ class OutboundMessagesService implements OutboundMessages {
     private static final String TOUCH_CONVERSATION = """
             update northstar.conversations set last_message_at = now()
             where tenant_id = ? and id = ? and last_message_at < now()""";
+
+    // A staff reply (step 2.9b): the conversation, locked after its contact's shared lock (LOCK_RECIPIENT), with what
+    // the reply's checks need, each window with the sender's margin on the database's clock. The staff reply exception
+    // is the database's own function, the one actions_refuse_opted_out applies (step 2.9b).
+    private static final String LOCK_FOR_STAFF_REPLY = """
+            select c.status = 'closed' as closed,
+                   coalesce(c.window_expires_at > now() + cast(:margin as integer) * interval '1 second', false)
+                     as window_open,
+                   ct.consent_state = 'opted_out' as opted_out,
+                   coalesce(northstar.opt_out_reply_until(c.tenant_id, c.id)
+                              > now() + cast(:margin as integer) * interval '1 second', false)
+                     as reply_after_opt_out_open
+            from northstar.conversations c
+            join northstar.contacts ct on ct.tenant_id = c.tenant_id and ct.id = c.contact_id
+            where c.tenant_id = :tenant and c.id = :conversation
+            for no key update of c""";
+
+    // What a stored reply was, to tell a repeat of the same request from a reused key (P21).
+    private static final String STORED_REPLY = """
+            select conversation_id, sender_type, sender_membership_id, type, body, template_id,
+                   template_params::text as template_params
+            from northstar.messages where tenant_id = ? and id = ? and direction = 'out'""";
+
+    private static final String TEMPLATE_FOR_REPLY = """
+            select status, body, variables::text as variables
+            from northstar.message_templates where tenant_id = ? and id = ?""";
+
+    private static final String INSERT_STAFF_REPLY = """
+            insert into northstar.messages
+              (id, tenant_id, conversation_id, direction, sender_type, sender_membership_id, type, body, template_id,
+               template_params, status)
+            values (?, ?, ?, 'out', 'staff', ?, ?, ?, ?, cast(? as jsonb), 'queued')
+            on conflict (id) do nothing""";
+
+    // A staff reply reopens a closed conversation (step 2.9b), under the lock LOCK_FOR_STAFF_REPLY took.
+    private static final String REOPEN_CONVERSATION = """
+            update northstar.conversations set status = 'open'
+            where tenant_id = ? and id = ? and status = 'closed'""";
 
     // The stored message's recipient: the contact of the conversation it is in, which for a repeated ID may be the
     // first call's conversation.
@@ -175,10 +220,12 @@ class OutboundMessagesService implements OutboundMessages {
 
     private final JdbcClient jdbc;
     private final JsonMapper json;
+    private final TenantDirectory directory;
 
-    OutboundMessagesService(JdbcClient jdbc, JsonMapper json) {
+    OutboundMessagesService(JdbcClient jdbc, JsonMapper json, TenantDirectory directory) {
         this.jdbc = jdbc;
         this.json = json;
+        this.directory = directory;
     }
 
     @Override
@@ -251,6 +298,127 @@ class OutboundMessagesService implements OutboundMessages {
     }
 
     @Override
+    public StaffReplyQueued queueStaffReply(
+            UUID messageId, UUID conversationId, OutboundContent content, Duration windowMargin) {
+        Objects.requireNonNull(messageId, "messageId");
+        Objects.requireNonNull(conversationId, "conversationId");
+        Objects.requireNonNull(content, "content");
+        if (windowMargin == null || windowMargin.isNegative()) throw new IllegalArgumentException("windowMargin < 0");
+        TenantContext context = TenantScope.require();
+        if (context.role() != Role.ADMIN && context.role() != Role.STAFF) {
+            throw new IllegalStateException("Staff replies are queued by admins and staff only");
+        }
+        UUID tenant = context.tenantId();
+        UUID sender = directory
+                .currentMembershipId()
+                .orElseThrow(() -> new ForbiddenException("no_active_membership", "This account has no membership"));
+
+        UUID recipient = jdbc.sql(LOCK_RECIPIENT)
+                .param(tenant)
+                .param(conversationId)
+                .query(UUID.class)
+                .optional()
+                .orElseThrow(() -> new NotFoundException("conversation", conversationId));
+        ReplyState state = jdbc.sql(LOCK_FOR_STAFF_REPLY)
+                .param("margin", Math.toIntExact(windowMargin.toSeconds()))
+                .param("tenant", tenant)
+                .param("conversation", conversationId)
+                .query((row, n) -> new ReplyState(
+                        row.getBoolean("closed"),
+                        row.getBoolean("window_open"),
+                        row.getBoolean("opted_out"),
+                        row.getBoolean("reply_after_opt_out_open")))
+                .single();
+
+        Optional<StoredReply> stored = jdbc.sql(STORED_REPLY)
+                .param(tenant)
+                .param(messageId)
+                .query((row, n) -> new StoredReply(
+                        row.getObject("conversation_id", UUID.class),
+                        row.getString("sender_type"),
+                        row.getObject("sender_membership_id", UUID.class),
+                        row.getString("type"),
+                        row.getString("body"),
+                        row.getObject("template_id", UUID.class),
+                        row.getString("template_params")))
+                .optional();
+        if (stored.isPresent()) {
+            if (!stored.get().isSameReply(conversationId, sender, content, this::parameters)) throw keyReused();
+            return new StaffReplyQueued(messageId, recipient, false, false, false);
+        }
+
+        String type;
+        String body = null;
+        UUID templateId = null;
+        String parameters = null;
+        switch (content) {
+            case OutboundContent.Text text -> {
+                if (state.optedOut()) {
+                    if (!state.replyAfterOptOutOpen()) throw optedOut();
+                } else if (!state.windowOpen()) {
+                    throw new ConflictException(
+                            "window_closed", "Outside the 24-hour window only an approved template can be sent");
+                }
+                type = "text";
+                body = text.body();
+                requireNoNul(body);
+            }
+            case OutboundContent.Template template -> {
+                if (state.optedOut()) throw optedOut();
+                if (state.windowOpen()) {
+                    throw new ConflictException(
+                            "window_open_use_text", "Inside the 24-hour window, reply with text, not a template");
+                }
+                ReplyTemplate found = jdbc.sql(TEMPLATE_FOR_REPLY)
+                        .param(tenant)
+                        .param(template.templateId())
+                        .query((row, n) -> new ReplyTemplate(
+                                row.getString("status"), row.getString("body"), row.getString("variables")))
+                        .optional()
+                        .orElseThrow(() -> new NotFoundException("message_template", template.templateId()));
+                if (!"approved".equals(found.status())) {
+                    throw new ConflictException("template_not_approved", "Only an approved template can be sent");
+                }
+                type = "template";
+                templateId = template.templateId();
+                try {
+                    parameters = parametersJson(template.parameters());
+                } catch (IllegalArgumentException tooLarge) {
+                    throw new BadRequestException("template_values_too_large", "Template values are at most 8 KB");
+                }
+                try {
+                    body = TemplateText.render(found.body(), found.variables(), template.parameters(), json);
+                } catch (IllegalArgumentException mismatch) {
+                    throw new BadRequestException(
+                            "template_values_mismatch", "The values do not match the template's variables");
+                }
+            }
+        }
+
+        int inserted = jdbc.sql(INSERT_STAFF_REPLY)
+                .param(messageId)
+                .param(tenant)
+                .param(conversationId)
+                .param(sender)
+                .param(type)
+                .param(body)
+                .param(templateId)
+                .param(parameters)
+                .update();
+        // The ID is taken by a message the caller can no longer see (its conversation reassigned since): the key was
+        // used for another request.
+        if (inserted != 1) throw keyReused();
+        boolean reopened = state.closed()
+                && jdbc.sql(REOPEN_CONVERSATION)
+                                .param(tenant)
+                                .param(conversationId)
+                                .update()
+                        == 1;
+        jdbc.sql(TOUCH_CONVERSATION).param(tenant).param(conversationId).update();
+        return new StaffReplyQueued(messageId, recipient, true, state.optedOut(), reopened);
+    }
+
+    @Override
     public Optional<MessageToSend> toSend(UUID messageId, Duration windowMargin) {
         Objects.requireNonNull(messageId, "messageId");
         if (windowMargin == null || windowMargin.isNegative()) throw new IllegalArgumentException("windowMargin < 0");
@@ -303,7 +471,7 @@ class OutboundMessagesService implements OutboundMessages {
         }
         return jdbc.sql(MARK_FAILED)
                         .param(errorCode)
-                        .param(systemTenant())
+                        .param(closingTenant())
                         .param(messageId)
                         .update()
                 == 1;
@@ -450,6 +618,69 @@ class OutboundMessagesService implements OutboundMessages {
     /** Postgres text cannot hold U+0000. */
     private static void requireNoNul(String value) {
         if (value.indexOf('\u0000') >= 0) throw new IllegalArgumentException("Message text cannot contain U+0000");
+    }
+
+    /** A staff reply's conversation as its checks need it, read under the conversation's lock. */
+    private record ReplyState(boolean closed, boolean windowOpen, boolean optedOut, boolean replyAfterOptOutOpen) {}
+
+    /** A template as a staff reply needs it. */
+    private record ReplyTemplate(String status, String body, String variables) {}
+
+    /** A message already stored under a staff reply's ID. Holds text, so it is never logged. */
+    private record StoredReply(
+            UUID conversationId,
+            String senderType,
+            UUID senderMembershipId,
+            String type,
+            String body,
+            UUID templateId,
+            String templateParams) {
+
+        /** Whether it is the reply now requested: same conversation, same sender, same content. */
+        boolean isSameReply(
+                UUID conversationId, UUID sender, OutboundContent content, Function<String, TemplateParameters> parse) {
+            if (!this.conversationId.equals(conversationId)
+                    || !"staff".equals(senderType)
+                    || !sender.equals(senderMembershipId)) {
+                return false;
+            }
+            return switch (content) {
+                case OutboundContent.Text text ->
+                    "text".equals(type) && text.body().equals(body);
+                case OutboundContent.Template template ->
+                    "template".equals(type)
+                            && template.templateId().equals(templateId)
+                            && template.parameters().equals(parse.apply(templateParams));
+            };
+        }
+
+        @Override
+        public String toString() {
+            return "StoredReply[conversationId=" + conversationId + ", type=" + type + "]";
+        }
+    }
+
+    private static UnprocessableException keyReused() {
+        return new UnprocessableException(
+                "idempotency_key_reused", "This Idempotency-Key was already used for a different request");
+    }
+
+    private static ConflictException optedOut() {
+        return new ConflictException(
+                "contact_opted_out",
+                "This contact opted out: only a text reply within 24 hours of a message they send afterwards");
+    }
+
+    /**
+     * The tenant of a transaction that closes a send and marks its message failed: the worker's, or since step 2.9b an
+     * admin's or staff member's whose own request closed it. RLS limits a staff member to their own conversations.
+     */
+    private static UUID closingTenant() {
+        TenantContext context = TenantScope.require();
+        if (!context.isSystem() && context.role() != Role.ADMIN && context.role() != Role.STAFF) {
+            throw new IllegalStateException("Outbound messages are written by the system actor, admins and staff");
+        }
+        return context.tenantId();
     }
 
     private static UUID systemTenant() {

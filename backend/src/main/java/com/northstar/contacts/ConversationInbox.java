@@ -58,12 +58,17 @@ public interface ConversationInbox {
      */
     Page<MessageItem> messages(UUID conversationId, Position after, int limit);
 
+    /** One message of the conversation, if the caller may see the conversation (step 2.9b: a reply as queued). */
+    Optional<MessageItem> message(UUID conversationId, UUID messageId);
+
     /**
      * A conversation as the inbox lists it.
      *
      * @param status open or closed
      * @param automationPaused whether automation is paused for the conversation (taking over, step 2.9c)
      * @param windowExpiresAt when WhatsApp's 24-hour customer-service window ends; null with no inbound message
+     * @param replyAfterOptOutUntil for an opted-out contact who wrote again after their latest opt-out, when the window
+     *     for a staff member's text reply ends (step 2.9b, W32); null otherwise, and in the past once it has ended
      */
     record ConversationSummary(
             UUID id,
@@ -74,7 +79,8 @@ public interface ConversationInbox {
             boolean needsHuman,
             Instant lastInboundAt,
             Instant windowExpiresAt,
-            Instant lastMessageAt) {
+            Instant lastMessageAt,
+            Instant replyAfterOptOutUntil) {
 
         @Override
         public String toString() {

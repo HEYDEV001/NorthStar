@@ -1,5 +1,6 @@
 package com.northstar.contacts;
 
+import java.time.Duration;
 import java.time.Instant;
 import java.util.List;
 import java.util.UUID;
@@ -34,10 +35,20 @@ public interface ContactConsent {
 
     /**
      * Opts the contact out: {@code consent_state} becomes {@code opted_out} and {@code opt_out_at} is set to
-     * {@code optedOutAt} (the WhatsApp timestamp of the message) the first time only, never moved afterwards. Returns
-     * true if the contact was not opted out before. System actor only.
+     * {@code optedOutAt} (the WhatsApp timestamp of the message) the first time only, never moved afterwards; and
+     * {@code last_opt_out_at} moves forward to it every time (step 2.9b), so an opt-out after the client wrote again
+     * closes the staff reply exception. Returns true if the contact was not opted out before. System actor only.
      */
     boolean recordOptOut(UUID contactId, Instant optedOutAt);
+
+    /**
+     * Whether this message may go to this contact although they opted out (step 2.9b, W32): it is a staff member's
+     * free-text message in the contact's own conversation, and the client wrote after their latest opt-out, a reaction
+     * or system message not counting, less than 24 hours ago, with more than {@code margin} of that window left. The
+     * database's own rule ({@code northstar.staff_reply_allowed_after_opt_out}), which its backstop applies with no
+     * margin. Call it with the contact's shared lock held ({@link #isOptedOut}), so an opt-out in progress is seen.
+     */
+    boolean staffReplyAllowed(UUID contactId, UUID messageId, Duration margin);
 
     /**
      * Whether the contact has opted out, read under a shared row lock held until the caller's transaction ends, so an

@@ -40,6 +40,14 @@ public interface InboundContacts {
     void recordInboundAt(UUID conversationId, Instant sentAt);
 
     /**
+     * Moves the conversation's {@code last_contact_message_at} forward to {@code sentAt}, never back (step 2.9b): the
+     * WhatsApp timestamp of the client's latest message that counts as the client writing, which the caller decides
+     * (every inbound message but a reaction or a system message). The staff reply exception to an opt-out opens from it
+     * (W32).
+     */
+    void recordContactMessageAt(UUID conversationId, Instant sentAt);
+
+    /**
      * Stores the inbound message in the conversation, which must already be locked ({@link #lockConversation}), and
      * records it as the conversation's latest activity: {@code last_message_at} moves forward, and a {@code closed}
      * conversation is open again (step 2.9a: a new inbound message of any type reopens it, an opt-out included). Fails if

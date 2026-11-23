@@ -607,7 +607,8 @@ class ConversationSchemaTests {
                         "needs_human",
                         "assigned_membership_id",
                         "last_inbound_at",
-                        "last_message_at");
+                        "last_message_at",
+                        "last_contact_message_at");
         assertThat(appUserColumns("northstar.messages", "UPDATE"))
                 .containsExactlyInAnyOrder(
                         "status",

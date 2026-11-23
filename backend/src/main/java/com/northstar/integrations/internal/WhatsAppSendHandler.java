@@ -76,12 +76,13 @@ class WhatsAppSendHandler implements ActionHandler {
     /** The payload's one field (step 2.3): the message ID, never the text. */
     static final String PAYLOAD_MESSAGE_ID = "messageId";
 
+    private static final JsonMapper PAYLOAD_JSON = JsonMapper.builder().build();
+
     private final OutboundMessages messages;
     private final WhatsAppConnection connection;
     private final ObjectProvider<CredentialStore> credentials;
     private final ObjectProvider<WhatsAppSync> syncs;
     private final WhatsAppSender sender;
-    private final JsonMapper json;
     private final TransactionTemplate transactions;
     private final TransactionTemplate readOnly;
 
@@ -96,14 +97,12 @@ class WhatsAppSendHandler implements ActionHandler {
             ObjectProvider<CredentialStore> credentials,
             ObjectProvider<WhatsAppSync> syncs,
             WhatsAppSender sender,
-            JsonMapper json,
             PlatformTransactionManager transactionManager) {
         this.messages = messages;
         this.connection = connection;
         this.credentials = credentials;
         this.syncs = syncs;
         this.sender = sender;
-        this.json = json;
         this.transactions = new TransactionTemplate(transactionManager);
         this.readOnly = new TransactionTemplate(transactionManager);
         this.readOnly.setReadOnly(true);
@@ -335,9 +334,13 @@ class WhatsAppSendHandler implements ActionHandler {
         return new Done(ActionOutcome.permanent(code));
     }
 
-    private UUID messageId(String payloadJson) {
+    /**
+     * The message a send's payload names: the payload is that ID only (step 2.6a), written by {@link #payloadFor}, so a
+     * plain mapper reads it. Also read by the consent check before a send is created or claimed (step 2.9b).
+     */
+    static UUID messageId(String payloadJson) {
         return UUID.fromString(
-                json.readTree(payloadJson).get(PAYLOAD_MESSAGE_ID).asString());
+                PAYLOAD_JSON.readTree(payloadJson).get(PAYLOAD_MESSAGE_ID).asString());
     }
 
     private static String result(UUID messageId, String outcome) {

@@ -10,7 +10,9 @@ import java.util.UUID;
  *
  * <p>recipientContactId is the contact the action sends something to: required for a type whose handler's recipient is
  * {@link ActionRecipient#CONTACT}, and refused for any other (step 2.5). An action for a contact who has opted out is
- * created cancelled, with reason {@value OutboundCancellation#CONTACT_OPTED_OUT}, and never runs (W32).
+ * created cancelled, with reason {@value OutboundCancellation#CONTACT_OPTED_OUT}, and never runs (W32), unless
+ * {@link RecipientConsent} allows it as the one exception (step 2.9b, a staff member's reply after the client wrote
+ * again).
  */
 public record NewAction(
         String type,

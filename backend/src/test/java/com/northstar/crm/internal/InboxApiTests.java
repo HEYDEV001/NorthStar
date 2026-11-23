@@ -99,7 +99,7 @@ class InboxApiTests {
         UUID contact = data.contact(team.tenant(), "+919800000101", "Asha Rao");
         UUID conversation = data.conversation(team.tenant(), contact, data.whatsAppNumber(team.tenant()), null);
         admin.sql("""
-                        update northstar.contacts set consent_state = 'opted_out', opt_out_at = :at where id = :id""").param("at", utc(T0)).param("id", contact).update();
+                        update northstar.contacts set consent_state = 'opted_out', opt_out_at = :at, last_opt_out_at = :at where id = :id""").param("at", utc(T0)).param("id", contact).update();
         admin.sql("""
                         update northstar.conversations set last_inbound_at = :at where id = :id""").param("at", utc(T0)).param("id", conversation).update();
 

@@ -125,12 +125,12 @@ Northstar operates as a Meta Tech Provider: each business connects its own Whats
 - Free-form text and media only inside the 24-hour customer-service window (`conversations.window_expires_at`); outside it, an approved template.
 - Quote and invoice PDFs sent as `document` messages with a signed URL or uploaded media ID.
 - Accept / Request Changes as interactive reply buttons (button IDs carry the quote version ID).
-- Opt-out keywords (STOP and tenant-configured words) checked on every inbound message before the AI sees it. Built in step 2.5 (`workflow-spec.md` section 13, Opt-out): a text or interactive reply whose whole normalised text is a keyword opts the contact out, in the inbound job's transaction; every outbound action to an opted-out contact is then refused, and every send action names the contact as its recipient (step 2.6a).
+- Opt-out keywords (STOP and tenant-configured words) checked on every inbound message before the AI sees it. Built in step 2.5 (`workflow-spec.md` section 13, Opt-out): a text or interactive reply whose whole normalised text is a keyword opts the contact out, in the inbound job's transaction; every outbound action to an opted-out contact is then refused, and every send action names the contact as its recipient (step 2.6a), except a staff member's free-text reply inside the window the client opens by writing again (step 2.9b, below).
 
 How step 2.6a sends (decided 21 Nov 2026):
 
 - **Queueing.** `integrations.WhatsAppMessages` queues a text or a template message for a conversation, as the system
-  actor (the sender is the system or the AI; staff replies are step 2.9). One transaction stores the message as
+  actor (the sender is the system or the AI; staff replies are step 2.9b, below). One transaction stores the message as
   `queued` and creates a `whatsapp.send` action whose recipient is the conversation's contact and whose payload is the
   message ID only, never the text, so retention clears the text in one place. The message ID is derived from the tenant
   and the idempotency key, so queueing the same send twice stores one message and one action (P1). Another tenant's
@@ -189,9 +189,36 @@ How step 2.6a sends (decided 21 Nov 2026):
   timeout so an answer that arrives is always stored, and once the ID is stored no re-run sends again.
 - **Not yet:** documents, media and interactive buttons are Phase 5 (the Cloud API adapter, Meta's error codes and the
   pinned Graph API version are step 2.6b, below). No opt-out confirmation is sent, and every send to an
-  opted-out contact stays refused, replies included (step 2.9 decides replies).
+  opted-out contact stays refused, replies included, but for step 2.9b's staff reply (below).
 - **Logs:** action and message IDs, attempt numbers, outcome classes and fixed codes only; never text, template
   parameters, phone numbers, wamids, phone number IDs or tokens.
+
+How step 2.9b queues a staff member's reply (decided 22 Nov 2026):
+
+- **Endpoint.** `POST /api/v1/conversations/{id}/messages` with `{"type": "text", "text"}`, or `{"type": "template",
+  "templateId", "values": [...]}` (positional) or `"namedValues": {...}` (named), and an `Idempotency-Key` header
+  (1 to 100 letters, digits, `_`, `.`, `:` or `-`). Admins reply in any conversation of the business, staff in their
+  assigned ones; another member's, an unassigned one (for staff) and another tenant's are the same 404 as a missing one.
+  The sender is the caller's own active membership (`sender_type` `staff`, `sender_membership_id`), never a value in
+  the request. 201 with the queued message; the send runs on the worker as every send does.
+- **What may be sent,** decided under the conversation's contact's shared lock and the conversation's lock, with the
+  sender's 2-minute margin on the database's clock: inside the 24-hour window free text only (a template is 409
+  `window_open_use_text`, as Meta charges per template sent inside an open window since 1 October 2026); outside it an
+  approved template only (text is 409 `window_closed`, any other status 409 `template_not_approved`), its values
+  matching its variables (400 `template_values_mismatch`). To an opted-out contact only free text, inside the window
+  the client opened by writing after their latest opt-out (`workflow-spec.md` section 13), else 409
+  `contact_opted_out`; each such reply is audited as `message.sent_after_opt_out`. A refused reply stores nothing.
+  The send checks the window again when it runs (W33).
+- **The same request twice (P21).** The key is scoped to the caller's membership; the message ID derives from it as for
+  every send, and the action's key is `whatsapp-send:staff:<membership>:<key>`. A repeat with the same reply in the
+  same conversation is 200 with the same message, and stores and sends nothing more, however the two arrive (the
+  conversation's lock serialises them); the same key with another reply, or in another conversation, is 422
+  `idempotency_key_reused`. Other members' keys never collide.
+- **A closed conversation** is reopened by the reply, under the same lock, and the conversation's latest activity moves.
+- **Lock order,** as every path that touches a message: the contact (shared), the conversation, then the message and
+  the action, whose `actions_refuse_opted_out` check reads the contact again under the same shared lock.
+- **Logs:** INFO `whatsapp.send.staff_reply_queued` with the message and action IDs, whether it was created, its
+  status, `after_opt_out` and `reopened`; never the text, values, key or numbers.
 
 How step 2.6b calls Meta (decided 21 Nov 2026):
 
