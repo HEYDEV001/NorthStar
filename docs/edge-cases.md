@@ -72,7 +72,7 @@ Every case below has a defined behaviour and an automated test before launch; th
 | W29 | Staff member's Google event created after the booking overlaps a job | Conflict flagged to admin; booking stays until resolved | 6 |
 | W30 | Staff never marks the job done | Overdue task escalation to admin after the configured delay | 6 |
 | W31 | Balance unpaid after work | Reminders day 1, 3, 7; then staff escalation; delivery hold if the business enabled it | 5 |
-| W32 | Client replies STOP or opts out | All automated and scheduled messages cancelled at once; stage unchanged; badge shown | 2 |
+| W32 | Client replies STOP or opts out | All automated and scheduled messages cancelled at once; stage unchanged; badge shown. If the client writes again afterwards, a staff member may reply with free text, audited, inside the 24-hour window that message opens (step 2.9b); templates, AI and system messages stay refused and consent stays opted out | 2 |
 | W33 | Message due outside the 24-hour window | Approved template used; if no template exists, action fails with a clear reason | 2 |
 | W34 | Template rejected or paused by Meta | Template status updated from Meta, by the sync and by webhooks. Paused: its pending sends wait without using an attempt and resume on their schedule once it is approved again; a send waiting for review keeps waiting, and is blocked if it runs while the template is still paused. Rejected, disabled, deleted or archived: its pending, waiting-for-review and paused sends fail with the template's code, their messages failed, visible on Failed Actions. Admin asked to fix (a WARN log until Phase 8's alerts) | 2 |
 | W35 | Approval waits too long | Approver reminded at 30 min and 2 h, then admin | 3 |

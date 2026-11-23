@@ -172,7 +172,8 @@ record RlsReleaseGate(
                                     "needs_human",
                                     "assigned_membership_id",
                                     "last_inbound_at",
-                                    "last_message_at"),
+                                    "last_message_at",
+                                    "last_contact_message_at"),
                     // A template's name and language are its identity.
                     "northstar.message_templates",
                             Set.of(

@@ -69,7 +69,6 @@ import org.springframework.transaction.IllegalTransactionStateException;
 import org.springframework.transaction.PlatformTransactionManager;
 import org.springframework.transaction.support.TransactionTemplate;
 import org.springframework.web.context.request.RequestContextHolder;
-import tools.jackson.databind.json.JsonMapper;
 
 /**
  * The WhatsApp send action (step 2.6a, integration-specs.md section 2) against real Postgres with RLS, the worker's real
@@ -119,7 +118,6 @@ class WhatsAppSendTests {
     private final WhatsAppConnection connection;
     private final ObjectProvider<CredentialStore> credentialProvider;
     private final ObjectProvider<WhatsAppSync> syncProvider;
-    private final JsonMapper json;
     private final PlatformTransactionManager transactionManager;
     private final TransactionTemplate transactions;
     private final PostgresAdmin postgres;
@@ -142,7 +140,6 @@ class WhatsAppSendTests {
             @Autowired WhatsAppConnection connection,
             @Autowired ObjectProvider<CredentialStore> credentialProvider,
             @Autowired ObjectProvider<WhatsAppSync> syncProvider,
-            @Autowired JsonMapper json,
             @Autowired PlatformTransactionManager transactionManager,
             @Autowired PostgresAdmin postgres) {
         this.messages = messages;
@@ -159,7 +156,6 @@ class WhatsAppSendTests {
         this.connection = connection;
         this.credentialProvider = credentialProvider;
         this.syncProvider = syncProvider;
-        this.json = json;
         this.transactionManager = transactionManager;
         this.transactions = new TransactionTemplate(transactionManager);
         this.postgres = postgres;
@@ -1077,7 +1073,6 @@ class WhatsAppSendTests {
                 credentialProvider,
                 syncProvider,
                 new CloudApiWhatsAppSender(http, meta.base(), "v26.0", Duration.ofSeconds(5)),
-                json,
                 transactionManager);
     }
 
@@ -1154,7 +1149,8 @@ class WhatsAppSendTests {
     }
 
     private void optOut(UUID contact) {
-        admin.sql("update northstar.contacts set consent_state = 'opted_out', opt_out_at = now() where id = :id")
+        admin.sql(
+                        "update northstar.contacts set consent_state = 'opted_out', opt_out_at = now(), last_opt_out_at = now() where id = :id")
                 .param("id", contact)
                 .update();
     }
@@ -1177,7 +1173,8 @@ class WhatsAppSendTests {
                     .param("id", contact)
                     .query(UUID.class)
                     .single();
-            jdbc.sql("update northstar.contacts set consent_state = 'opted_out', opt_out_at = now() where id = :id")
+            jdbc.sql(
+                            "update northstar.contacts set consent_state = 'opted_out', opt_out_at = now(), last_opt_out_at = now() where id = :id")
                     .param("id", contact)
                     .update();
             return steps.apply(jdbc);

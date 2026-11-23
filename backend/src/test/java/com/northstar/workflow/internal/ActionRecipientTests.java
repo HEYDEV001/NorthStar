@@ -390,7 +390,8 @@ class ActionRecipientTests {
 
     /** Opts the contact out as an operator would, without cancelling anything. */
     private void optOut(UUID contact) {
-        admin.sql("update northstar.contacts set consent_state = 'opted_out', opt_out_at = now() where id = :id")
+        admin.sql(
+                        "update northstar.contacts set consent_state = 'opted_out', opt_out_at = now(), last_opt_out_at = now() where id = :id")
                 .param("id", contact)
                 .update();
     }
@@ -407,7 +408,8 @@ class ActionRecipientTests {
                     .param("id", contact)
                     .query(UUID.class)
                     .single();
-            jdbc.sql("update northstar.contacts set consent_state = 'opted_out', opt_out_at = now() where id = :id")
+            jdbc.sql(
+                            "update northstar.contacts set consent_state = 'opted_out', opt_out_at = now(), last_opt_out_at = now() where id = :id")
                     .param("id", contact)
                     .update();
             return work.get();

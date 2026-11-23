@@ -29,7 +29,8 @@ final class InboxResponses {
             boolean needsHuman,
             Instant lastInboundAt,
             Instant windowExpiresAt,
-            Instant lastMessageAt) {
+            Instant lastMessageAt,
+            Instant replyAfterOptOutUntil) {
 
         static ConversationResponse of(ConversationSummary conversation) {
             return new ConversationResponse(
@@ -41,7 +42,8 @@ final class InboxResponses {
                     conversation.needsHuman(),
                     conversation.lastInboundAt(),
                     conversation.windowExpiresAt(),
-                    conversation.lastMessageAt());
+                    conversation.lastMessageAt(),
+                    conversation.replyAfterOptOutUntil());
         }
 
         @Override

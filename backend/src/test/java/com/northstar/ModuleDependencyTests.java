@@ -75,6 +75,8 @@ class ModuleDependencyTests {
         // Step 2.9a: the inbox API in crm reads through contacts; crm sits above the modules it uses, none of which
         // depends on it.
         assertThat(graph.get("crm")).contains("contacts", "api");
+        // Step 2.9b: a staff reply is queued through integrations, which creates its send action in workflow.
+        assertThat(graph.get("crm")).contains("integrations");
         for (String below : List.of("contacts", "integrations", "workflow", "tenancy"))
             assertThat(graph.getOrDefault(below, Set.of())).as(below).doesNotContain("crm");
     }

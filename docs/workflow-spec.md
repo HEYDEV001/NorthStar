@@ -305,7 +305,7 @@ Inside the 24-hour customer-service window the system sends free-form messages; 
 - Templates are created per business in their WhatsApp account during onboarding, from Northstar's starter set, in the business's language.
 - The sender checks the window at send time; outside it, it switches to the matching template or fails the action with a clear reason. Built in step 2.6a (`integration-specs.md` section 2): the window is read when the send runs and counts as open only while it has more than 2 minutes left; a text message outside it fails as `window_closed_no_template`; a template message is sent inside or outside it. The switch to the matching template is the Phase 3 engine's: a new template send, never a text send turned into one.
 - Template status (W34; step 2.8c, `integration-specs.md` section 2, Template status from Meta). A send reads its template's status when it runs: approved sends; paused blocks it (section 10) until the template is approved again; rejected, disabled, deleted and archived fail it as `template_rejected`, `template_disabled`, `template_deleted` or `template_archived`; draft and submitted fail it as `template_not_approved`. When Meta changes a template's status, its sends still queued follow at once: paused blocks the pending ones, approved resumes the blocked ones on their schedule, and rejected, disabled, deleted or archived fail the pending, waiting-for-review and paused ones, their messages failed, visible on Failed Actions. A send waiting for review keeps waiting through a pause and is blocked if it runs during one.
-- Opt-out (STOP and configured keywords) blocks all automated and promotional messages immediately. From step 2.5 every outbound action to an opted-out contact is refused, replies included (decided 21 Nov 2026); whether a reply to a message the client starts later may be sent is decided in step 2.9.
+- Opt-out (STOP and configured keywords) blocks all automated and promotional messages immediately. From step 2.5 every outbound action to an opted-out contact is refused, replies included (decided 21 Nov 2026), with one exception from step 2.9b (decided 22 Nov 2026, section 13 Opt-out): a staff member's free-text reply inside the 24-hour window the client opens by writing again after opting out.
 - Message categories and pricing are set by Meta and can change; record the category returned on template approval.
 
 ## 13. Side flows
@@ -349,7 +349,7 @@ Each side flow below has a fixed sequence; the engine follows it the same way fo
 
 1. STOP (or configured keyword) → contact opt\_out\_at set.
 2. All scheduled outbound timers for that contact cancelled; no further automated messages.
-3. Stage unchanged; staff see an Opted out badge. From step 2.5 no outbound action to the contact is allowed at all, transactional replies included, until step 2.9 decides whether a reply to a message the client writes first is allowed.
+3. Stage unchanged; staff see an Opted out badge. From step 2.5 no outbound action to the contact is allowed at all, transactional replies included, except the staff reply step 2.9b allows (below).
 
 How step 2.5 builds it (decided 21 Nov 2026):
 
@@ -360,6 +360,13 @@ How step 2.5 builds it (decided 21 Nov 2026):
 - **Final.** No step can clear an opt-out yet (`contacts_consent_guard`, NSC01); opting back in is a later step.
 - **Logs** carry IDs, codes and counts only, never the text or the keyword matched. No confirmation message is sent (none in step 2.6a either; its wording would need approval).
 - **A cancelled send** (step 2.6a): its queued message is marked `failed` with `contact_opted_out` in the same transaction as the cancellation, wherever that happens (at creation, at claim, or by the opt-out). A send already processing when the opt-out lands is not recalled; if Meta accepts it, its message stays `sent`.
+
+The one exception, step 2.9b (decided 22 Nov 2026):
+
+- **What is allowed.** A contact who opted out and then writes again may get a reply from a staff member (an admin or staff, through the inbox), and only free text: no template, and nothing from the AI or the system. It is allowed only inside the 24-hour window that message opens, with the sender's 2-minute margin: until 24 hours after the client's latest message (`conversations.last_contact_message_at`), and only while that message is newer than their latest opt-out (`contacts.last_opt_out_at`). Each such reply is audited as `message.sent_after_opt_out`. Consent stays `opted_out`; opting back in is still a later step.
+- **What counts as writing again.** Every inbound message but a reaction or a system message (the ones that never open a lead either, step 2.4b). A message in the same second as the latest opt-out does not count (WhatsApp's timestamps are in seconds). The times are WhatsApp's, so a late or redelivered webhook never reorders them.
+- **Another opt-out closes it.** `opt_out_at` keeps the first opt-out; `last_opt_out_at` moves forward with every later one. A STOP after the client wrote again cancels a reply still waiting to be sent (as every opt-out cancels the contact's pending actions) and refuses new ones until the client writes again.
+- **Checked three times,** as every send is: when the reply is requested (409 `contact_opted_out`, nothing stored), when its action is created and when it is claimed (cancelled with `contact_opted_out` once the window has passed or the client opted out again). The database's backstop (`actions_refuse_opted_out`, NSA01) refuses a runnable action for an opted-out recipient unless it is a `whatsapp.send` of exactly such a message, through the function `northstar.staff_reply_allowed_after_opt_out`, which the app calls too, with the margin. Only the inbound job writes the two times (`contacts_consent_guard`, NSC01; `conversations_inbound_times_guard`, NSV01).
 
 ## 14. Industry templates
 

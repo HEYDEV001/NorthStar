@@ -29,8 +29,9 @@ import org.springframework.stereotype.Component;
  *   <li>the contact, created if new and locked, so one contact's messages are processed one at a time (P3);
  *   <li>whether the message opts its sender out (step 2.5, W32), decided first, before anything hands the message on;
  *   <li>its source ({@code direct} until Phase 7), its open lead, its conversation (with the open lead's assignee if
- *       new), the conversation's last inbound time, and the message, which reopens a closed conversation and moves
- *       its latest activity (step 2.9a);
+ *       new), the conversation's last inbound time (and, unless the message is a reaction or a system message, the
+ *       time the client last wrote, step 2.9b), and the message, which reopens a closed conversation and moves its
+ *       latest activity (step 2.9a);
  *   <li>for an opt-out: the contact opted out ({@code opt_out_at} the first time only), every action that could still
  *       message the contact cancelled, the open lead joined (never a new one opened, and its stage unchanged), and
  *       {@code optout.received} recorded instead of {@code message.received};
@@ -174,6 +175,9 @@ class WhatsAppInboundProcessor {
                 message.phoneNumberId(),
                 open.map(OpenLead::assignedMembershipId).orElse(null));
         contacts.recordInboundAt(conversation.id(), message.sentAt());
+        // The client writing (step 2.9b): every message but a reaction or a system message, an opt-out included, which
+        // opens nothing, as the staff reply exception needs a message newer than the latest opt-out.
+        if (message.mayOpenLead()) contacts.recordContactMessageAt(conversation.id(), message.sentAt());
         InboundContacts.StoredInbound stored = contacts.storeInbound(conversation.id(), message.toStored());
         UUID messageId = stored.messageId();
         if (optOut) {

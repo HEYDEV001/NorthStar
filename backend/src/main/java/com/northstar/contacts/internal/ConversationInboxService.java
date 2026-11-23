@@ -36,6 +36,7 @@ class ConversationInboxService implements ConversationInbox {
     private static final String CONVERSATIONS = """
             select c.id, c.status, c.assigned_membership_id, c.ai_paused, c.needs_human, c.last_inbound_at,
                    c.window_expires_at, c.last_message_at,
+                   northstar.opt_out_reply_until(c.tenant_id, c.id) as reply_after_opt_out_until,
                    ct.id as contact_id, ct.name as contact_name, ct.normalized_phone, ct.consent_state, ct.opt_out_at
             from northstar.conversations c
             join northstar.contacts ct on ct.tenant_id = c.tenant_id and ct.id = c.contact_id
@@ -62,6 +63,8 @@ class ConversationInboxService implements ConversationInbox {
             from northstar.messages m
             left join northstar.message_templates t on t.tenant_id = m.tenant_id and t.id = m.template_id
             where m.tenant_id = :tenant and m.conversation_id = :conversation""";
+
+    private static final String ONE_MESSAGE = "\n  and m.id = :message";
 
     private static final String MESSAGES_AFTER =
             "\n  and (m.created_at, m.id) < (cast(:at as timestamptz), cast(:after as uuid))";
@@ -116,6 +119,22 @@ class ConversationInboxService implements ConversationInbox {
             return query.query((row, n) -> message(row)).list();
         });
         return page(rows, limit, item -> new Position(item.createdAt(), item.id()));
+    }
+
+    @Override
+    public Optional<MessageItem> message(UUID conversationId, UUID messageId) {
+        Objects.requireNonNull(conversationId, "conversationId");
+        Objects.requireNonNull(messageId, "messageId");
+        Reader reader = reader();
+        return readOnly.execute(status -> {
+            if (findConversation(reader, conversationId).isEmpty()) return Optional.<MessageItem>empty();
+            return jdbc.sql(MESSAGES + ONE_MESSAGE)
+                    .param("tenant", reader.tenant())
+                    .param("conversation", conversationId)
+                    .param("message", messageId)
+                    .query((row, n) -> message(row))
+                    .optional();
+        });
     }
 
     private Optional<ConversationSummary> findConversation(Reader reader, UUID conversationId) {
@@ -177,7 +196,8 @@ class ConversationInboxService implements ConversationInbox {
                 row.getBoolean("needs_human"),
                 instant(row, "last_inbound_at"),
                 instant(row, "window_expires_at"),
-                instant(row, "last_message_at"));
+                instant(row, "last_message_at"),
+                instant(row, "reply_after_opt_out_until"));
     }
 
     private static MessageItem message(ResultSet row) throws SQLException {

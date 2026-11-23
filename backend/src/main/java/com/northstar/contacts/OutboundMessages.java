@@ -8,8 +8,9 @@ import java.util.UUID;
 
 /**
  * Outbound WhatsApp messages (step 2.6a, data-model.md section 4): queued in a conversation, read when the send runs,
- * and marked sent or failed. Every method runs only inside the caller's transaction (none is opened here) and only as
- * the system actor, in the current tenant; a record the caller cannot see is not found (P9).
+ * and marked sent or failed. Every method runs only inside the caller's transaction (none is opened here), in the
+ * current tenant, and as the system actor, except a staff reply (step 2.9b), which only an admin or a staff member
+ * queues, and marking a message failed, which they may do too; a record the caller cannot see is not found (P9).
  *
  * <p>Message text, template values and phone numbers are stored, never logged, and never put in an exception message.
  */
@@ -55,6 +56,40 @@ public interface OutboundMessages {
     Queued queue(UUID messageId, UUID conversationId, Sender sender, OutboundContent content);
 
     /**
+     * A staff member's reply as queued (step 2.9b): the message, its recipient (the conversation's contact), whether it
+     * was stored now (false for a repeat of the same request, P21), whether it goes to an opted-out contact under the
+     * staff reply exception (audited by the caller), and whether it reopened its closed conversation.
+     */
+    record StaffReplyQueued(
+            UUID messageId, UUID recipientContactId, boolean stored, boolean afterOptOut, boolean reopened) {}
+
+    /**
+     * Queues a reply from the caller, an admin or a staff member, under this message ID (step 2.9b). The sender is the
+     * caller's own active membership, never a value the caller passes. Takes the conversation's contact's shared lock,
+     * then the conversation's lock, then decides:
+     *
+     * <ol>
+     *   <li>a message already stored under this ID is a repeat of the same request (P21): returned as it is if it is
+     *       the same reply in the same conversation, refused as {@code idempotency_key_reused} (422) otherwise;
+     *   <li>inside WhatsApp's 24-hour window (more than {@code windowMargin} left, on the database's clock) only free
+     *       text, outside it only an approved template with values matching its variables;
+     *   <li>to an opted-out contact only free text, and only inside the window the client opened by writing after
+     *       their latest opt-out ({@link ContactConsent#staffReplyAllowed}, W32);
+     * </ol>
+     *
+     * <p>then stores the message as queued, reopens a closed conversation and moves its latest activity. Nothing is
+     * stored when a check fails.
+     *
+     * @throws com.northstar.api.NotFoundException the conversation or template is not visible to the caller (P9, P11)
+     * @throws com.northstar.api.UnprocessableException {@code idempotency_key_reused}
+     * @throws com.northstar.api.ConflictException {@code window_closed}, {@code window_open_use_text},
+     *     {@code template_not_approved} or {@code contact_opted_out}
+     * @throws com.northstar.api.BadRequestException {@code template_values_mismatch} or {@code template_values_too_large}
+     */
+    StaffReplyQueued queueStaffReply(
+            UUID messageId, UUID conversationId, OutboundContent content, Duration windowMargin);
+
+    /**
      * The outbound message with this ID as the sender needs it, or empty if the current tenant has none. The window is
      * open only while {@code conversations.window_expires_at} is more than {@code windowMargin} away on the database's
      * clock; a conversation with no inbound message has no window.
@@ -80,7 +115,9 @@ public interface OutboundMessages {
 
     /**
      * Records that the message will not be sent: status failed with a fixed code. Only a message still queued without
-     * a provider ID changes, so a message Meta has accepted is never marked failed; returns whether it did.
+     * a provider ID changes, so a message Meta has accepted is never marked failed; returns whether it did. Also for
+     * admins and staff (step 2.9b), as a send closed in their own transaction closes its message there; RLS limits a
+     * staff member to the messages of their own conversations.
      */
     boolean markFailed(UUID messageId, String errorCode);
 

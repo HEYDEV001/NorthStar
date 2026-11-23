@@ -273,7 +273,8 @@ class ActionClosedHookTests {
     }
 
     private void optOut(UUID contact) {
-        admin.sql("update northstar.contacts set consent_state = 'opted_out', opt_out_at = now() where id = :id")
+        admin.sql(
+                        "update northstar.contacts set consent_state = 'opted_out', opt_out_at = now(), last_opt_out_at = now() where id = :id")
                 .param("id", contact)
                 .update();
     }

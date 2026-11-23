@@ -66,6 +66,11 @@ class InboundContactsService implements InboundContacts {
             update northstar.conversations set last_inbound_at = ?
             where tenant_id = ? and id = ? and (last_inbound_at is null or last_inbound_at < ?)""";
 
+    // The same rule for the client's latest message that counts as writing (step 2.9b).
+    private static final String RECORD_CONTACT_MESSAGE_AT = """
+            update northstar.conversations set last_contact_message_at = ?
+            where tenant_id = ? and id = ? and (last_contact_message_at is null or last_contact_message_at < ?)""";
+
     private static final String INSERT_MESSAGE = """
             insert into northstar.messages
               (tenant_id, conversation_id, direction, sender_type, provider_message_id, type, body, sent_at)
@@ -155,6 +160,18 @@ class InboundContactsService implements InboundContacts {
         Objects.requireNonNull(conversationId, "conversationId");
         OffsetDateTime at = utc(sentAt);
         jdbc.sql(RECORD_INBOUND_AT)
+                .param(at)
+                .param(systemTenant())
+                .param(conversationId)
+                .param(at)
+                .update();
+    }
+
+    @Override
+    public void recordContactMessageAt(UUID conversationId, Instant sentAt) {
+        Objects.requireNonNull(conversationId, "conversationId");
+        OffsetDateTime at = utc(sentAt);
+        jdbc.sql(RECORD_CONTACT_MESSAGE_AT)
                 .param(at)
                 .param(systemTenant())
                 .param(conversationId)

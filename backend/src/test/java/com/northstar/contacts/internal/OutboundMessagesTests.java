@@ -270,11 +270,43 @@ class OutboundMessagesTests {
                 .isInstanceOf(MissingTenantContextException.class);
         assertThatThrownBy(() -> TenantScope.call(
                         new TenantContext(member.tenantId(), member.userId(), Role.ADMIN),
-                        () -> transactions.execute(status -> outbound.markFailed(message, "timeout"))))
+                        () -> transactions.execute(status -> outbound.markSent(message, "wamid.BY_ADMIN"))))
                 .isInstanceOf(IllegalStateException.class)
                 .hasMessageContaining("system actor");
-
+        assertThatThrownBy(() -> TenantScope.call(
+                        new TenantContext(member.tenantId(), member.userId(), Role.ADMIN),
+                        () -> transactions.execute(status -> outbound.queue(
+                                UUID.randomUUID(),
+                                conversation.id(),
+                                OutboundMessages.Sender.SYSTEM,
+                                new OutboundContent.Text("Not as an admin")))))
+                .isInstanceOf(IllegalStateException.class)
+                .hasMessageContaining("system actor");
+        assertThatThrownBy(() -> SystemScope.call(
+                        conversation.tenant(),
+                        () -> transactions.execute(status -> outbound.queueStaffReply(
+                                UUID.randomUUID(),
+                                conversation.id(),
+                                new OutboundContent.Text("Not as the system"),
+                                MARGIN))))
+                .isInstanceOf(IllegalStateException.class)
+                .hasMessageContaining("admins and staff");
         assertThat(state(message)).isEqualTo("queued||");
+
+        // Since step 2.9b an admin's or staff member's own transaction may close a send, and so mark its message
+        // failed; another tenant's admin still finds nothing (P9).
+        assertThat(TenantScope.<Boolean>call(
+                        new TenantContext(member.tenantId(), member.userId(), Role.ADMIN),
+                        () -> transactions.execute(status -> outbound.markFailed(message, "timeout"))))
+                .as("another business's admin")
+                .isFalse();
+        UUID ownAdmin = data.user();
+        data.membership(conversation.tenant(), ownAdmin, "admin", "active");
+        assertThat(TenantScope.<Boolean>call(
+                        new TenantContext(conversation.tenant(), ownAdmin, Role.ADMIN),
+                        () -> transactions.execute(status -> outbound.markFailed(message, "timeout"))))
+                .isTrue();
+        assertThat(state(message)).isEqualTo("failed|timeout|");
     }
 
     // Helpers.
