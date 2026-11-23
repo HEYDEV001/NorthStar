@@ -138,7 +138,20 @@ How step 2.6a sends (decided 21 Nov 2026):
   anything, so it takes its locks in the inbound job's order (contact, conversation, actions, messages) and cannot
   deadlock with an opt-out being processed. Text is 1 to 4,096 characters, Meta's limit for a text message. A
   template's parameter values are stored on the message (`messages.template_params`), positional or named; named
-  parameters are lowercase letters and underscores, as Meta requires.
+  parameters are lowercase letters and underscores, as Meta requires ("unique, single strings, composed of lowercase
+  characters and underscores"; no digits, re-checked 22 Nov 2026), and at most 64 characters, Northstar's own cap (Meta
+  lists none). The template reader (step 2.8b) uses the same rule, so a placeholder with a digit in its name is not a
+  variable.
+- **The text of a template message** (step 2.9a). Queueing renders it from the template's stored body and variables
+  and stores it as the message's body, for system, AI and staff sends alike, so the inbox shows what was sent: each
+  `{{1}}` ... `{{n}}`, or each `{{name}}`, replaced by its value as given, and any other placeholder left as written. The
+  values must match the variables exactly (one for each number 1 to n, or one for each name, and no others), or the
+  queueing is refused, as Meta would refuse the send. A template Meta has not given a body and variables for yet has no
+  text (body null), and its values are not checked against variables. A repeat of a queued send returns the stored
+  message without rendering again. The send itself still fills the template from `template_params`; the stored text is
+  for people, and retention clears it with every other body. Queueing also moves the conversation's
+  `last_message_at` forward (`data-model.md` section 4), locking the conversation after the contact's shared lock, so
+  the order above is unchanged.
 - **The window, when the send runs.** The handler reads the conversation when the action runs, not when it was queued,
   so a send that waited for approval, a retry or a reconnect sees the window as it is then. The window counts as open
   only while `window_expires_at` is more than 2 minutes away on the database's clock (a margin for clock differences
@@ -410,7 +423,8 @@ if this table and the code differ.
     one name and language (two WABAs of one business) keep the first: WARN `whatsapp.sync.template_name_taken`;
   - its body is the BODY component's text and its variables `{"format": "positional"|"named", "names": [...]}`, from
     `parameter_format` (POSITIONAL when absent) and the body's own placeholders: numbers in order, or names in the
-    order they first appear. Headers and buttons are not stored (Phase 5). Nothing is invented: a value Meta did not
+    order they first appear, each name 1 to 64 lowercase letters and underscores (step 2.9a: the rule a send's named
+    values follow; a placeholder with a digit in its name is not a variable). Headers and buttons are not stored (Phase 5). Nothing is invented: a value Meta did not
     send keeps what is stored;
   - a status or category Northstar does not recognise, or a missing name or language, skips the template (WARN
     `whatsapp.sync.template_skipped` with a fixed code), and it is never deleted for being unread.
@@ -659,7 +673,7 @@ Checked 21 Nov 2026 for steps 2.6a and 2.6b (sending):
 - [Meta: send text messages](https://developers.facebook.com/docs/whatsapp/cloud-api/messages/text-messages) (the request body, `to` as `+16505551234`, at most 4,096 characters, the response with `messages[0].id`)
 - [Meta: Messages API reference](https://developers.facebook.com/docs/whatsapp/cloud-api/reference/messages) (`Authorization: Bearer`, the response fields, `message_status` values for paced templates)
 - [Meta: send messages](https://developers.facebook.com/documentation/business-messaging/whatsapp/messages/send-messages.md) (a success does not mean delivery; outside the 24-hour window only templates)
-- [Meta: template fundamentals](https://developers.facebook.com/documentation/business-messaging/whatsapp/templates/overview.md) (send-time body parameters, positional or named with `parameter_name`; named parameters are lowercase letters and underscores; only APPROVED templates can be sent)
+- [Meta: template fundamentals](https://developers.facebook.com/documentation/business-messaging/whatsapp/templates/overview.md) (send-time body parameters, positional or named with `parameter_name`; named parameters are "unique, single strings, composed of lowercase characters and underscores", with no length limit given, re-checked 22 Nov 2026 for step 2.9a; positional parameters "ordered array index numbers, starting from 1"; only APPROVED templates can be sent)
 - [Meta: template pausing](https://developers.facebook.com/documentation/business-messaging/whatsapp/templates/template-pausing.md) (pauses of 3 and 6 hours, then disabled)
 - [Meta: throughput](https://developers.facebook.com/docs/whatsapp/throughput) (80 messages a second per number by default, up to 1,000; 130429 when exceeded)
 - [Meta: pricing](https://developers.facebook.com/documentation/business-messaging/whatsapp/pricing.md) (templates sent inside an open customer-service window charged per message since 1 Oct 2026)

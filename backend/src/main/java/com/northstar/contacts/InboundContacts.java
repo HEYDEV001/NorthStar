@@ -40,10 +40,16 @@ public interface InboundContacts {
     void recordInboundAt(UUID conversationId, Instant sentAt);
 
     /**
-     * Stores the inbound message in the conversation and returns its ID. Fails if a message with the same provider ID is
-     * already stored; callers check {@link #hasInboundMessage} first.
+     * Stores the inbound message in the conversation, which must already be locked ({@link #lockConversation}), and
+     * records it as the conversation's latest activity: {@code last_message_at} moves forward, and a {@code closed}
+     * conversation is open again (step 2.9a: a new inbound message of any type reopens it, an opt-out included). Fails if
+     * a message with the same provider ID is already stored; callers check {@link #hasInboundMessage} first, so a
+     * duplicate changes nothing.
      */
-    UUID storeInbound(UUID conversationId, InboundMessage message);
+    StoredInbound storeInbound(UUID conversationId, InboundMessage message);
+
+    /** The stored inbound message, and whether storing it reopened its closed conversation. */
+    record StoredInbound(UUID messageId, boolean reopened) {}
 
     /** The longest profile name kept, in characters (code points). */
     int MAX_NAME_LENGTH = 200;

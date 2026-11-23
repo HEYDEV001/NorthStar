@@ -551,6 +551,35 @@ class ConversationSchemaTests {
     }
 
     @Test
+    void theInboxListsConversationsByTheirLatestActivityThroughItsTwoIndexes() {
+        assertThat(admin.sql("""
+                        select is_nullable || '|' || column_default from information_schema.columns
+                        where table_schema = 'northstar' and table_name = 'conversations'
+                          and column_name = 'last_message_at'""").query(String.class).single())
+                .as("step 2.9a: every conversation has a latest activity, the database's time")
+                .isEqualTo("NO|now()");
+        assertThat(admin.sql("""
+                        select indexname || ' ' || indexdef from pg_indexes
+                        where schemaname = 'northstar' and tablename = 'conversations'
+                          and indexname in ('conversations_inbox', 'conversations_inbox_assigned')
+                        order by indexname""").query(String.class).list())
+                .satisfiesExactly(
+                        inbox -> assertThat(inbox).contains("(tenant_id, last_message_at DESC, id DESC)"),
+                        assigned -> assertThat(assigned)
+                                .contains("(tenant_id, assigned_membership_id, last_message_at DESC, id DESC)"));
+
+        UUID tenant = data.tenant();
+        UUID conversation = data.conversation(tenant, data.contact(tenant), data.whatsAppNumber(tenant), null);
+        assertThat(admin.sql("select last_message_at > now() - interval '1 minute' from northstar.conversations"
+                                + " where id = :id")
+                        .param("id", conversation)
+                        .query(Boolean.class)
+                        .single())
+                .as("a new conversation starts active now")
+                .isTrue();
+    }
+
+    @Test
     void contactSourcesAreRecordedOncePerSource() {
         UUID tenant = data.tenant();
         UUID contact = data.contact(tenant);
@@ -573,7 +602,12 @@ class ConversationSchemaTests {
     void columnGrantsMatchEachTablesTier() {
         assertThat(appUserColumns("northstar.conversations", "UPDATE"))
                 .containsExactlyInAnyOrder(
-                        "status", "ai_paused", "needs_human", "assigned_membership_id", "last_inbound_at");
+                        "status",
+                        "ai_paused",
+                        "needs_human",
+                        "assigned_membership_id",
+                        "last_inbound_at",
+                        "last_message_at");
         assertThat(appUserColumns("northstar.messages", "UPDATE"))
                 .containsExactlyInAnyOrder(
                         "status",

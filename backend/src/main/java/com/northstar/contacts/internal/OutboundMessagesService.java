@@ -35,11 +35,15 @@ import tools.jackson.databind.json.JsonMapper;
  * <p>Marking sent or failed changes only a message still queued without a provider ID, so the two never overwrite each
  * other: a message Meta accepted stays sent, and a failed one is never sent afterwards by this class.
  *
+ * <p>A template message's text is rendered when it is queued (step 2.9a, {@link TemplateText}) and stored as its body,
+ * so the inbox shows what was sent; queueing also moves the conversation's {@code last_message_at} forward.
+ *
  * <p>Lock order, the same on every path: the contact, then its conversation, its actions and their messages. Queueing
- * share-locks the contact before writing anything; marking sent or failed locks only the message, inside a transaction
- * that already holds whatever comes before it; a delivery status (step 2.7) locks only the message, after its webhook
- * row; a template's status change (step 2.8c) holds the template's lock and share-locks its queued messages' contacts,
- * in ID order, before their actions and messages.
+ * share-locks the contact before writing anything, then locks the conversation to move its latest activity (step
+ * 2.9a); marking sent or failed locks only the message, inside a transaction that already holds whatever comes before
+ * it; a delivery status (step 2.7) locks only the message, after its webhook row; a template's status change (step
+ * 2.8c) holds the template's lock and share-locks its queued messages' contacts, in ID order, before their actions and
+ * messages.
  */
 @Service
 @Transactional(propagation = Propagation.MANDATORY)
@@ -60,14 +64,24 @@ class OutboundMessagesService implements OutboundMessages {
             where c.tenant_id = ? and c.id = ?
             for share of ct""";
 
-    private static final String TEMPLATE_VISIBLE = """
-            select exists (select from northstar.message_templates where tenant_id = ? and id = ?)""";
+    // The template's body and variables, from which the message's text is rendered (step 2.9a). Not locked: the
+    // message's foreign key check takes the template's key share lock, and a template's status change (step 2.8c) holds
+    // its row lock only to change its status, which this read does not depend on.
+    private static final String TEMPLATE_TEXT = """
+            select body, variables::text as variables
+            from northstar.message_templates where tenant_id = ? and id = ?""";
 
     private static final String INSERT = """
             insert into northstar.messages
               (id, tenant_id, conversation_id, direction, sender_type, type, body, template_id, template_params, status)
             values (?, ?, ?, 'out', ?, ?, ?, ?, cast(? as jsonb), 'queued')
             on conflict (id) do nothing""";
+
+    // The conversation's latest activity (step 2.9a), moved forward only. The conversation is locked here, after the
+    // contact's shared lock and before the action: the order every path that touches a message takes.
+    private static final String TOUCH_CONVERSATION = """
+            update northstar.conversations set last_message_at = now()
+            where tenant_id = ? and id = ? and last_message_at < now()""";
 
     // The stored message's recipient: the contact of the conversation it is in, which for a repeated ID may be the
     // first call's conversation.
@@ -182,6 +196,10 @@ class OutboundMessagesService implements OutboundMessages {
                 .isEmpty()) {
             throw new NotFoundException("conversation", conversationId);
         }
+        // A send queued before is found first, so a repeat returns it without rendering its text again from a template
+        // that may have changed since (P1).
+        Optional<UUID> storedRecipient = storedRecipient(tenant, messageId);
+        if (storedRecipient.isPresent()) return new Queued(messageId, storedRecipient.get(), false);
         String type;
         String body = null;
         UUID templateId = null;
@@ -195,10 +213,14 @@ class OutboundMessagesService implements OutboundMessages {
             case OutboundContent.Template template -> {
                 type = "template";
                 templateId = template.templateId();
-                if (!exists(TEMPLATE_VISIBLE, tenant, templateId)) {
-                    throw new NotFoundException("message_template", templateId);
-                }
+                TemplateSource source = jdbc.sql(TEMPLATE_TEXT)
+                        .param(tenant)
+                        .param(template.templateId())
+                        .query((row, n) -> new TemplateSource(row.getString("body"), row.getString("variables")))
+                        .optional()
+                        .orElseThrow(() -> new NotFoundException("message_template", template.templateId()));
                 parameters = parametersJson(template.parameters());
+                body = TemplateText.render(source.body(), source.variables(), template.parameters(), json);
             }
         }
         int stored = jdbc.sql(INSERT)
@@ -211,13 +233,21 @@ class OutboundMessagesService implements OutboundMessages {
                 .param(templateId)
                 .param(parameters)
                 .update();
-        UUID recipient = jdbc.sql(STORED_RECIPIENT)
+        if (stored == 1) {
+            jdbc.sql(TOUCH_CONVERSATION).param(tenant).param(conversationId).update();
+        }
+        // Another transaction may have stored the same send meanwhile; its message's recipient is the one returned.
+        UUID recipient = storedRecipient(tenant, messageId)
+                .orElseThrow(() -> new IllegalStateException("A message with this ID belongs to no conversation here"));
+        return new Queued(messageId, recipient, stored == 1);
+    }
+
+    private Optional<UUID> storedRecipient(UUID tenant, UUID messageId) {
+        return jdbc.sql(STORED_RECIPIENT)
                 .param(tenant)
                 .param(messageId)
                 .query(UUID.class)
-                .optional()
-                .orElseThrow(() -> new IllegalStateException("A message with this ID belongs to no conversation here"));
-        return new Queued(messageId, recipient, stored == 1);
+                .optional();
     }
 
     @Override
@@ -335,6 +365,9 @@ class OutboundMessagesService implements OutboundMessages {
         return new Ignored(message.id(), from, to);
     }
 
+    /** A template's Meta body and variables, as stored (either may be null: a template Meta has not given yet). */
+    private record TemplateSource(String body, String variables) {}
+
     /** A message as a delivery status finds it, locked. */
     private record Current(UUID id, String status, UUID conversationId, UUID contactId, boolean deliveredAtEmpty) {}
 
@@ -417,11 +450,6 @@ class OutboundMessagesService implements OutboundMessages {
     /** Postgres text cannot hold U+0000. */
     private static void requireNoNul(String value) {
         if (value.indexOf('\u0000') >= 0) throw new IllegalArgumentException("Message text cannot contain U+0000");
-    }
-
-    private boolean exists(String sql, UUID tenant, UUID id) {
-        return Boolean.TRUE.equals(
-                jdbc.sql(sql).param(tenant).param(id).query(Boolean.class).single());
     }
 
     private static UUID systemTenant() {

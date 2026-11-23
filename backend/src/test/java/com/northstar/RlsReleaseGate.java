@@ -164,8 +164,15 @@ record RlsReleaseGate(
                     "northstar.whatsapp_accounts",
                             Set.of("display_phone", "display_name", "quality_rating", "messaging_limit", "verified_at"),
                     // window_expires_at is generated; the contact, channel and WhatsApp number never change.
+                    // last_message_at (step 2.9a) is moved forward by every stored message.
                     "northstar.conversations",
-                            Set.of("status", "ai_paused", "needs_human", "assigned_membership_id", "last_inbound_at"),
+                            Set.of(
+                                    "status",
+                                    "ai_paused",
+                                    "needs_human",
+                                    "assigned_membership_id",
+                                    "last_inbound_at",
+                                    "last_message_at"),
                     // A template's name and language are its identity.
                     "northstar.message_templates",
                             Set.of(

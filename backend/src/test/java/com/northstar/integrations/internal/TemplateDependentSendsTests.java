@@ -564,7 +564,8 @@ class TemplateDependentSendsTests {
                 .doesNotContain(template.providerId())
                 .doesNotContain(template.name())
                 .doesNotContain(business.waba())
-                .doesNotContain(business.phone());
+                .doesNotContain(business.phone())
+                .doesNotContain("Asha");
     }
 
     // Helpers
@@ -633,13 +634,14 @@ class TemplateDependentSendsTests {
                 template.providerId(), template.name(), "en_US", status, "UTILITY", "POSITIONAL", BODY);
     }
 
+    /** A send of the template with the one value its body takes ({{1}}), as queueing requires since step 2.9a. */
     private WhatsAppMessages.Queued queue(Business business, Template template) {
         return SystemScope.call(
                 business.tenant(),
                 () -> messages.queueTemplate(
                         business.conversation(),
                         template.id(),
-                        TemplateParameters.none(),
+                        TemplateParameters.positional("Asha"),
                         OutboundMessages.Sender.SYSTEM,
                         "test:" + UUID.randomUUID()));
     }

@@ -72,6 +72,11 @@ class ModuleDependencyTests {
         assertThat(graph.get("integrations")).contains("contacts", "workflow");
         assertThat(graph.get("contacts")).contains("tenancy", "api");
         assertThat(graph.getOrDefault("tenancy", Set.of())).doesNotContain("contacts");
+        // Step 2.9a: the inbox API in crm reads through contacts; crm sits above the modules it uses, none of which
+        // depends on it.
+        assertThat(graph.get("crm")).contains("contacts", "api");
+        for (String below : List.of("contacts", "integrations", "workflow", "tenancy"))
+            assertThat(graph.getOrDefault(below, Set.of())).as(below).doesNotContain("crm");
     }
 
     @Test

@@ -29,7 +29,8 @@ import org.springframework.stereotype.Component;
  *   <li>the contact, created if new and locked, so one contact's messages are processed one at a time (P3);
  *   <li>whether the message opts its sender out (step 2.5, W32), decided first, before anything hands the message on;
  *   <li>its source ({@code direct} until Phase 7), its open lead, its conversation (with the open lead's assignee if
- *       new), the conversation's last inbound time, and the message;
+ *       new), the conversation's last inbound time, and the message, which reopens a closed conversation and moves
+ *       its latest activity (step 2.9a);
  *   <li>for an opt-out: the contact opted out ({@code opt_out_at} the first time only), every action that could still
  *       message the contact cancelled, the open lead joined (never a new one opened, and its stage unchanged), and
  *       {@code optout.received} recorded instead of {@code message.received};
@@ -78,15 +79,25 @@ class WhatsAppInboundProcessor {
     /** The message was already stored (by an earlier run); closed with nothing else written. */
     record DuplicateMessage() implements Outcome {}
 
-    /** Stored: the message, and the lead it opened or joined (null for none). */
-    record Stored(UUID messageId, UUID leadId, LeadOutcome lead, boolean noPublishedWorkflow) implements Outcome {}
+    /**
+     * Stored: the message, the lead it opened or joined (null for none), and whether it reopened its closed
+     * conversation (step 2.9a).
+     */
+    record Stored(UUID messageId, UUID leadId, LeadOutcome lead, boolean noPublishedWorkflow, boolean reopened)
+            implements Outcome {}
 
     /**
      * Stored as an opt-out (step 2.5): the message, the lead it joined (null for none), whether this was the contact's
-     * first opt-out, and how many of its actions were cancelled.
+     * first opt-out, how many of its actions were cancelled, and whether it reopened its closed conversation.
      */
     record OptedOut(
-            UUID messageId, UUID contactId, UUID leadId, LeadOutcome lead, boolean firstOptOut, int cancelledActions)
+            UUID messageId,
+            UUID contactId,
+            UUID leadId,
+            LeadOutcome lead,
+            boolean firstOptOut,
+            int cancelledActions,
+            boolean reopened)
             implements Outcome {}
 
     private final WebhookEventProcessing rows;
@@ -163,8 +174,11 @@ class WhatsAppInboundProcessor {
                 message.phoneNumberId(),
                 open.map(OpenLead::assignedMembershipId).orElse(null));
         contacts.recordInboundAt(conversation.id(), message.sentAt());
-        UUID messageId = contacts.storeInbound(conversation.id(), message.toStored());
-        if (optOut) return optOut(webhookEventId, message, contact, conversation.id(), messageId, open);
+        InboundContacts.StoredInbound stored = contacts.storeInbound(conversation.id(), message.toStored());
+        UUID messageId = stored.messageId();
+        if (optOut) {
+            return optOut(webhookEventId, message, contact, conversation.id(), messageId, stored.reopened(), open);
+        }
 
         UUID leadId = null;
         LeadOutcome lead = LeadOutcome.NONE;
@@ -199,7 +213,7 @@ class WhatsAppInboundProcessor {
                 message.type().code(),
                 message.sentAt()));
         rows.finish(webhookEventId, noPublishedWorkflow ? NO_PUBLISHED_WORKFLOW : null);
-        return new Stored(messageId, leadId, lead, noPublishedWorkflow);
+        return new Stored(messageId, leadId, lead, noPublishedWorkflow, stored.reopened());
     }
 
     /**
@@ -212,6 +226,7 @@ class WhatsAppInboundProcessor {
             UUID contact,
             UUID conversationId,
             UUID messageId,
+            boolean reopened,
             Optional<OpenLead> open) {
         boolean first = consent.recordOptOut(contact, message.sentAt());
         int cancelled = cancellation.cancelForOptedOutContact(contact);
@@ -224,6 +239,6 @@ class WhatsAppInboundProcessor {
         events.recordOptOutReceived(new EngineEvents.OptOutReceived(
                 message.wamid(), leadId, lead, webhookEventId, contact, conversationId, messageId, message.sentAt()));
         rows.finish(webhookEventId, null);
-        return new OptedOut(messageId, contact, leadId, lead, first, cancelled);
+        return new OptedOut(messageId, contact, leadId, lead, first, cancelled, reopened);
     }
 }

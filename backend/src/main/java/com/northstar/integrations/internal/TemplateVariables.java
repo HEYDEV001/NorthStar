@@ -1,5 +1,6 @@
 package com.northstar.integrations.internal;
 
+import com.northstar.contacts.TemplateParameters;
 import java.util.ArrayList;
 import java.util.Comparator;
 import java.util.LinkedHashMap;
@@ -20,11 +21,12 @@ import java.util.regex.Pattern;
  */
 final class TemplateVariables {
 
-    private static final Pattern PLACEHOLDER = Pattern.compile("\\{\\{\\s*([^{}\\s]{1,64})\\s*}}");
-    private static final Pattern POSITIONAL = Pattern.compile("[1-9][0-9]{0,2}");
-
-    /** Meta's named parameters: lowercase letters and underscores, with digits after the first character. */
-    private static final Pattern NAMED = Pattern.compile("[a-z_][a-z0-9_]{0,63}");
+    // The placeholder syntax and both parameter rules are TemplateParameters', so the variables read here are exactly
+    // the names and numbers a send can fill (step 2.9a). Named parameters are lowercase letters and underscores, as
+    // Meta's page says: a placeholder with a digit in its name is not a variable.
+    private static final Pattern PLACEHOLDER = TemplateParameters.PLACEHOLDER;
+    private static final Pattern POSITIONAL = TemplateParameters.POSITIONAL_PARAMETER;
+    private static final Pattern NAMED = TemplateParameters.NAMED_PARAMETER;
 
     private TemplateVariables() {}
 

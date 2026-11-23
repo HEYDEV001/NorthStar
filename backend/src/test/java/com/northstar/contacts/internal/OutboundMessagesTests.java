@@ -17,6 +17,7 @@ import com.northstar.tenancy.Role;
 import com.northstar.tenancy.TenantContext;
 import com.northstar.tenancy.TenantScope;
 import java.time.Duration;
+import java.util.List;
 import java.util.Map;
 import java.util.Optional;
 import java.util.UUID;
@@ -127,6 +128,112 @@ class OutboundMessagesTests {
                 .isTrue();
     }
 
+    // Step 2.9a: a template message's text, and the conversation's latest activity.
+
+    @Test
+    void aTemplateMessageStoresItsTextRenderedFromTheTemplatesBody() {
+        Conversation conversation = conversation();
+        UUID positional = template(conversation.tenant(), "Hi {{1}}, see you on {{2}}.", "positional", "1", "2");
+        UUID named = template(conversation.tenant(), "Hello {{first_name}}!", "named", "first_name");
+
+        UUID first = queueTemplate(conversation, positional, TemplateParameters.positional("Asha", "Saturday"));
+        UUID second = queueTemplate(conversation, named, TemplateParameters.named(Map.of("first_name", "Ravi")));
+
+        assertThat(body(first)).isEqualTo("Hi Asha, see you on Saturday.");
+        assertThat(body(second)).isEqualTo("Hello Ravi!");
+        assertThat(inTransaction(conversation.tenant(), () -> outbound.toSend(first, MARGIN))
+                        .orElseThrow()
+                        .text())
+                .as("the send still fills the template from its values, not from the stored text")
+                .isNull();
+    }
+
+    @Test
+    void valuesThatDoNotMatchTheTemplateAreRefusedAndNothingIsStored() {
+        Conversation conversation = conversation();
+        UUID template = template(conversation.tenant(), "Hi {{1}}, see you on {{2}}.", "positional", "1", "2");
+        UUID messageId = UUID.randomUUID();
+
+        assertThatThrownBy(() -> inTransaction(
+                        conversation.tenant(),
+                        () -> outbound.queue(
+                                messageId,
+                                conversation.id(),
+                                OutboundMessages.Sender.SYSTEM,
+                                new OutboundContent.Template(template, TemplateParameters.positional("Asha")))))
+                .isInstanceOf(IllegalArgumentException.class)
+                .message()
+                .doesNotContain("Asha");
+        assertThat(admin.sql("select count(*) from northstar.messages where id = :id")
+                        .param("id", messageId)
+                        .query(Long.class)
+                        .single())
+                .isZero();
+    }
+
+    @Test
+    void aTemplateMetaHasNotGivenVariablesForStoresNoText() {
+        Conversation conversation = conversation();
+        UUID template = data.messageTemplate(conversation.tenant()); // a body, but no variables read from Meta
+
+        UUID message = queueTemplate(conversation, template, TemplateParameters.positional("unchecked"));
+
+        assertThat(body(message)).isNull();
+    }
+
+    @Test
+    void queueingAgainReturnsTheFirstMessageWithoutRenderingItAgain() {
+        Conversation conversation = conversation();
+        UUID template = template(conversation.tenant(), "Hi {{1}}", "positional", "1");
+        UUID messageId = UUID.randomUUID();
+        OutboundContent content = new OutboundContent.Template(template, TemplateParameters.positional("Asha"));
+        assertThat(inTransaction(
+                                conversation.tenant(),
+                                () -> outbound.queue(
+                                        messageId, conversation.id(), OutboundMessages.Sender.SYSTEM, content))
+                        .stored())
+                .isTrue();
+        // Meta changes the template meanwhile: the values no longer fit it, but the send was already queued.
+        admin.sql("update northstar.message_templates set body = 'Hi {{name}}',"
+                        + " variables = '{\"format\": \"named\", \"names\": [\"name\"]}' where id = :id")
+                .param("id", template)
+                .update();
+
+        OutboundMessages.Queued again = inTransaction(
+                conversation.tenant(),
+                () -> outbound.queue(messageId, conversation.id(), OutboundMessages.Sender.SYSTEM, content));
+
+        assertThat(again.stored()).isFalse();
+        assertThat(body(messageId)).isEqualTo("Hi Asha");
+    }
+
+    @Test
+    void aStoredMessageMovesTheConversationsLatestActivityForwardOnly() {
+        Conversation conversation = conversation();
+        admin.sql("update northstar.conversations set last_message_at = now() - interval '1 day' where id = :id")
+                .param("id", conversation.id())
+                .update();
+
+        UUID message = queueText(conversation, "Moves it");
+
+        assertThat(admin.sql("""
+                        select c.last_message_at = m.created_at
+                        from northstar.conversations c join northstar.messages m on m.conversation_id = c.id
+                        where m.id = :id""").param("id", message).query(Boolean.class).single())
+                .as("the conversation's latest activity is the message just stored")
+                .isTrue();
+
+        admin.sql("update northstar.conversations set last_message_at = now() + interval '1 day' where id = :id")
+                .param("id", conversation.id())
+                .update();
+        queueText(conversation, "Never moves it back");
+        assertThat(admin.sql("select last_message_at > now() from northstar.conversations where id = :id")
+                        .param("id", conversation.id())
+                        .query(Boolean.class)
+                        .single())
+                .isTrue();
+    }
+
     @Test
     void P9_anotherTenantsMessagesAndConversationsAreNotThere() {
         Conversation ours = conversation();
@@ -190,6 +297,45 @@ class OutboundMessagesTests {
                                 OutboundMessages.Sender.SYSTEM,
                                 new OutboundContent.Text(text)))
                 .messageId();
+    }
+
+    private UUID queueTemplate(Conversation conversation, UUID template, TemplateParameters values) {
+        return inTransaction(
+                        conversation.tenant(),
+                        () -> outbound.queue(
+                                UUID.randomUUID(),
+                                conversation.id(),
+                                OutboundMessages.Sender.SYSTEM,
+                                new OutboundContent.Template(template, values)))
+                .messageId();
+    }
+
+    /** An approved template with this body and variables, as the sync (step 2.8b) stores them. */
+    private UUID template(UUID tenant, String body, String format, String... names) {
+        return admin.sql("""
+                        insert into northstar.message_templates
+                          (tenant_id, name, language, category, body, variables, status)
+                        values (:tenant, :name, 'en', 'UTILITY', :body,
+                                jsonb_build_object('format', :format, 'names', to_jsonb(cast(:names as text[]))),
+                                'approved')
+                        returning id""")
+                .param("tenant", tenant)
+                .param("name", "fixture_" + UUID.randomUUID().toString().replace("-", ""))
+                .param("body", body)
+                .param("format", format)
+                .param("names", names)
+                .query(UUID.class)
+                .single();
+    }
+
+    /** The message's body, which may be null (JdbcClient's single() refuses a null). */
+    private String body(UUID message) {
+        List<String> bodies = admin.sql("select body from northstar.messages where id = :id")
+                .param("id", message)
+                .query((rs, i) -> rs.getString("body"))
+                .list();
+        assertThat(bodies).hasSize(1);
+        return bodies.getFirst();
     }
 
     private void setWindowLeft(Conversation conversation, String left) {
