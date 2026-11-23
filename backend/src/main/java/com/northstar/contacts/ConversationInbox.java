@@ -66,6 +66,8 @@ public interface ConversationInbox {
      *
      * @param status open or closed
      * @param automationPaused whether automation is paused for the conversation (taking over, step 2.9c)
+     * @param takenOverByMembershipId the member who took the conversation over; null unless it is taken over
+     * @param takenOverAt when it was taken over; null unless it is taken over
      * @param windowExpiresAt when WhatsApp's 24-hour customer-service window ends; null with no inbound message
      * @param replyAfterOptOutUntil for an opted-out contact who wrote again after their latest opt-out, when the window
      *     for a staff member's text reply ends (step 2.9b, W32); null otherwise, and in the past once it has ended
@@ -76,6 +78,8 @@ public interface ConversationInbox {
             ContactSummary contact,
             UUID assignedMembershipId,
             boolean automationPaused,
+            UUID takenOverByMembershipId,
+            Instant takenOverAt,
             boolean needsHuman,
             Instant lastInboundAt,
             Instant windowExpiresAt,

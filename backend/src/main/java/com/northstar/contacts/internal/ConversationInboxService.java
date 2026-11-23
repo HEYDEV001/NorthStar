@@ -34,7 +34,8 @@ import org.springframework.transaction.support.TransactionTemplate;
 class ConversationInboxService implements ConversationInbox {
 
     private static final String CONVERSATIONS = """
-            select c.id, c.status, c.assigned_membership_id, c.ai_paused, c.needs_human, c.last_inbound_at,
+            select c.id, c.status, c.assigned_membership_id, c.automation_paused,
+                   c.taken_over_by_membership_id, c.taken_over_at, c.needs_human, c.last_inbound_at,
                    c.window_expires_at, c.last_message_at,
                    northstar.opt_out_reply_until(c.tenant_id, c.id) as reply_after_opt_out_until,
                    ct.id as contact_id, ct.name as contact_name, ct.normalized_phone, ct.consent_state, ct.opt_out_at
@@ -192,7 +193,9 @@ class ConversationInboxService implements ConversationInbox {
                         row.getString("consent_state"),
                         instant(row, "opt_out_at")),
                 row.getObject("assigned_membership_id", UUID.class),
-                row.getBoolean("ai_paused"),
+                row.getBoolean("automation_paused"),
+                row.getObject("taken_over_by_membership_id", UUID.class),
+                instant(row, "taken_over_at"),
                 row.getBoolean("needs_human"),
                 instant(row, "last_inbound_at"),
                 instant(row, "window_expires_at"),

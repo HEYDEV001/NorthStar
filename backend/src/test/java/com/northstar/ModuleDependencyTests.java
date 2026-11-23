@@ -77,6 +77,8 @@ class ModuleDependencyTests {
         assertThat(graph.get("crm")).contains("contacts", "api");
         // Step 2.9b: a staff reply is queued through integrations, which creates its send action in workflow.
         assertThat(graph.get("crm")).contains("integrations");
+        // Step 2.9c: taking a conversation over records its staff.action event through workflow.
+        assertThat(graph.get("crm")).contains("workflow", "tenancy");
         for (String below : List.of("contacts", "integrations", "workflow", "tenancy"))
             assertThat(graph.getOrDefault(below, Set.of())).as(below).doesNotContain("crm");
     }

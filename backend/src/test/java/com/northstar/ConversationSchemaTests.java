@@ -580,6 +580,51 @@ class ConversationSchemaTests {
     }
 
     @Test
+    void aTakeOverNamesItsTenantsMemberAndItsTimeTogetherAndAlwaysPausesAutomation() {
+        TestData.Member owner = data.member("admin");
+        UUID tenant = owner.tenantId();
+        UUID conversation = data.conversation(tenant, data.contact(tenant), data.whatsAppNumber(tenant), null);
+        UUID foreignMember = data.member("admin").membershipId();
+
+        for (String[] invalid : List.of(
+                new String[] {"automation_paused = true, taken_over_at = now()", "conversations_taken_over_complete"},
+                new String[] {
+                    "automation_paused = true, taken_over_by_membership_id = '" + owner.membershipId() + "'",
+                    "conversations_taken_over_complete"
+                },
+                new String[] {
+                    "taken_over_by_membership_id = '" + owner.membershipId() + "', taken_over_at = now()",
+                    "conversations_taken_over_is_paused"
+                },
+                new String[] {
+                    "automation_paused = true, taken_over_by_membership_id = '" + foreignMember
+                            + "', taken_over_at = now()",
+                    "conversations_taken_over_by_fk"
+                })) {
+            assertThatThrownBy(() -> admin.sql("update northstar.conversations set " + invalid[0] + " where id = :id")
+                            .param("id", conversation)
+                            .update())
+                    .as(invalid[0])
+                    .rootCause()
+                    .hasMessageContaining(invalid[1]);
+        }
+        assertThat(admin.sql("""
+                        update northstar.conversations
+                        set automation_paused = true, taken_over_by_membership_id = :m, taken_over_at = now()
+                        where id = :id""")
+                        .param("m", owner.membershipId())
+                        .param("id", conversation)
+                        .update())
+                .isOne();
+        assertThat(admin.sql("""
+                        select string_agg(column_name, ',' order by column_name) from information_schema.columns
+                        where table_schema = 'northstar' and table_name = 'conversations'
+                          and column_name in ('ai_paused', 'automation_paused')""").query(String.class).single())
+                .as("step 2.9c: ai_paused is now automation_paused")
+                .isEqualTo("automation_paused");
+    }
+
+    @Test
     void contactSourcesAreRecordedOncePerSource() {
         UUID tenant = data.tenant();
         UUID contact = data.contact(tenant);
@@ -603,7 +648,9 @@ class ConversationSchemaTests {
         assertThat(appUserColumns("northstar.conversations", "UPDATE"))
                 .containsExactlyInAnyOrder(
                         "status",
-                        "ai_paused",
+                        "automation_paused",
+                        "taken_over_by_membership_id",
+                        "taken_over_at",
                         "needs_human",
                         "assigned_membership_id",
                         "last_inbound_at",

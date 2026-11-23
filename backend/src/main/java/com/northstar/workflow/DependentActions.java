@@ -7,8 +7,9 @@ import java.util.Set;
  * Brings the actions that depend on something outside workflow in line with it (step 2.8c, W34): a WhatsApp template's
  * sends follow the template's status. The caller names the actions by type and by one field of their payload (a send's
  * {@code messageId}), so workflow never reads the caller's tables. Every method runs only inside the caller's
- * transaction (none is opened here) and only as the system actor, in the current tenant; another tenant's actions are
- * never found.
+ * transaction (none is opened here), in the current tenant, and as the system actor, except {@link #cancel}, which an
+ * admin or a staff member may call too (step 2.9c: taking a conversation over); another tenant's actions are never
+ * found.
  *
  * <p>Lock order: the caller first holds the lock on what the actions depend on (the template) and shared locks on their
  * recipients (contacts, in ID order), as an opt-out locks the contact and then its actions; these methods then lock the
@@ -55,4 +56,13 @@ public interface DependentActions {
      * Returns how many.
      */
     int fail(Dependents dependents, String code);
+
+    /**
+     * Cancels, with this reason, the pending, needs-review and paused ones (auth and blocked pauses included), as an
+     * opt-out cancels a contact's: each is reported to its handler's {@link ActionHandler#closed} in this transaction,
+     * raises no alert, and its queued job later finds it cancelled and does nothing. Processing ones are left to their
+     * attempt. Step 2.9c: taking a conversation over cancels its queued automated sends as
+     * {@code conversation_taken_over}. Returns how many.
+     */
+    int cancel(Dependents dependents, String reason);
 }

@@ -86,7 +86,10 @@ class ConversationIsolationTests {
                 .containsExactly(shop.mine());
         assertThat(asStaff(shop, "update northstar.conversations set needs_human = true where id = :id", shop.mine()))
                 .isOne();
-        assertThat(asStaff(shop, "update northstar.conversations set ai_paused = true where id = :id", shop.theirs()))
+        assertThat(asStaff(
+                        shop,
+                        "update northstar.conversations set automation_paused = true where id = :id",
+                        shop.theirs()))
                 .as("a colleague's conversation is not there to change")
                 .isZero();
         assertThat(asStaff(
@@ -451,7 +454,7 @@ class ConversationIsolationTests {
 
     private String stateOf(UUID conversation) {
         return admin.sql("""
-                        select 'paused=' || ai_paused || ' assigned=' || coalesce(assigned_membership_id::text, 'none')
+                        select 'paused=' || automation_paused || ' assigned=' || coalesce(assigned_membership_id::text, 'none')
                         from northstar.conversations where id = :id""").param("id", conversation).query(String.class).single();
     }
 

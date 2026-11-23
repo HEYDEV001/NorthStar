@@ -1,9 +1,13 @@
 package com.northstar.workflow.internal;
 
+import com.northstar.tenancy.Role;
 import com.northstar.tenancy.TenantContext;
 import com.northstar.tenancy.TenantScope;
 import com.northstar.workflow.EngineEvents;
+import java.time.Instant;
+import java.time.temporal.ChronoUnit;
 import java.util.Objects;
+import java.util.Optional;
 import java.util.UUID;
 import org.springframework.jdbc.core.simple.JdbcClient;
 import org.springframework.stereotype.Service;
@@ -23,6 +27,7 @@ class EngineEventsService implements EngineEvents {
     static final String MESSAGE_RECEIVED = "message.received";
     static final String OPTOUT_RECEIVED = "optout.received";
     static final String MESSAGE_STATUS = "message.status";
+    static final String STAFF_ACTION = "staff.action";
 
     /** The events check allows 1 to 300 characters. */
     static final int MAX_DEDUPE_KEY_LENGTH = 300;
@@ -31,6 +36,11 @@ class EngineEventsService implements EngineEvents {
             insert into northstar.events (tenant_id, lead_id, type, dedupe_key, payload)
             values (?, ?, ?, ?, cast(? as jsonb))
             on conflict on constraint events_dedupe_key do nothing""";
+
+    // The contact's open lead as the caller sees it: leads_staff_assigned shows a staff member only their own.
+    private static final String OPEN_LEAD = """
+            select id from northstar.leads
+            where tenant_id = ? and contact_id = ? and closed_at is null and deleted_at is null""";
 
     private final JdbcClient jdbc;
     private final JsonMapper json;
@@ -96,9 +106,43 @@ class EngineEventsService implements EngineEvents {
         return insert(null, MESSAGE_STATUS, dedupeKey, payload);
     }
 
+    @Override
+    public boolean recordStaffAction(StaffAction event) {
+        Objects.requireNonNull(event, "event");
+        TenantContext context = TenantScope.require();
+        if (context.role() != Role.ADMIN && context.role() != Role.STAFF) {
+            throw new IllegalStateException("Staff actions are recorded for admins and staff only");
+        }
+        UUID tenant = context.tenantId();
+        Optional<UUID> lead = jdbc.sql(OPEN_LEAD)
+                .param(tenant)
+                .param(event.contactId())
+                .query(UUID.class)
+                .optional();
+        if (lead.isEmpty()) return false;
+        String dedupeKey = STAFF_ACTION + ":" + event.kind().code() + ":" + event.conversationId() + ":"
+                + ChronoUnit.MICROS.between(Instant.EPOCH, event.takeOverAt());
+
+        // IDs, fixed codes, a count and a time only.
+        ObjectNode payload = json.createObjectNode();
+        payload.put("action", event.kind().code());
+        payload.put("reason", event.kind().reason());
+        payload.put("conversation_id", event.conversationId().toString());
+        payload.put("contact_id", event.contactId().toString());
+        payload.put("membership_id", event.membershipId().toString());
+        payload.put("cancelled_sends", event.cancelledSends());
+        payload.put("at", event.at().toString());
+
+        return insert(tenant, lead.get(), STAFF_ACTION, dedupeKey, payload);
+    }
+
     private boolean insert(UUID leadId, String type, String dedupeKey, ObjectNode payload) {
+        return insert(systemTenant(), leadId, type, dedupeKey, payload);
+    }
+
+    private boolean insert(UUID tenant, UUID leadId, String type, String dedupeKey, ObjectNode payload) {
         return jdbc.sql(INSERT_EVENT)
-                        .param(systemTenant())
+                        .param(tenant)
                         .param(leadId)
                         .param(type)
                         .param(dedupeKey)

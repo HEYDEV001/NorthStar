@@ -4,6 +4,7 @@ import com.northstar.contacts.OutboundContent;
 import com.northstar.contacts.OutboundMessages;
 import com.northstar.contacts.TemplateParameters;
 import com.northstar.workflow.ActionView;
+import java.util.Collection;
 import java.util.UUID;
 
 /**
@@ -13,7 +14,8 @@ import java.util.UUID;
  * message ID only, never the text. The worker sends it later and checks the 24-hour window then, not now (W33).
  *
  * <p>Runs in the caller's tenant scope: {@link #queueText} and {@link #queueTemplate} as the system actor (the engine,
- * the AI), {@link #queueStaffReply} as an admin or staff member (step 2.9b). The idempotency key names the send:
+ * the AI), and refused with {@link com.northstar.contacts.AutomationPausedException} for a conversation a staff member
+ * has taken over (step 2.9c); {@link #queueStaffReply} as an admin or staff member (step 2.9b). The idempotency key names the send:
  * queueing again with the same key stores no second message and creates no second action, and returns the first (P1,
  * P21). Another tenant's conversation or template is not found (P9).
  */
@@ -42,6 +44,15 @@ public interface WhatsAppMessages {
      * @see com.northstar.contacts.OutboundMessages#queueStaffReply for the refusals
      */
     Queued queueStaffReply(UUID conversationId, OutboundContent content, String idempotencyKey);
+
+    /**
+     * Cancels the sends of these messages that have not run yet (pending, waiting for review, or paused), each with
+     * this reason, and fails their messages with it through the send's closing hook (step 2.9c: taking a conversation
+     * over cancels its queued automated sends). A send already being attempted is left to finish. Runs inside the
+     * caller's transaction, as the system, an admin or a staff member, after the caller has locked the messages'
+     * conversation; returns how many sends it cancelled.
+     */
+    int cancelQueuedSends(Collection<UUID> messageIds, String reason);
 
     /**
      * Free text, 1 to 4,096 characters. It is sent only if the window is open when the send runs; otherwise the send

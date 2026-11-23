@@ -136,7 +136,10 @@ How step 2.6a sends (decided 21 Nov 2026):
   and the idempotency key, so queueing the same send twice stores one message and one action (P1). Another tenant's
   conversation or template is not found (P9). Queueing share-locks the conversation's contact before it writes
   anything, so it takes its locks in the inbound job's order (contact, conversation, actions, messages) and cannot
-  deadlock with an opt-out being processed. Text is 1 to 4,096 characters, Meta's limit for a text message. A
+  deadlock with an opt-out being processed. A conversation a staff member has taken over (step 2.9c,
+  `workflow-spec.md` section 13) takes no system or AI message: queueing refuses it, under the conversation's lock,
+  and stores nothing (a repeat of a send queued before the take over still returns it). Text is 1 to 4,096
+  characters, Meta's limit for a text message. A
   template's parameter values are stored on the message (`messages.template_params`), positional or named; named
   parameters are lowercase letters and underscores, as Meta requires ("unique, single strings, composed of lowercase
   characters and underscores"; no digits, re-checked 22 Nov 2026), and at most 64 characters, Northstar's own cap (Meta
