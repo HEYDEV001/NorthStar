@@ -40,10 +40,17 @@ public interface OutboundMessages {
 
     /**
      * Stores the message as queued under this ID in the conversation, unless a message with the ID is already stored,
-     * so queueing the same send again stores nothing more (P1).
+     * so queueing the same send again stores nothing more (P1). A stored message moves the conversation's
+     * {@code last_message_at} forward (step 2.9a).
+     *
+     * <p>A template message's text is rendered now and stored as its body (step 2.9a): the template's body with each
+     * variable replaced by its value, so the inbox shows what was sent. The values must match the template's variables
+     * (one value for each of {{1}} to {{n}}, or one for each name); a template Meta has not given a body and variables
+     * for yet has no text, and its values are not checked against variables.
      *
      * @throws com.northstar.api.NotFoundException if the conversation, or a template message's template, is not
      *     visible in the current tenant
+     * @throws IllegalArgumentException if a template message's values do not match the template's variables
      */
     Queued queue(UUID messageId, UUID conversationId, Sender sender, OutboundContent content);
 

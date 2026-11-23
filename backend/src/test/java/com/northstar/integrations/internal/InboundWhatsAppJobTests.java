@@ -677,6 +677,75 @@ class InboundWhatsAppJobTests {
                 .containsExactlyInAnyOrder(early, later, latest);
     }
 
+    // Closed conversations (step 2.9a): a new inbound message reopens one
+
+    @Test
+    void aNewInboundMessageReopensAClosedConversationAndMovesItsLatestActivity(CapturedOutput output) {
+        Business business = business();
+        UUID first = store(WhatsAppPayloads.inbound(business.number()).text("First"));
+        run(business.tenant(), first);
+        assertThat(output.getAll())
+                .contains("webhook.processed provider=whatsapp webhook_event_id=" + first)
+                .containsPattern("webhook_event_id=" + first + " [^\\n]* reopened=false");
+        UUID conversation = conversation(business.tenant(), contactId(business.tenant(), CUSTOMER))
+                .id();
+        close(conversation);
+
+        UUID back = store(WhatsAppPayloads.inbound(business.number()).text("Back again"));
+        run(business.tenant(), back);
+
+        assertThat(conversationStatus(conversation)).isEqualTo("open");
+        assertThat(latestActivityIsTheNewestMessage(conversation)).isTrue();
+        assertThat(messages(conversation)).hasSize(2);
+        assertThat(output.getAll())
+                .containsPattern(
+                        "webhook.processed provider=whatsapp webhook_event_id=" + back + " [^\\n]* reopened=true");
+    }
+
+    @Test
+    void everyInboundTypeReopensItAnOptOutAndAReactionIncluded(CapturedOutput output) {
+        Business business = business();
+        run(business.tenant(), store(WhatsAppPayloads.inbound(business.number()).text("Hi")));
+        UUID conversation = conversation(business.tenant(), contactId(business.tenant(), CUSTOMER))
+                .id();
+
+        close(conversation);
+        run(
+                business.tenant(),
+                store(WhatsAppPayloads.inbound(business.number())
+                        .typed("reaction", "{\"message_id\":\"wamid.REACTED\",\"emoji\":\"\\u2764\"}")));
+        assertThat(conversationStatus(conversation)).as("a reaction").isEqualTo("open");
+
+        close(conversation);
+        UUID stop = store(WhatsAppPayloads.inbound(business.number()).text("STOP"));
+        run(business.tenant(), stop);
+        assertThat(conversationStatus(conversation)).as("an opt-out").isEqualTo("open");
+        assertThat(latestActivityIsTheNewestMessage(conversation)).isTrue();
+        assertThat(output.getAll())
+                .containsPattern(
+                        "webhook.opt_out provider=whatsapp webhook_event_id=" + stop + " [^\\n]* reopened=true");
+    }
+
+    @Test
+    void P1_aDuplicateLeavesAClosedConversationClosedAndItsActivityAsItWas() {
+        Business business = business();
+        UUID row = store(WhatsAppPayloads.inbound(business.number()));
+        run(business.tenant(), row);
+        UUID conversation = conversation(business.tenant(), contactId(business.tenant(), CUSTOMER))
+                .id();
+        close(conversation);
+        admin.sql("update northstar.webhook_events set processed_at = null where id = :id")
+                .param("id", row)
+                .update();
+
+        run(business.tenant(), row);
+
+        assertThat(conversationStatus(conversation)).isEqualTo("closed");
+        assertThat(latestActivityIsTheNewestMessage(conversation))
+                .as("the backdated time set by close() stays")
+                .isFalse();
+    }
+
     // Types
 
     @Test
@@ -1031,6 +1100,29 @@ class InboundWhatsAppJobTests {
                         rs.getObject("last_inbound_at", OffsetDateTime.class),
                         rs.getObject("window_expires_at", OffsetDateTime.class)))
                 .single();
+    }
+
+    /** Closes the conversation and backdates its latest activity, as an operator could today (no step closes one). */
+    private void close(UUID conversation) {
+        admin.sql("""
+                        update northstar.conversations set status = 'closed', last_message_at = now() - interval '1 day'
+                        where id = :id""").param("id", conversation).update();
+    }
+
+    private String conversationStatus(UUID conversation) {
+        return admin.sql("select status from northstar.conversations where id = :id")
+                .param("id", conversation)
+                .query(String.class)
+                .single();
+    }
+
+    /** Whether the conversation's latest activity is the time its newest message was stored. */
+    private boolean latestActivityIsTheNewestMessage(UUID conversation) {
+        return Boolean.TRUE.equals(
+                admin.sql("""
+                        select c.last_message_at = (select max(created_at) from northstar.messages m
+                                                    where m.conversation_id = c.id)
+                        from northstar.conversations c where c.id = :id""").param("id", conversation).query(Boolean.class).single());
     }
 
     private record MessageRow(

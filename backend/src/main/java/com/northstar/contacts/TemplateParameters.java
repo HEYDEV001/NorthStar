@@ -15,10 +15,21 @@ import java.util.regex.Pattern;
 public sealed interface TemplateParameters {
 
     /**
-     * Meta's rule for a named parameter: lowercase characters and underscores (Meta: template fundamentals, parameter
-     * formats; integration-specs.md section 2).
+     * Meta's rule for a named parameter: "unique, single strings, composed of lowercase characters and underscores"
+     * (Meta: template fundamentals, parameter formats, re-checked 22 Nov 2026; integration-specs.md section 2), so no
+     * digits. Meta lists no length limit; 64 characters is Northstar's cap, the longest placeholder the template reader
+     * takes. The one rule for both the values sent and the variables read from a template's body (step 2.9a).
      */
-    Pattern NAMED_PARAMETER = Pattern.compile("[a-z_]+");
+    Pattern NAMED_PARAMETER = Pattern.compile("[a-z_]{1,64}");
+
+    /** A positional parameter's number: {{1}}, {{2}} ... (Meta: "ordered array index numbers, starting from 1"). */
+    Pattern POSITIONAL_PARAMETER = Pattern.compile("[1-9][0-9]{0,2}");
+
+    /**
+     * A placeholder in a template's body: double curly brackets around one name or number, white space inside allowed.
+     * Group 1 is the name or number; whether it is a variable depends on the template's format.
+     */
+    Pattern PLACEHOLDER = Pattern.compile("\\{\\{\\s*([^{}\\s]{1,64})\\s*}}");
 
     /** Values for {{1}}, {{2}} ... in order. A template with no variables takes none. */
     record Positional(List<String> values) implements TemplateParameters {
@@ -39,7 +50,8 @@ public sealed interface TemplateParameters {
             Map<String, String> copy = new LinkedHashMap<>();
             values.forEach((name, value) -> {
                 if (name == null || !NAMED_PARAMETER.matcher(name).matches()) {
-                    throw new IllegalArgumentException("A named parameter is lowercase letters and underscores");
+                    throw new IllegalArgumentException(
+                            "A named parameter is 1 to 64 lowercase letters and underscores");
                 }
                 copy.put(name, Objects.requireNonNull(value, "value"));
             });

@@ -25,6 +25,18 @@ class TemplateVariablesTests {
     }
 
     @Test
+    void aNamedPlaceholderWithADigitInItsNameIsNotAVariable() {
+        // Meta: named parameters are "composed of lowercase characters and underscores" (template fundamentals,
+        // re-checked 22 Nov 2026); TemplateParameters refuses such a name too, so the two always agree (step 2.9a).
+        assertThat(names("NAMED", "Order {{order2}} for {{first_name}}, {{2nd_item}} and {{item_2}}"))
+                .isEqualTo("named:[\"first_name\"]");
+        String longest = "a".repeat(64);
+        assertThat(names("NAMED", "Hi {{" + longest + "}} and {{" + longest + "b}}"))
+                .as("at most 64 characters, the longest placeholder read")
+                .isEqualTo("named:[\"" + longest + "\"]");
+    }
+
+    @Test
     void nothingIsInventedOrGuessed() {
         assertThat(names("NAMED", "Hello {{1}}"))
                 .as("a positional placeholder in a named body")

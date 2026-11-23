@@ -88,27 +88,31 @@ public class ProcessWhatsAppWebhookHandler extends TenantJobHandler<ProcessWhats
             case WhatsAppInboundProcessor.OptedOut optedOut ->
                 log.info(
                         "webhook.opt_out provider=whatsapp webhook_event_id={} message_id={} contact_id={} lead_id={}"
-                                + " lead={} first_opt_out={} cancelled_actions={}",
+                                + " lead={} first_opt_out={} cancelled_actions={} reopened={}",
                         id,
                         optedOut.messageId(),
                         optedOut.contactId(),
                         optedOut.leadId(),
                         optedOut.lead().code(),
                         optedOut.firstOptOut(),
-                        optedOut.cancelledActions());
+                        optedOut.cancelledActions(),
+                        optedOut.reopened());
             case WhatsAppInboundProcessor.Stored stored
             when stored.noPublishedWorkflow() ->
                 log.warn(
-                        "webhook.no_published_workflow provider=whatsapp webhook_event_id={} message_id={}",
+                        "webhook.no_published_workflow provider=whatsapp webhook_event_id={} message_id={} reopened={}",
                         id,
-                        stored.messageId());
+                        stored.messageId(),
+                        stored.reopened());
             case WhatsAppInboundProcessor.Stored stored ->
                 log.info(
-                        "webhook.processed provider=whatsapp webhook_event_id={} message_id={} lead_id={} lead={}",
+                        "webhook.processed provider=whatsapp webhook_event_id={} message_id={} lead_id={} lead={}"
+                                + " reopened={}",
                         id,
                         stored.messageId(),
                         stored.leadId(),
-                        stored.lead().code());
+                        stored.lead().code(),
+                        stored.reopened());
         }
     }
 

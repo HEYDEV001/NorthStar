@@ -73,6 +73,16 @@ class InboundContactsService implements InboundContacts {
             on conflict (tenant_id, provider_message_id) do nothing
             returning id""";
 
+    // Step 2.9a: a new inbound message reopens a closed conversation; the conversation is already locked by the job.
+    private static final String REOPEN_CONVERSATION = """
+            update northstar.conversations set status = 'open'
+            where tenant_id = ? and id = ? and status = 'closed'""";
+
+    // The conversation's latest activity (step 2.9a): the database's time of the message just stored, forward only.
+    private static final String TOUCH_CONVERSATION = """
+            update northstar.conversations set last_message_at = now()
+            where tenant_id = ? and id = ? and last_message_at < now()""";
+
     private final JdbcClient jdbc;
 
     InboundContactsService(JdbcClient jdbc) {
@@ -153,11 +163,12 @@ class InboundContactsService implements InboundContacts {
     }
 
     @Override
-    public UUID storeInbound(UUID conversationId, InboundMessage message) {
+    public StoredInbound storeInbound(UUID conversationId, InboundMessage message) {
         Objects.requireNonNull(conversationId, "conversationId");
         Objects.requireNonNull(message, "message");
+        UUID tenant = systemTenant();
         Optional<UUID> id = jdbc.sql(INSERT_MESSAGE)
-                .param(systemTenant())
+                .param(tenant)
                 .param(conversationId)
                 .param(message.providerMessageId())
                 .param(message.type().code())
@@ -166,7 +177,14 @@ class InboundContactsService implements InboundContacts {
                 .query(UUID.class)
                 .optional();
         // Callers check hasInboundMessage first, under the webhook row's lock; a conflict here is a bug.
-        return id.orElseThrow(() -> new IllegalStateException("Inbound message already stored"));
+        UUID messageId = id.orElseThrow(() -> new IllegalStateException("Inbound message already stored"));
+        boolean reopened = jdbc.sql(REOPEN_CONVERSATION)
+                        .param(tenant)
+                        .param(conversationId)
+                        .update()
+                == 1;
+        jdbc.sql(TOUCH_CONVERSATION).param(tenant).param(conversationId).update();
+        return new StoredInbound(messageId, reopened);
     }
 
     /**
