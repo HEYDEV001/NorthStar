@@ -29,6 +29,7 @@ backend/           Spring Boot (Java 21), modular monolith, Maven
 db/migrations/     Flyway SQL migrations (Supabase Postgres)
 db/migrate/        Migration runner for hosted environments (the deploy's pre-deploy job); its own small build
 .do/               App Platform spec for staging (docs/staging-runbook.md)
+scripts/local/     Local-only helpers for the Phase 2 gate; never in the app or its image (docs/phase2-gate-runbook.md)
 docs/              Specs (see above)
 .github/workflows/ CI: build, test, deploy
 ```
@@ -70,6 +71,11 @@ cd frontend && npm run dev                 # local app on :5173
 docker exec -i supabase_db_NorthStar psql -U postgres -d postgres -v ON_ERROR_STOP=1 < db/bootstrap/roles.sql
 cd backend && ./mvnw initialize flyway:migrate   # as migrator, against the DB in .env.local (initialize loads it)
 docker exec -i supabase_db_NorthStar psql -U postgres -d postgres < db/bootstrap/verify.sql   # PASS/FAIL per check
+
+# Phase 2 gate, local only (docs/phase2-gate-runbook.md): tools in the backend's test sources; they use only the database
+# in .env.local, and only when it is on this machine. The gate runs the app with spring-boot:run, never test-run (fakes)
+scripts/local/gate connect|seed-workflow|queue-automated-text|webhook-twice --name=value ...
+scripts/local/gate filter                  # the webhook-only filter the Cloudflare tunnel points at (Docker)
 
 # staging deploys: only the deploy-staging CI job, after backend and cross-tenant pass on main, and only while the
 # repository variable STAGING_DEPLOY_ENABLED is 'true' (paused for budget; docs/staging-runbook.md)

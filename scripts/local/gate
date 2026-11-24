@@ -1,0 +1,78 @@
+#!/bin/bash
+#
+# Phase 2 gate tools, local only (step 2.11, docs/phase2-gate-runbook.md).
+#
+#   scripts/local/gate filter                 the webhook-only filter, in front of the API (Ctrl-C stops it)
+#   scripts/local/gate connect ...            a WhatsApp number for a business
+#   scripts/local/gate seed-workflow ...      a published development workflow for it
+#   scripts/local/gate queue-automated-text   an automated message to a conversation
+#   scripts/local/gate webhook-twice ...      the same signed webhook, posted twice
+#
+# The last four are com.northstar.devtools.GateTool in the backend's test sources, so nothing here is in the app or its
+# image. They use only the database in .env.local, and only when it is on this machine. No secret is ever an argument:
+# connect reads the access token from the terminal, standard input or NORTHSTAR_META_ACCESS_TOKEN.
+
+set -euo pipefail
+
+here="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+backend="$(cd "$here/../../backend" && pwd)"
+
+# Pinned by version and by digest: the official nginx image (Docker Official Images, mirrored on Amazon ECR Public).
+nginx_image="public.ecr.aws/docker/library/nginx:1.30.8-alpine3.24-slim@sha256:e9eaa7298465eab06d618c51556fdcf3fb5061f9ff40bd28ee898fbd7ee7f900"
+filter_port=8088
+
+# The filter is the only thing the tunnel points at. It listens on this machine only, keeps no privileges and cannot write
+# outside a small temporary area (scripts/local/webhook-only.conf, WebhookFilterTests).
+run_filter() {
+  exec docker run --rm --name northstar-webhook-filter \
+    --read-only --tmpfs /tmp \
+    --user 101:101 --cap-drop ALL --security-opt no-new-privileges \
+    --memory 64m --pids-limit 64 \
+    --add-host host.docker.internal:host-gateway \
+    --publish "127.0.0.1:${filter_port}:8088" \
+    --volume "$here/webhook-only.conf:/etc/nginx/nginx.conf:ro" \
+    "$nginx_image"
+}
+
+# One command line for the tool: each argument quoted, so a text with spaces stays one argument.
+quoted_arguments() {
+  local line="" argument quote
+  for argument in "$@"; do
+    case "$argument" in
+      *\'*)
+        case "$argument" in
+          *\"*)
+            echo "gate: an argument cannot hold both ' and \"" >&2
+            exit 2
+            ;;
+        esac
+        quote='"'
+        ;;
+      *) quote="'" ;;
+    esac
+    line="$line $quote$argument$quote"
+  done
+  printf '%s' "${line# }"
+}
+
+run_tool() {
+  if [ -z "${JAVA_HOME:-}" ] && [ -x /usr/libexec/java_home ]; then
+    JAVA_HOME="$(/usr/libexec/java_home -v 21)"
+    export JAVA_HOME
+  fi
+  local line
+  line="$(quoted_arguments "$@")" || exit 2
+  cd "$backend"
+  exec ./mvnw -q spring-boot:test-run \
+    -Dspring-boot.run.main-class=com.northstar.devtools.GateTool \
+    "-Dspring-boot.run.arguments=$line"
+}
+
+case "${1:-}" in
+  filter) run_filter ;;
+  connect | seed-workflow | queue-automated-text | webhook-twice) run_tool "$@" ;;
+  *)
+    sed -n '3,14p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'
+    exit 2
+    ;;
+esac
