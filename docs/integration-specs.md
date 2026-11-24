@@ -101,6 +101,8 @@ Northstar operates as a Meta Tech Provider: each business connects its own Whats
 3. Create the starter message templates in the business's WABA; track approval status in `message_templates`.
 4. Send a test message; readiness check passes when inbound and outbound both work.
 
+Until Embedded Signup is built (Phase 8), a number is connected only for the Phase 2 gate, on a developer's machine, by `scripts/local/gate connect` (step 2.11, `docs/phase2-gate-runbook.md`): test-source code that works with the local database only and is never in the app. As the system actor it stores the number (refusing one, or a WABA, that another business holds, without naming it, P9), the token encrypted by the worker's credential store as `secrets_user` (section 7), read from standard input or an environment variable and never an argument, and the `integrations` row (`connected`), each audited: `whatsapp_account.added`, then `integration.connected` or, running it again, `integration.token_replaced`. Running it again replaces the same credential. It subscribes nothing, calls nothing, and resumes no paused send (step 7.5).
+
 **App permissions to request:** `whatsapp_business_management`, `whatsapp_business_messaging`, and `whatsapp_business_manage_events` (needed for the Conversions API, section 5).
 
 **Webhooks**
