@@ -72,7 +72,7 @@ class LeadSchemaTests {
                         .param("id", version)
                         .query(String.class)
                         .single())
-                .contains("qualifying");
+                .contains("needs_human");
     }
 
     @Test
@@ -90,18 +90,20 @@ class LeadSchemaTests {
                 "admin",
                 jdbc -> jdbc.sql("""
                         insert into northstar.workflow_versions (tenant_id, workflow_id, version, config, published_by)
-                        values (:t, :w, 2, '{"stages": []}', :by)""")
+                        values (:t, :w, 2, cast(:config as jsonb), :by)""")
                         .param("t", owner.tenantId())
                         .param("w", workflow)
+                        .param("config", TestData.minimalConfig(workflow, 2))
                         .param("by", owner.membershipId())
                         .update());
 
         assertThat(inserted).isOne();
         assertThatThrownBy(() -> admin.sql("""
                                 insert into northstar.workflow_versions (tenant_id, workflow_id, version, config)
-                                values (:t, :w, 2, '{}')""")
+                                values (:t, :w, 2, cast(:config as jsonb))""")
                         .param("t", owner.tenantId())
                         .param("w", workflow)
+                        .param("config", TestData.minimalConfig(workflow, 2))
                         .update())
                 .as("version numbers are unique per workflow")
                 .rootCause()
@@ -119,18 +121,28 @@ class LeadSchemaTests {
                 .query(UUID.class)
                 .single();
 
-        assertThatThrownBy(() -> admin.sql("update northstar.workflows set current_version_id = :v where id = :w")
+        assertThatThrownBy(() -> admin.sql("""
+                                insert into northstar.workflows (tenant_id, name, current_version_id)
+                                values (:t, 'Borrowed', :v)""")
+                        .param("t", owner.tenantId())
                         .param("v", otherWorkflowsVersion)
-                        .param("w", workflow)
                         .update())
                 .as("a workflow's current version must be its own")
                 .rootCause()
                 .hasMessageContaining("workflows_current_version_fk");
+        // An update never gets as far: the current version only moves to the workflow's own newest (step 3.1, NSW02).
+        assertThatThrownBy(() -> admin.sql("update northstar.workflows set current_version_id = :v where id = :w")
+                        .param("v", otherWorkflowsVersion)
+                        .param("w", workflow)
+                        .update())
+                .rootCause()
+                .hasMessageContaining("can only move to its newest version");
         assertThatThrownBy(() -> admin.sql("""
                                 insert into northstar.workflow_versions (tenant_id, workflow_id, version, config, published_by)
-                                values (:t, :w, 9, '{}', :by)""")
+                                values (:t, :w, 9, cast(:config as jsonb), :by)""")
                         .param("t", owner.tenantId())
                         .param("w", workflow)
+                        .param("config", TestData.minimalConfig(workflow, 9))
                         .param("by", outsider.membershipId())
                         .update())
                 .as("published by a member of another business")

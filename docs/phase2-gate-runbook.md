@@ -206,8 +206,11 @@ scripts/local/gate seed-workflow --tenant=$TENANT
 `number=kept token=replaced`. Sends that paused because the old token had expired stay paused (resuming them is step
 7.5); a new message goes out. A number belongs to one business, so the test number can be connected to only one.
 
-`seed-workflow` publishes `DEV SEED (Phase 2 gate): stage New only`, so messages open leads before Phase 3. It is in this
-local database only.
+`seed-workflow` publishes `DEV SEED (Phase 2 gate): stages New and Needs Human`, so messages open leads before Phase 3. It
+is in this local database only. Since step 3.1 it publishes through the workflow service, so it passes the config check
+(`workflow-spec.md` section 15): the stages New and Needs Human, nothing else. On a database seeded before step 3.1 it
+publishes that config as version 2 of the old seed workflow, which keeps its old name; leads already open keep version 1
+(W36), and running it again changes nothing.
 
 ## The checks
 

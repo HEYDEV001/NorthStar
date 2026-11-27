@@ -80,17 +80,23 @@ record RlsReleaseGate(
                                             "(id = (current_setting('app.user_id'::text, true))::uuid)",
                                             "(id = (current_setting('app.user_id'::text, true))::uuid)"))),
             // Policies on tenant tables besides tenant_isolation. Each must be restrictive and match exactly.
-            Map.of(
-                    "northstar.memberships", adminOnlyWrites("memberships"),
-                    "northstar.invites", adminOnlyWrites("invites"),
-                    "northstar.leads", Set.of(staffSeeAssigned("leads")),
-                    "northstar.conversations", Set.of(staffSeeAssigned("conversations")),
-                    "northstar.messages", Set.of(staffSeeMessagesOfAssignedConversations()),
-                    "northstar.events", Set.of(staffSeeEventsOfAssignedLeads()),
-                    "northstar.contacts", staffContactPolicies(),
-                    "northstar.contact_sources", Set.of(staffSeeContactsOfTheirWork("contact_sources", "contact_id")),
-                    "northstar.message_templates", adminOrSystemWrites("message_templates"),
-                    "northstar.request_keys", Set.of(staffSeeOwnRequestKeys())),
+            Map.ofEntries(
+                    Map.entry("northstar.memberships", adminOnlyWrites("memberships")),
+                    Map.entry("northstar.invites", adminOnlyWrites("invites")),
+                    Map.entry("northstar.leads", Set.of(staffSeeAssigned("leads"))),
+                    Map.entry("northstar.conversations", Set.of(staffSeeAssigned("conversations"))),
+                    Map.entry("northstar.messages", Set.of(staffSeeMessagesOfAssignedConversations())),
+                    Map.entry("northstar.events", Set.of(staffSeeEventsOfAssignedLeads())),
+                    Map.entry("northstar.contacts", staffContactPolicies()),
+                    Map.entry(
+                            "northstar.contact_sources",
+                            Set.of(staffSeeContactsOfTheirWork("contact_sources", "contact_id"))),
+                    Map.entry("northstar.message_templates", adminOrSystemWrites("message_templates")),
+                    Map.entry("northstar.request_keys", Set.of(staffSeeOwnRequestKeys())),
+                    // Step 3.1: staff never edit workflows; a version is published by an admin as themselves, or by
+                    // the system actor as nobody.
+                    Map.entry("northstar.workflows", adminOrSystemWrites("workflows")),
+                    Map.entry("northstar.workflow_versions", Set.of(publishVersionsAsYourself()))),
             // app_user may insert and read, never update or delete.
             Set.of(
                     "northstar.workflow_versions",
@@ -178,6 +184,8 @@ record RlsReleaseGate(
                                     "last_inbound_at",
                                     "last_message_at",
                                     "last_contact_message_at"),
+                    // Step 3.1: tenant, template and creation time are written once; a workflow is never deleted.
+                    "northstar.workflows", Set.of("name", "draft_config", "current_version_id"),
                     // A template's name and language are its identity.
                     "northstar.message_templates",
                             Set.of(
@@ -313,6 +321,17 @@ record RlsReleaseGate(
     private static String staffSeeOwnRequestKeys() {
         String own = "(" + ADMIN_OR_SYSTEM + " OR (" + STAFF + " AND (membership_id = " + MY_ACTIVE_MEMBERSHIP + ")))";
         return restrictivePolicy("request_keys_staff_own", "ALL", own, own);
+    }
+
+    /**
+     * Step 3.1: only the system actor (as nobody) or an admin (as their own active membership) inserts a published
+     * workflow version.
+     */
+    private static String publishVersionsAsYourself() {
+        String check = "(((current_setting('app.role'::text, true) = 'system'::text) AND (published_by IS NULL))"
+                + " OR ((current_setting('app.role'::text, true) = 'admin'::text) AND (published_by = "
+                + MY_ACTIVE_MEMBERSHIP + ")))";
+        return restrictivePolicy("workflow_versions_publish_insert", "INSERT", null, check);
     }
 
     /** The restrictive policies that limit insert, update and delete to admins and the system actor (step 2.3). */

@@ -65,14 +65,27 @@ public final class TestData {
                 .single();
     }
 
-    /** A workflow with one published version (published by the system), returning the version's ID. */
+    /**
+     * The smallest config format v1 accepts (workflow-spec.md section 15), as publishing stores it for a workflow's
+     * version: the stages every config needs, with the workflow ID and version written in.
+     */
+    public static String minimalConfig(UUID workflow, int version) {
+        return "{\"schema_version\": 1, \"workflow_id\": \"" + workflow + "\", \"version\": " + version
+                + ", \"stages\": [{\"key\": \"new\", \"name\": \"New\"}, {\"key\": \"needs_human\"}]}";
+    }
+
+    /**
+     * A workflow with one published version (published by the system), returning the version's ID. Written directly as
+     * the table owner, as a fixture: the workflow service (step 3.1) is tested on its own.
+     */
     public UUID workflowVersion(UUID tenant) {
         UUID workflow = admin.sql("""
                         insert into northstar.workflows (tenant_id, name, template)
                         values (:tenant, 'Shoot production', 'shoot_production') returning id""").param("tenant", tenant).query(UUID.class).single();
         UUID version = admin.sql("""
                         insert into northstar.workflow_versions (tenant_id, workflow_id, version, config)
-                        values (:tenant, :workflow, 1, '{"stages": [{"key": "qualifying"}]}') returning id""")
+                        values (:tenant, :workflow, 1, cast(:config as jsonb)) returning id""")
+                .param("config", minimalConfig(workflow, 1))
                 .param("tenant", tenant)
                 .param("workflow", workflow)
                 .query(UUID.class)

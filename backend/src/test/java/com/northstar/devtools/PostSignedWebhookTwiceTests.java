@@ -13,6 +13,7 @@ import com.northstar.devtools.PostSignedWebhookTwice.Message;
 import com.northstar.integrations.internal.ProcessWhatsAppWebhook;
 import com.northstar.integrations.internal.ProcessWhatsAppWebhookHandler;
 import com.northstar.tenancy.TenantDirectory;
+import com.northstar.workflow.Workflows;
 import java.net.URI;
 import java.nio.charset.StandardCharsets;
 import java.util.UUID;
@@ -58,10 +59,11 @@ class PostSignedWebhookTwiceTests {
             @Autowired JdbcClient jdbc,
             @Autowired PlatformTransactionManager transactionManager,
             @Autowired TenantDirectory tenants,
+            @Autowired Workflows workflows,
             @Autowired PostgresAdmin postgres) {
         this.secrets = secrets;
         this.inboundJob = inboundJob;
-        this.seed = new SeedDevWorkflow(jdbc, transactionManager, tenants);
+        this.seed = new SeedDevWorkflow(jdbc, transactionManager, tenants, workflows);
         this.data = new TestData(postgres);
         this.admin = postgres.jdbc();
     }
