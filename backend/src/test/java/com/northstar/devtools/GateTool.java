@@ -155,7 +155,7 @@ public final class GateTool {
         try (ConfigurableApplicationContext context = start(env)) {
             SeedDevWorkflow.Seeded seeded = SeedDevWorkflow.on(context).seed(tenant);
             out.println("dev_seed tenant=" + tenant + " workflow=" + seeded.workflowId() + " version="
-                    + seeded.versionId() + (seeded.created() ? " created" : " already_there"));
+                    + seeded.versionId() + " " + seeded.outcome().code());
         }
     }
 

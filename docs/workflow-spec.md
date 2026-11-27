@@ -166,20 +166,28 @@ Conditions are small JSON expressions over lead fields, evaluated by the engine;
 {
   "filter_rules": [
     {"id": "zone", "if": {"not": {"within_zone": ["location", "service_zone"]}}, "then": "junk", "reason": "Outside service area"},
-    {"id": "min_budget", "if": {"lt": ["budget", 15000]}, "then": "junk", "reason": "Below minimum budget"}
+    {"id": "min_budget", "if": {"lt": ["budget", 1500000]}, "then": "junk", "reason": "Below minimum budget"}
   ],
   "step_conditions": [
-    {"step": "site_visit", "enabled_if": {"gt": ["budget", 50000]}},
+    {"step": "site_visit", "enabled_if": {"gt": ["budget", 5000000]}},
     {"step": "payment.advance", "skip_if": {"eq": ["is_repeat_customer", true]}}
   ]
 }
 ```
+
+**Amounts are in paise**, like every amount in Northstar: `{"lt": ["budget", 1500000]}` is a budget below ₹15,000. The editor shows and takes rupees and converts (step 3.1, decided 27 Nov 2026).
 
 **Rules**
 
 - Conditions are validated when the workflow is saved; an unknown field or operator blocks publishing.
 - A missing field evaluates as false (never an error), except `exists`.
 - Junk from a filter rule always stores the rule `id` and `reason` on the lead.
+
+**Format v1** (step 3.1, decided 27 Nov 2026; section 15 has the rest of the format). Validated at every draft save and publish; the engine evaluates conditions from step 3.4.
+
+- **Shape.** A condition is an object with exactly one operator. `eq`, `neq`, `gt`, `gte`, `lt`, `lte` and `contains` take `[field, value]`; `in` and `not_in` take `[field, [values]]`, a non-empty list; `exists` takes `[field]`; `within_zone` takes `[field, setting]`; `all` and `any` take a non-empty list of conditions; `not` takes one condition. Values are strings, numbers or booleans: integers for `budget` (paise) and `score`, booleans for `is_repeat_customer` and `opt_out`. At most 10 levels deep.
+- **`{"all_required_fields": true}`** (section 15's exit to Scored) is true once every field in the stage step's `required_fields` is captured (section 3, Qualifying → Scored). It is allowed only in an exit of a stage whose step has `required_fields`, and its value is always `true`.
+- **Fields.** Lead fields `service`, `budget`, `date`, `time`, `location`, `source`, `score` and `band`; contact fields `is_repeat_customer` and `opt_out`; and `requirements.<key>`, with the key in stage-key form (section 15). No workspace setting exists yet, so `within_zone` (and the zone rule in the example above) is refused until step 3.4 defines one.
 
 ## 8. Timers, follow-ups and reminders
 
@@ -390,19 +398,23 @@ Four templates plus Blank ship in the MVP; each is the same step types in a diff
 
 The advance percentages and durations above are starting defaults, not recommendations for any specific business.
 
-## 15. Workflow configuration example
+## 15. Workflow configuration
 
-The whole workflow is one validated JSON document per version; this abbreviated Reelrr example shows the shape the engine and the editor share.
+The whole workflow is one validated JSON document per version; this abbreviated example shows the shape the engine and the editor share, and passes format v1 (below).
 
 ```json
 {
-  "workflow_id": "wf_reelrr",
-  "version": 3,
+  "schema_version": 1,
   "template": "shoot_production",
   "approval_mode": true,
   "meta_conversion_stage": "payment_pending",
   "quiet_hours": {"start": "21:00", "end": "09:00"},
   "stages": [
+    {
+      "key": "new",
+      "name": "New",
+      "exits": [{"to": "qualifying", "on": "message.received"}]
+    },
     {
       "key": "qualifying",
       "name": "Qualifying",
@@ -417,12 +429,20 @@ The whole workflow is one validated JSON document per version; this abbreviated 
     },
     {
       "key": "scored",
+      "name": "Scored",
       "step": "score",
       "params": {"band_thresholds": {"hot": 75, "warm": 50}, "meta_lead_event": true},
-      "exits": [{"to": "quoted", "on": "action.succeeded", "action": "send_quote"}]
+      "exits": [{"to": "quoted", "on": "staff.action"}]
+    },
+    {
+      "key": "quoted",
+      "name": "Quoted",
+      "step": "quote",
+      "exits": [{"to": "payment_pending", "on": "button.clicked"}]
     },
     {
       "key": "payment_pending",
+      "name": "Payment pending",
       "step": "payment",
       "params": {"kind": "advance", "advance_pct": 50, "link_expiry_hours": 24},
       "approval": true,
@@ -430,13 +450,87 @@ The whole workflow is one validated JSON document per version; this abbreviated 
         {"to": "booked", "on": "payment.captured"},
         {"to": "quoted", "on": "payment.link_expired"}
       ]
-    }
+    },
+    {"key": "booked", "name": "Booked", "step": "invoice", "params": {"on": "payment_captured"}},
+    {"key": "junk"},
+    {"key": "needs_human"}
   ],
-  "filter_rules": [{"id": "min_budget", "if": {"lt": ["budget", 15000]}, "then": "junk"}]
+  "filter_rules": [{"id": "min_budget", "if": {"lt": ["budget", 1500000]}, "then": "junk", "reason": "Below minimum budget"}]
 }
 ```
 
-The editor validates this document against a JSON Schema kept in the repo; publishing fails on any unknown step, field, stage key or unreachable stage.
+The example is abbreviated and its triggers are illustrative. How New moves to Qualifying is step 3.4's. Scored moves on a staff action only because v1 has no way yet to say "when the quote is sent": step 3.5 restores `{"to": "quoted", "on": "action.succeeded", "action": "send_quote"}` properly, adding `action.succeeded` to section 6 and naming each step's actions. Until then v1 refuses both (`event_unknown`, `action_unknown`). The values in it are not Reelrr's settings (section 18; step 3.2).
+
+Published as version 3 of a workflow, the stored document also carries `"workflow_id"` (the workflow's UUID) and `"version": 3`, which publishing writes (section 16); a draft never contains them.
+
+**Format v1** (step 3.1, decided 27 Nov 2026). The backend checks every draft save and every publish with the same rules (`ConfigFormatV1` in the `workflow` module). The JSON Schema the editor validates against is generated from those rules when the editor is built, so the two cannot disagree. Every member not listed here is refused, at every level, step parameters included.
+
+| Object | Members (✱ required) |
+| --- | --- |
+| Document | `schema_version`✱: the integer 1. `template`: the industry template (section 14), one of `shoot_production`, `agency`, `ac_home_service`, `coaching` and `blank`, and the workflow's own. `approval_mode`: a boolean. `meta_conversion_stage`: a stage key. `quiet_hours`: `{"start"✱, "end"✱}`, 24-hour `HH:MM`, start and end different. `stages`✱: a non-empty list. `filter_rules`, `step_conditions`: lists (section 7). `workflow_id`, `version`: written by publishing only |
+| Stage | `key`✱: 1–50 lowercase letters, digits and `_`, starting with a letter; unique. `name`: 1–60 characters, not blank; required except on the reserved stages. `step`: a step type (section 5). `params`: that step's parameters (below), only with a `step`. `timers`, `exits`: lists. `approval`: a boolean (section 9; how it combines with `approval_mode` and the business's own setting is step 3.7's) |
+| Exit | `to`✱: a declared stage, not the exit's own. `on`✱: an event of section 6 except `optout.received` (an opt-out never changes stage, section 3). `if`: a condition (section 7). `action`: no action names exist in v1, so any value is refused (step 3.5) |
+| Timer | `type`✱: `follow_up` (section 8's other timers arrive with their steps, step 3.6); at most one of a type per stage. `after_hours`✱: a non-empty, strictly increasing list of positive integers. `max_attempts`✱: an integer from 1 to the number of `after_hours` |
+| Filter rule | `id`✱: in stage-key form; unique. `if`✱: a condition. `then`✱: `junk`, which must be a declared stage. `reason`✱: 1–200 characters, not blank. Filter rules need a stage whose step is `score`; there is no `rules` parameter |
+| Step condition | `step`✱: a step type some stage uses, or `payment.<kind>` for a payment stage of that kind. Exactly one of `enabled_if` and `skip_if`: a condition |
+
+**Stages.** Every config has `new`, where every lead starts (step 2.4b), and `needs_human`, where the engine can send any lead (a take over, an AI escalation, a failed action, section 16's unmappable stages). Six keys are reserved, with fixed meanings and default names used when `name` is omitted; a business may rename them: `needs_human` (Needs Human), `negotiating` (Negotiating), `junk` (Junk), `lost` (Lost), `cancelled` (Cancelled) and `completed` (Completed). `junk`, `lost` and `completed` close a lead (section 3; whether Cancelled does is step 3.3's). The list order is the stage order. A stage may have no exits.
+
+**Reachability.** Every stage must be reachable from `new`, through exits' `to`, filter rules' `then` (from the stage whose step is `score`) and the engine's own moves from any open stage to `needs_human`, `lost` and `cancelled` (section 3). Needs Human's way back to the previous stage is the engine's and is not written as an exit.
+
+**Step parameters.** Section 5's key parameters are the complete list for v1. Every number is an integer.
+
+| Step | Parameters |
+| --- | --- |
+| `qualify` | `questions`: texts of 1–500 characters. `required_fields`: distinct lead fields (section 7). `max_turns` ≥ 1. `language`: 1–35 characters. `tone`: 1–200 characters |
+| `score` | `band_thresholds`: `{"hot"✱, "warm"✱}`, each 0–100, hot above warm. `meta_lead_event`: a boolean |
+| `call` | `duration_min` ≥ 1. `staff_skill`: 1–50 characters. `calendar_required`: a boolean |
+| `site_visit` | `duration_min` ≥ 1. `staff_skill`: 1–50 characters. `location_required`: a boolean |
+| `quote` | `validity_days` ≥ 1. `discount_limit_pct`: 0–100 |
+| `payment` | `kind`✱: `advance`, `full`, `balance` or `fee`. `advance_pct`: 1–100, required with `advance` and allowed only with it. `link_expiry_hours` ≥ 1 |
+| `invoice` | `on`: `payment_captured` or `manual` |
+| `schedule` | `duration_min` ≥ 1. `buffer_min` ≥ 0 |
+| `assign` | `strategy`: `least_busy`, `round_robin` or `skill_match`. `required_skill`: 1–50 characters |
+| `job` | `overdue_after_hours` ≥ 1 |
+| `batch_assign` | `capacity` ≥ 1 |
+| `delivery` | `requires_approval`: a boolean |
+| `review_request` | `delay_hours` ≥ 0 |
+| `close` | `send_purchase_event`: a boolean |
+
+Not in v1, until the step that builds each executor defines its shape: `catalogue_filter`, `score.rules`, `job.tasks`, `batch_assign.batches`, `invoice.template_id`, `schedule.slot_hold` and `calendars`, `delivery.link_field` and `review_request.review_url`; and `approval` as a parameter, as it is the stage's. No WhatsApp message template is named in v1: the steps that send timed messages add one (steps 3.5 and 3.6), and publishing then checks it against the business's `message_templates`. Text lengths count characters (Unicode code points).
+
+**Problems.** Validation reports every problem at once, each as `{"path", "code"}`, in document order: at most 500, then one `too_many_problems` at `$`. The path starts at `$`, the document, with `.name` for a member whose name is letters, digits and `_` not starting with a digit, `['name']` for any other (with `\` and `'` escaped), and `[n]` for a list item, counted from 0; a missing member's path names it. At publish the document is the stored draft, whose members the database keeps in its own order.
+
+| Code | Meaning |
+| --- | --- |
+| `json_invalid` | Not JSON, or JSON the database cannot store: U+0000, a lone surrogate, a number of more than 1,000 digits |
+| `json_member_duplicate` | An object names a member twice |
+| `config_too_large` | More than 256 KB (262,144 bytes) of UTF-8 text |
+| `config_not_object` | The document is not a JSON object |
+| `schema_version_unsupported` | `schema_version` is an integer other than 1 |
+| `field_required` | A required member is missing |
+| `field_unknown` | A member the format does not have (also `params` without a `step`) |
+| `field_server_set` | `workflow_id` or `version` in a draft |
+| `type_invalid` | The wrong JSON type: null included, and a fraction where an integer belongs |
+| `value_invalid` | The right type but not allowed: its form, length or range; an order (`after_hours`, hot above warm); an exit to its own stage; a filter rule's `then` other than `junk`; filter rules without a score stage; both `enabled_if` and `skip_if`; a `template` other than the workflow's |
+| `stage_new_missing` | No stage `new` |
+| `stage_needs_human_missing` | No stage `needs_human` |
+| `stage_key_duplicate` | A stage key used by an earlier stage |
+| `stage_unknown` | A reference to an undeclared stage: an exit's `to`, a filter rule's `then`, `meta_conversion_stage` |
+| `stage_unreachable` | A stage `new` cannot reach (not checked when `new` is missing) |
+| `step_unknown` | Not a step type, or a step condition naming a step no stage uses |
+| `event_unknown` | Not an event of section 6 |
+| `event_not_allowed` | `optout.received` as an exit's trigger |
+| `action_unknown` | An exit's `action` (none exist in v1) |
+| `template_unknown` | Not one of the five industry templates |
+| `timer_type_unknown` | Not `follow_up` |
+| `timer_duplicate` | A second timer of one type in a stage |
+| `condition_operator_unknown` | Not an operator of section 7 |
+| `condition_field_unknown` | Not a field of section 7, or a workspace setting (none exist yet) |
+| `condition_invalid` | Malformed: not exactly one operator, the wrong operands or values, deeper than 10 levels, `all_required_fields` outside an exit of a stage with `required_fields` |
+| `filter_rule_id_duplicate` | A filter rule ID used by an earlier rule |
+
+**Drafts may be incomplete.** An admin builds a workflow a stage at a time, so saving a draft stores it and returns its problems as warnings; only the first four codes refuse a save. Publishing refuses on any problem. Validation is not retroactive: a version published before step 3.1 stays as it is, and its leads keep it (W36).
 
 ## 16. Versioning and migration
 
@@ -447,6 +541,14 @@ Publishing creates a new immutable version; existing leads stay on their version
 - **Migration:** admin selects leads (or all leads in given stages) and a target version; the engine maps each lead's stage by stage key; any lead whose stage no longer exists goes to Needs Human with a note. Migration is logged per lead.
 - **Rollback:** an older version can be re-published as the newest version; nothing is deleted.
 - **Setting changes outside the workflow** (catalogue prices, GST details, staff list) apply immediately and are not versioned, except that a quote already sent keeps its own prices.
+
+How step 3.1 builds publishing (decided 27 Nov 2026; the format is section 15):
+
+- **One workflow per business** for MVP (`data-model.md` section 15). Creating a second is refused (409 `workflow_exists`), and so is publishing while another workflow of the business is published (409 `another_workflow_published`, for rows made outside the service). The workflow service enforces both under a per-business transaction advisory lock; there is no database constraint, so allowing several later is a service change. A new workflow names its industry template (section 14), and its name is 1–100 characters.
+- **Only admins and the system actor** create, edit and publish workflows (staff: 403 `admin_only`); the database's restrictive policies back it (`data-model.md` section 12). Another business's workflow is a 404.
+- **Drafts** live in `workflows.draft_config`. Saving one stores it as sent and returns its problems as warnings, with the draft's hash (SHA-256 of the stored JSON text).
+- **Publish** takes the hash of the draft the admin reviewed: a different one is 409 `draft_changed`, no draft 409 `draft_missing`. It validates the stored draft, and any problem is 422 `workflow_config_invalid` with every problem (`details.problems`). Then, in one transaction: version n+1 is inserted with `workflow_id` and `version` written into its document, published by the admin's own membership (none for the system actor); the workflow's current version moves to it; and the audit entry `workflow.published` is written. Leads are not touched: new leads take the new current version, existing ones keep theirs (W36). The draft stays as the starting point for the next edit, and publishing an unchanged draft again makes another version.
+- **Immutable in the database**, for every role, the owner included: a published version is never updated, deleted or truncated (NSW01); a workflow's current version, once set, never becomes null again and moves only to that workflow's newest version (NSW02), so a rollback is always a re-publish; and a lead's `workflow_version_id` never changes (NSL01) until migration (step 3.11) allows an admin's explicit move.
 
 ## 17. Test scenarios
 
