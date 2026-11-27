@@ -26,6 +26,9 @@ public interface Workflows {
      */
     WorkflowView create(String name, String template);
 
+    /** The business's workflows, the published one first, then the oldest first: at most one in MVP. */
+    List<WorkflowView> list();
+
     /** The business's workflow: the published one, else the oldest. Empty when it has none. */
     Optional<WorkflowView> current();
 

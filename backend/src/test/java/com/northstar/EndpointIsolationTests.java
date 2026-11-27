@@ -44,7 +44,14 @@ class EndpointIsolationTests {
     /** A valid body per request body type, so validation passes and the lookup is what is tested. */
     private static final Map<String, String> SAMPLE_BODIES = Map.of(
             "ChangeRoleRequest", "{\"role\": \"staff\"}",
-            "StaffReplyRequest", "{\"type\": \"text\", \"text\": \"Hello\"}");
+            "StaffReplyRequest", "{\"type\": \"text\", \"text\": \"Hello\"}",
+            "PublishWorkflowRequest", "{\"draftHash\": \"" + "0".repeat(64) + "\"}");
+
+    /**
+     * A value for each path variable that is not an ID (step 3.1b: a workflow's version number), so the lookup is what
+     * is tested and not the variable's conversion.
+     */
+    private static final Map<String, String> SAMPLE_PATH_VALUES = Map.of("version", "1");
 
     private final RequestMappingHandlerMapping mappings;
     private final MockMvcTester mvc;
@@ -89,6 +96,11 @@ class EndpointIsolationTests {
             }
             if (endpoint.bodyType() != null && !SAMPLE_BODIES.containsKey(endpoint.bodyType())) {
                 problems.add(endpoint + ": no sample body for " + endpoint.bodyType());
+                continue;
+            }
+            String unfilled = uri(endpoint, UUID.randomUUID());
+            if (unfilled.contains("{")) {
+                problems.add(endpoint + ": no sample value for a path variable in " + unfilled);
                 continue;
             }
             UUID foreign = fixture.apply(b, seeding);
@@ -152,9 +164,8 @@ class EndpointIsolationTests {
     }
 
     private MvcTestResult call(Endpoint endpoint, UUID id, UUID user) {
-        String uri = endpoint.pattern().replace("{" + endpoint.idVariable() + "}", id.toString());
         var request = mvc.method(HttpMethod.valueOf(endpoint.method()))
-                .uri(uri)
+                .uri(uri(endpoint, id))
                 .header(HttpHeaders.AUTHORIZATION, "Bearer " + tokens.forUser(user))
                 .header(LogContext.REQUEST_ID_HEADER, "p9-endpoints")
                 // Endpoints that need one (step 2.9b's reply) check it before the lookup; the rest ignore it.
@@ -163,6 +174,15 @@ class EndpointIsolationTests {
             request = request.contentType(MediaType.APPLICATION_JSON).content(SAMPLE_BODIES.get(endpoint.bodyType()));
         }
         return request.exchange();
+    }
+
+    /** The endpoint's path with the ID and every sample path value filled in. */
+    private static String uri(Endpoint endpoint, UUID id) {
+        String uri = endpoint.pattern().replace("{" + endpoint.idVariable() + "}", id.toString());
+        for (Map.Entry<String, String> sample : SAMPLE_PATH_VALUES.entrySet()) {
+            uri = uri.replace("{" + sample.getKey() + "}", sample.getValue());
+        }
+        return uri;
     }
 
     /** "membershipId" → "northstar.memberships". */
