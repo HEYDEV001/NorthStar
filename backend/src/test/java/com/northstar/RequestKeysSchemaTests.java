@@ -148,6 +148,34 @@ class RequestKeysSchemaTests {
         }
     }
 
+    @Test
+    void theWorkflowEditorsOperationsAreKnown() {
+        Team team = team();
+        for (String operation : List.of("workflow.create", "workflow.draft_save", "workflow.publish")) {
+            assertThat(admin.sql("""
+                                    insert into northstar.request_keys
+                                      (tenant_id, membership_id, operation, idempotency_key, request_hash, target_id)
+                                    values (:t, :m, :o, 'key-1', :h, gen_random_uuid())""")
+                            .param("t", team.tenant())
+                            .param("m", team.adminMembership())
+                            .param("o", operation)
+                            .param("h", HASH)
+                            .update())
+                    .as("step 3.1b: " + operation + ", its own operation, so the same key is free for each")
+                    .isOne();
+        }
+        assertThatThrownBy(() -> admin.sql("""
+                                insert into northstar.request_keys
+                                  (tenant_id, membership_id, operation, idempotency_key, request_hash, target_id)
+                                values (:t, :m, 'workflow.delete', 'key-1', :h, gen_random_uuid())""")
+                        .param("t", team.tenant())
+                        .param("m", team.adminMembership())
+                        .param("h", HASH)
+                        .update())
+                .rootCause()
+                .hasMessageContaining("request_keys_operation_check");
+    }
+
     private record Team(
             UUID tenant,
             UUID adminUser,

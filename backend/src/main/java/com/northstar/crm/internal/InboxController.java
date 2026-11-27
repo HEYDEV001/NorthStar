@@ -9,6 +9,7 @@ import com.northstar.crm.internal.InboxResponses.ConversationResponse;
 import com.northstar.crm.internal.InboxResponses.MessageResponse;
 import com.northstar.crm.internal.InboxResponses.PageResponse;
 import com.northstar.integrations.WhatsAppMessages;
+import com.northstar.tenancy.IdempotencyKeyHeader;
 import jakarta.validation.Valid;
 import jakarta.validation.constraints.Max;
 import jakarta.validation.constraints.Min;

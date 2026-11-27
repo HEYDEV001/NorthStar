@@ -58,14 +58,16 @@ class WorkflowsService implements Workflows {
     private static final String WORKFLOW = VIEW + "where w.tenant_id = ? and w.id = ?";
 
     // The published workflow first, then the oldest: one per business in MVP, so normally the only one.
-    private static final String CURRENT =
-            VIEW + "where w.tenant_id = ? order by (w.current_version_id is null), w.created_at, w.id limit 1";
+    private static final String ALL =
+            VIEW + "where w.tenant_id = ? order by (w.current_version_id is null), w.created_at, w.id";
+
+    private static final String CURRENT = ALL + " limit 1";
 
     private static final String ANY_WORKFLOW = """
             select exists (select 1 from northstar.workflows where tenant_id = ?)""";
 
     private static final String INSERT_WORKFLOW = """
-            insert into northstar.workflows (tenant_id, name, template) values (?, ?, ?) returning id""";
+            insert into northstar.workflows (id, tenant_id, name, template) values (?, ?, ?, ?)""";
 
     private static final String TEMPLATE = """
             select template from northstar.workflows where tenant_id = ? and id = ?""";
@@ -93,8 +95,8 @@ class WorkflowsService implements Workflows {
             "id, workflow_id, version, config::text as config, published_by, published_at";
 
     private static final String INSERT_VERSION = """
-            insert into northstar.workflow_versions (tenant_id, workflow_id, version, config, published_by)
-            values (?, ?, ?, cast(? as jsonb), ?)
+            insert into northstar.workflow_versions (id, tenant_id, workflow_id, version, config, published_by)
+            values (?, ?, ?, ?, cast(? as jsonb), ?)
             returning\s""" + VERSION_COLUMNS;
 
     private static final String MAKE_CURRENT = """
@@ -102,6 +104,12 @@ class WorkflowsService implements Workflows {
 
     private static final String VERSION = "select " + VERSION_COLUMNS
             + " from northstar.workflow_versions where tenant_id = ? and workflow_id = ? and version = ?";
+
+    private static final String VERSION_BY_ID =
+            "select " + VERSION_COLUMNS + " from northstar.workflow_versions where tenant_id = ? and id = ?";
+
+    // How the database stores a draft, without storing it: the text its hash is taken over.
+    private static final String STORED_FORM = "select cast(cast(? as jsonb) as text)";
 
     private final JdbcClient jdbc;
     private final AuditTrail audit;
@@ -115,6 +123,12 @@ class WorkflowsService implements Workflows {
 
     @Override
     public WorkflowView create(String name, String template) {
+        return create(UUID.randomUUID(), name, template);
+    }
+
+    /** {@link #create(String, String)} with the workflow's ID chosen by the caller (claimed with a request key). */
+    WorkflowView create(UUID id, String name, String template) {
+        Objects.requireNonNull(id, "id");
         UUID tenant = editor().tenantId();
         String cleaned = name == null ? "" : name.strip();
         if (cleaned.isEmpty() || cleaned.codePointCount(0, cleaned.length()) > MAX_NAME) {
@@ -128,14 +142,19 @@ class WorkflowsService implements Workflows {
                 jdbc.sql(ANY_WORKFLOW).param(tenant).query(Boolean.class).single())) {
             throw new ConflictException("workflow_exists", "This business already has a workflow");
         }
-        UUID id = jdbc.sql(INSERT_WORKFLOW)
+        jdbc.sql(INSERT_WORKFLOW)
+                .param(id)
                 .param(tenant)
                 .param(cleaned)
                 .param(template)
-                .query(UUID.class)
-                .single();
+                .update();
         audit.record(CREATED, "workflows", id);
         return view(tenant, id);
+    }
+
+    @Override
+    public List<WorkflowView> list() {
+        return jdbc.sql(ALL).param(editor().tenantId()).query(VIEW_ROW).list();
     }
 
     @Override
@@ -172,6 +191,19 @@ class WorkflowsService implements Workflows {
                 ConfigJson.hash(saved.draft()), ConfigValidator.validate(parsed.document(), saved.template()));
     }
 
+    /**
+     * What {@link #saveDraft} answered for this draft, without saving it again: a repeat of a request whose key was
+     * claimed (step 3.1b). The draft was storable then, and its stored form, hash and problems depend on it alone.
+     */
+    DraftSaved replayDraft(UUID workflowId, String draft) {
+        Objects.requireNonNull(workflowId, "workflowId");
+        String template = template(editor().tenantId(), workflowId).orElse(null);
+        ConfigJson.Parsed parsed = ConfigJson.parse(draft);
+        if (!parsed.isStorable()) throw new WorkflowConfigInvalidException(parsed.refused());
+        String stored = jdbc.sql(STORED_FORM).param(draft).query(String.class).single();
+        return new DraftSaved(ConfigJson.hash(stored), ConfigValidator.validate(parsed.document(), template));
+    }
+
     @Override
     public List<ConfigProblem> validate(UUID workflowId, String draft) {
         Objects.requireNonNull(workflowId, "workflowId");
@@ -183,6 +215,12 @@ class WorkflowsService implements Workflows {
 
     @Override
     public PublishedVersion publish(UUID workflowId, String draftHash) {
+        return publish(UUID.randomUUID(), workflowId, draftHash);
+    }
+
+    /** {@link #publish(UUID, String)} with the version's ID chosen by the caller (claimed with a request key). */
+    PublishedVersion publish(UUID versionId, UUID workflowId, String draftHash) {
+        Objects.requireNonNull(versionId, "versionId");
         Objects.requireNonNull(workflowId, "workflowId");
         Objects.requireNonNull(draftHash, "draftHash");
         TenantContext editor = editor();
@@ -225,6 +263,7 @@ class WorkflowsService implements Workflows {
                         .orElseThrow(
                                 () -> new ForbiddenException("no_active_membership", "This account has no membership"));
         PublishedVersion published = jdbc.sql(INSERT_VERSION)
+                .param(versionId)
                 .param(tenant)
                 .param(workflowId)
                 .param(version)
@@ -251,6 +290,16 @@ class WorkflowsService implements Workflows {
                 .query(VERSION_ROW)
                 .optional()
                 .orElseThrow(() -> new NotFoundException("workflow", workflowId));
+    }
+
+    /** A published version by its ID, if it is the business's. */
+    Optional<PublishedVersion> publishedVersion(UUID versionId) {
+        Objects.requireNonNull(versionId, "versionId");
+        return jdbc.sql(VERSION_BY_ID)
+                .param(editor().tenantId())
+                .param(versionId)
+                .query(VERSION_ROW)
+                .optional();
     }
 
     /** Only an admin or the system actor edits workflows (build-document.md section 3). */

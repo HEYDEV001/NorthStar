@@ -28,6 +28,15 @@ public interface RequestKeys {
     /** Manual lead entry (step 2.10): the record is the lead. */
     String LEAD_CREATE = "lead.create";
 
+    /** Creating the business's workflow (step 3.1b): the record is the workflow. */
+    String WORKFLOW_CREATE = "workflow.create";
+
+    /** Saving a workflow's draft (step 3.1b): the record is the workflow the draft was saved on. */
+    String WORKFLOW_DRAFT_SAVE = "workflow.draft_save";
+
+    /** Publishing a workflow's draft (step 3.1b): the record is the version it made. */
+    String WORKFLOW_PUBLISH = "workflow.publish";
+
     /**
      * Claims the caller's key for this operation, with the request's hash (SHA-256, lowercase hex, of the request as
      * the caller normalises it) and the ID the record will have. Returns {@link Claimed} with that ID when the key is

@@ -550,6 +550,22 @@ How step 3.1 builds publishing (decided 27 Nov 2026; the format is section 15):
 - **Publish** takes the hash of the draft the admin reviewed: a different one is 409 `draft_changed`, no draft 409 `draft_missing`. It validates the stored draft, and any problem is 422 `workflow_config_invalid` with every problem (`details.problems`). Then, in one transaction: version n+1 is inserted with `workflow_id` and `version` written into its document, published by the admin's own membership (none for the system actor); the workflow's current version moves to it; and the audit entry `workflow.published` is written. Leads are not touched: new leads take the new current version, existing ones keep theirs (W36). The draft stays as the starting point for the next edit, and publishing an unchanged draft again makes another version.
 - **Immutable in the database**, for every role, the owner included: a published version is never updated, deleted or truncated (NSW01); a workflow's current version, once set, never becomes null again and moves only to that workflow's newest version (NSW02), so a rollback is always a re-publish; and a lead's `workflow_version_id` never changes (NSL01) until migration (step 3.11) allows an admin's explicit move.
 
+The admin API (step 3.1b, decided 27 Nov 2026), under `/api/v1`, for admins only: staff get 403 `admin_only` before the Idempotency-Key or a config is looked at (a JSON request body that does not parse is a 400 first, as on every endpoint), and another business's workflow is a 404, exactly like a missing one (P9).
+
+| Method and path | Idempotency-Key | Body | Answer |
+| --- | --- | --- | --- |
+| `GET /workflows` | — | — | 200 `{"items": [...]}`: the business's workflows (at most one in MVP), each without its draft |
+| `POST /workflows` | Required | `{"name", "template"}` | 201 the workflow, with `Location`; 409 `workflow_exists`; 422 `workflow_name_invalid`, `template_unknown` |
+| `GET /workflows/{workflowId}` | — | — | 200 the workflow with its draft |
+| `PUT /workflows/{workflowId}/draft` | Required | The config itself | 200 `{"draftHash", "warnings"}`; 422 `workflow_config_invalid` for a draft that cannot be stored |
+| `POST /workflows/{workflowId}/validate` | — | The config itself | 200 `{"problems"}`, even for text that is not JSON; nothing is stored |
+| `POST /workflows/{workflowId}/publish` | Required | `{"draftHash"}` | 201 the version, with `Location`; 409 `draft_changed`, `draft_missing`, `another_workflow_published`; 422 `workflow_config_invalid` with every problem |
+| `GET /workflows/{workflowId}/versions/{version}` | — | — | 200 the published version |
+
+- **A workflow** is `id`, `name`, `template`, `currentVersionId`, `currentVersion`, `draft`, `draftHash`, `createdAt` and `updatedAt`; **a version** is `id`, `workflowId`, `version`, `config`, `publishedBy` and `publishedAt`. Drafts and configs are the JSON exactly as stored; problems and warnings are `[{"path", "code"}]` (section 15), and a refusal carries them in `details.problems`.
+- **Config bodies** are the config itself, read as sent and never by the app's strict mapper, so a member named twice is reported rather than silently dropped. They are JSON (else 415), at most 256 KB, read no further (more is 422 `workflow_config_invalid` with `config_too_large`), and UTF-8 (else `json_invalid`); those two answers depend only on the bytes, so they are the same for every workflow ID. Every other problem comes after the workflow is found.
+- **Idempotency-Key** on the three writes (P21): required (400 `idempotency_key_required` or `idempotency_key_invalid`, after the admin check) and stored in `request_keys` (`data-model.md` section 3), per member and operation, in the transaction that does the write, so a write that fails keeps no key. A repeat answers 200: a create with the workflow as it is now, a publish with the version it made (never a second one), and a draft save with its first answer recomputed from the same body, without saving it again, so a late retry never overwrites a newer draft. The same key with another request is 422 `idempotency_key_reused`.
+
 ## 17. Test scenarios
 
 Each scenario becomes an automated end-to-end test on staging with a test WhatsApp number and Razorpay test mode; Phase 3 is done only when all pass.
