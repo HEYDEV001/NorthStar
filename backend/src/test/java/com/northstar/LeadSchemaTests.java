@@ -237,6 +237,82 @@ class LeadSchemaTests {
                 .isOne();
     }
 
+    @Test
+    void W2_closedAtIsSetExactlyInTheFourClosingStagesForEveryRole() {
+        TestData.Member owner = data.member("admin");
+        UUID lead = data.lead(owner.tenantId(), data.workflowVersion(owner.tenantId()), null);
+
+        // An open stage with closed_at, and a closing stage without it, are refused, even for the table's owner.
+        for (String invalid : new String[] {
+            "closed_at = now()",
+            "stage = 'lost'",
+            "stage = 'junk'",
+            "stage = 'completed'",
+            "stage = 'cancelled'",
+            "stage = 'quoted', closed_at = now()"
+        }) {
+            assertThatThrownBy(() -> postgres.rolledBack(jdbc -> {
+                        jdbc.sql("set local role migrator").update();
+                        jdbc.sql("update northstar.leads set " + invalid + " where id = '" + lead + "'")
+                                .update();
+                    }))
+                    .as(invalid)
+                    .rootCause()
+                    .hasMessageContaining("leads_closed_in_closing_stage");
+        }
+        // Cancelled closes a lead like the other three (step 3.3), which frees the contact for a new lead.
+        for (String closing : new String[] {"junk", "lost", "completed", "cancelled"}) {
+            assertThat(admin.sql("update northstar.leads set stage = :s, closed_at = now() where id = :id")
+                            .param("s", closing)
+                            .param("id", lead)
+                            .update())
+                    .as(closing)
+                    .isOne();
+        }
+        UUID contact = admin.sql("select contact_id from northstar.leads where id = :id")
+                .param("id", lead)
+                .query(UUID.class)
+                .single();
+        assertThat(insertLead(owner.tenantId(), contact, data.workflowVersion(owner.tenantId())))
+                .as("a cancelled lead's contact may start a new lead")
+                .isNotNull();
+    }
+
+    @Test
+    void previousStageIsSetExactlyInNeedsHumanForEveryRole() {
+        TestData.Member owner = data.member("admin");
+        UUID lead = data.lead(owner.tenantId(), data.workflowVersion(owner.tenantId()), null);
+
+        for (String invalid : new String[] {
+            "previous_stage = 'new'", "stage = 'needs_human'", "stage = 'needs_human', previous_stage = 'needs_human'"
+        }) {
+            assertThatThrownBy(() -> postgres.rolledBack(jdbc -> {
+                        jdbc.sql("set local role migrator").update();
+                        jdbc.sql("update northstar.leads set " + invalid + " where id = '" + lead + "'")
+                                .update();
+                    }))
+                    .as(invalid)
+                    .rootCause()
+                    .hasMessageContaining("leads_previous_stage_in_needs_human");
+        }
+        assertThat(admin.sql(
+                                "update northstar.leads set stage = 'needs_human', previous_stage = 'qualifying' where id = :id")
+                        .param("id", lead)
+                        .update())
+                .isOne();
+        assertThat(admin.sql("update northstar.leads set stage = 'qualifying', previous_stage = null where id = :id")
+                        .param("id", lead)
+                        .update())
+                .isOne();
+    }
+
+    @Test
+    void aLeadIsKeyedWithItsContactForTheRowsThatNameBoth() {
+        assertThat(admin.sql("""
+                        select pg_get_constraintdef(oid) from pg_constraint
+                        where conrelid = 'northstar.leads'::regclass and conname = 'leads_contact_lead_key'""").query(String.class).single()).isEqualTo("UNIQUE (tenant_id, contact_id, id)");
+    }
+
     // Helpers.
 
     private int insertAction(UUID tenant, UUID lead) {

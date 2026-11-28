@@ -87,6 +87,8 @@ record RlsReleaseGate(
                     Map.entry("northstar.conversations", Set.of(staffSeeAssigned("conversations"))),
                     Map.entry("northstar.messages", Set.of(staffSeeMessagesOfAssignedConversations())),
                     Map.entry("northstar.events", Set.of(staffSeeEventsOfAssignedLeads())),
+                    // Step 3.3: a lead's timeline follows its lead, and a member writes rows only in their own name.
+                    Map.entry("northstar.timeline_events", timelinePolicies()),
                     Map.entry("northstar.contacts", staffContactPolicies()),
                     Map.entry(
                             "northstar.contact_sources",
@@ -279,6 +281,23 @@ record RlsReleaseGate(
                 + " WHERE ((l.tenant_id = events.tenant_id) AND (l.id = events.lead_id) AND"
                 + " (l.assigned_membership_id = " + MY_ACTIVE_MEMBERSHIP + "))))))";
         return restrictivePolicy("events_staff_assigned", "ALL", assigned, assigned);
+    }
+
+    /**
+     * The restrictive policies on timeline_events (step 3.3): staff see and write only the rows of leads assigned to
+     * them; the system actor records any actor, an admin or a staff member only themselves.
+     */
+    private static Set<String> timelinePolicies() {
+        String assigned = "(" + ADMIN_OR_SYSTEM + " OR (" + STAFF + " AND (EXISTS ( SELECT FROM northstar.leads l"
+                + " WHERE ((l.tenant_id = timeline_events.tenant_id) AND (l.id = timeline_events.lead_id) AND"
+                + " (l.assigned_membership_id = " + MY_ACTIVE_MEMBERSHIP + "))))))";
+        String ownActor =
+                "((current_setting('app.role'::text, true) = 'system'::text) OR ((current_setting('app.role'::text,"
+                        + " true) = ANY (ARRAY['admin'::text, 'staff'::text])) AND (actor_type = 'staff'::text) AND"
+                        + " (actor_membership_id = " + MY_ACTIVE_MEMBERSHIP + ")))";
+        return Set.of(
+                restrictivePolicy("timeline_events_staff_assigned", "ALL", assigned, assigned),
+                restrictivePolicy("timeline_events_actor_own", "INSERT", null, ownActor));
     }
 
     /**

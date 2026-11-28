@@ -2,6 +2,7 @@ package com.northstar.workflow.internal;
 
 import com.northstar.tenancy.Role;
 import com.northstar.tenancy.TenantContext;
+import com.northstar.tenancy.TenantDirectory;
 import com.northstar.tenancy.TenantScope;
 import com.northstar.workflow.LeadEntry;
 import com.northstar.workflow.LeadIntake;
@@ -17,7 +18,7 @@ import org.springframework.transaction.annotation.Propagation;
 import org.springframework.transaction.annotation.Transactional;
 
 /**
- * {@link LeadEntry} (step 2.10). Native SQL with bind parameters and an explicit tenant filter on top of RLS (D7).
+ * {@link LeadEntry} (step 2.10; a new lead's first timeline row since step 3.3). Native SQL with bind parameters and an explicit tenant filter on top of RLS (D7).
  * MANDATORY: each call joins the entry's transaction, so a lead is stored with its contact or not at all.
  */
 @Service
@@ -42,9 +43,13 @@ class LeadEntryService implements LeadEntry {
             from northstar.leads where tenant_id = ? and id = ?""";
 
     private final JdbcClient jdbc;
+    private final StageChanges changes;
+    private final TenantDirectory tenants;
 
-    LeadEntryService(JdbcClient jdbc) {
+    LeadEntryService(JdbcClient jdbc, StageChanges changes, TenantDirectory tenants) {
         this.jdbc = jdbc;
+        this.changes = changes;
+        this.tenants = tenants;
     }
 
     @Override
@@ -62,9 +67,10 @@ class LeadEntryService implements LeadEntry {
         Objects.requireNonNull(contactId, "contactId");
         Objects.requireNonNull(workflowVersionId, "workflowVersionId");
         Objects.requireNonNull(assignedMembershipId, "assignedMembershipId");
-        return jdbc.sql(INSERT_LEAD)
+        UUID tenant = memberTenant();
+        boolean opened = jdbc.sql(INSERT_LEAD)
                         .param(leadId)
-                        .param(memberTenant())
+                        .param(tenant)
                         .param(contactId)
                         .param(workflowVersionId)
                         .param(LeadIntake.FIRST_STAGE)
@@ -72,6 +78,20 @@ class LeadEntryService implements LeadEntry {
                         .param(assignedMembershipId)
                         .update()
                 == 1;
+        if (opened) {
+            // Its first timeline row (step 3.3): the member who entered it, with no event behind it.
+            UUID me = tenants.currentMembershipId()
+                    .orElseThrow(() -> new IllegalStateException("A lead is entered by a member with a membership"));
+            changes.recordCreated(
+                    tenant,
+                    leadId,
+                    contactId,
+                    workflowVersionId,
+                    LeadIntake.FIRST_STAGE,
+                    StageChanges.Actor.staff(me),
+                    new StageChanges.Cause(null, null, null));
+        }
+        return opened;
     }
 
     @Override

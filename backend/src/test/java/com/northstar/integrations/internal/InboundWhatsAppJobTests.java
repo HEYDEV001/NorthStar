@@ -150,6 +150,17 @@ class InboundWhatsAppJobTests {
         assertThat(lead.assignee()).isNull();
         assertThat(lead.version()).isZero();
         assertThat(lead.closed()).isFalse();
+        assertThat(admin.sql("""
+                        select type || '|' || actor_type || '|' || coalesce(actor_membership_id::text, '') || '|'
+                               || ref_table || '|' || ref_id || '|' || summary || '|' || (data->>'to') || '|'
+                               || coalesce(data->>'from', '') || '|' || (data->>'trigger') || '|'
+                               || (data->>'workflow_version_id') || '|' || (data->>'lead_version') || '|'
+                               || (occurred_at = (select created_at from northstar.leads where id = :lead))::text
+                        from northstar.timeline_events where lead_id = :lead""").param("lead", lead.id()).query(String.class).list())
+                .as("its first timeline row (step 3.3): the client's message opened it, at the lead's creation time")
+                .containsExactly(
+                        "stage_changed|contact||messages|" + messages.getFirst().id() + "|created|new||"
+                                + "message.received|" + business.version() + "|0|true");
 
         EventRow event = engineEvent(business.tenant(), message.wamid());
         assertThat(event.type()).isEqualTo("message.received");
@@ -232,7 +243,8 @@ class InboundWhatsAppJobTests {
 
     @Test
     void W2_aContactWhoseLeadIsLostOrJunkGetsANewLeadInTheSameConversation() {
-        for (String closing : List.of("lost", "junk", "completed")) {
+        // Completed closes a lead since step 2.4b, Cancelled since step 3.3.
+        for (String closing : List.of("lost", "junk", "completed", "cancelled")) {
             Business business = business();
             UUID contact = data.contact(business.tenant(), CUSTOMER, "Asha");
             UUID conversation = data.conversation(business.tenant(), contact, business.number(), null);

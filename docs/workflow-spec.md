@@ -76,6 +76,27 @@ Dashed paths are side transitions; Needs Human can be entered from any open stag
 - Every transition writes a timeline entry: from, to, trigger, actor (AI / system / staff id), timestamp.
 - Opt-out does not change stage; it blocks all outbound automation for the contact.
 
+How step 3.3 builds the state machine (decided 28 Nov 2026, the 3.3 plan). A lead always runs on its own workflow version (W36): every rule below reads that version's config, never the current one.
+
+| Move | From → To | The engine (system actor) | A member (an admin, or the staff member the lead is assigned to) |
+| --- | --- | --- | --- |
+| Exit | the lead's stage → an exit's `to` | Only for the event the exit's `on` names | Any exit of the stage, except one on `payment.captured`, `payment.failed`, `payment.link_expired` or `refund.processed`, which only a verified event moves (`transition_engine_only`) |
+| Filter rule | the stage whose step is `score` → `junk` | Only, naming a filter rule of the version whose `then` is `junk` | — |
+| Needs Human | any open stage → `needs_human` | Yes; a lead already there is left as it is | Yes |
+| Hand back | `needs_human` → the stage it was entered from | Yes; a lead not in Needs Human is left as it is | Yes |
+| Lost | any open stage → `lost` | Yes, with a fixed reason | Yes |
+| Restore | `junk` → `qualifying` (section 4), when the version declares `qualifying` | — | Yes |
+| Forced | any stage → any other stage of the version | — | Admins only, always with a reason; audited (`lead.stage_forced`) |
+
+- **Open and closing stages.** `junk`, `lost`, `completed` and `cancelled` close a lead; every other stage is open. Entering a closing stage from an open one sets `closed_at`, so the contact is free for a new lead (W2); leaving one for an open stage clears it, and is refused (409 `contact_has_open_lead`) while the contact has another open lead (one open lead per contact). A move from one closing stage to another keeps `closed_at`.
+- **Not yet.** "Not Booked or later" (Lost) and "Booked / Scheduled" (Cancelled) name stages format v1 cannot identify, so until step 3.5 defines them a lead may move to Lost from any open stage, and to Cancelled only along an exit its version declares or by an admin's forced move. Exit conditions (`if`) are evaluated from step 3.4, for members' moves too.
+- **Needs Human** remembers the stage it was entered from (`leads.previous_stage`, set exactly while the lead is in it), so a hand back returns to exactly that stage. From Needs Human a member hands back, moves to Lost or follows an exit the version gives Needs Human itself; anything else is two moves (hand back, then an exit) or an admin's forced move.
+- **Every stage must be declared** in the lead's version, the target of a forced move included (else 422 `stage_unknown`); a lead whose own stage is not declared moves only by force.
+- **Every change** moves `stage`, `stage_entered_at` and the lead's `version` (P7) in one update that checks the version, and writes one `stage_changed` timeline row (actor, from, to, trigger, reason; `data-model.md` section 10). A lead's creation writes the first one (— → New). A member's move also records a `staff.action` event (section 6, action `move_stage`); a forced move also writes an audit entry.
+- **Reasons** are fixed codes, never free text (the timeline and the audit log are insert-only, so text in them could not be cleared): `client_request`, `client_declined`, `client_unresponsive`, `price_too_high`, `chose_competitor`, `date_unavailable`, `not_interested`, `handled_offline`, `data_correction`, `duplicate_lead`, `restored`, `handed_back` and `other`. A member's move always has one. An explanation in words belongs in a lead note (step 3.9), which can be cleared. Moving to Lost records the reason as `leads.lost_reason`; Junk from a filter rule records the rule as `leads.junk_rule_id` (section 7). Each is cleared when the lead leaves that stage.
+- **Concurrent changes (P7).** A member's move names the lead's version it was made against; any other version is refused as stale, with the lead as it now is. The engine re-reads the lead and checks the move again, at most three times in its transaction, then gives up with a retryable failure.
+- **Unknown configs.** A version whose `schema_version` is missing or not one the engine knows (the 2.11 dev seed's version 1, from before step 3.1) is never run: the lead stays where it is, a member's move is refused (409 `workflow_version_unsupported`, a forced one too), and it is logged once per version (IDs only). Its leads wait for migration (step 3.11).
+
 ## 4. Stage-by-stage definitions (Reelrr default)
 
 Each stage lists what must be true on entry, the fields it needs, the actions it runs, its timers and whether staff must approve in approval mode.
@@ -101,7 +122,7 @@ Each stage lists what must be true on entry, the fields it needs, the actions it
 | Negotiating | Notify staff with the client's request | Staff sends a revised quote version → Quoted |
 | Junk | Stop automation; keep record for review | Staff restores → Qualifying |
 | Lost | Stop automation; record reason | New inbound message → new lead |
-| Cancelled | Release slot; delete calendar events; notify staff; start refund flow | Terminal |
+| Cancelled | Release slot; delete calendar events; notify staff; start refund flow | Terminal; closes the lead like Junk, Lost and Completed, so a later message starts a new lead (step 3.3) |
 
 ## 5. Step type catalogue
 
@@ -147,7 +168,7 @@ Every input to the engine is a normalised event with a unique ID; the same event
 | `payment.failed` | Razorpay webhook | payment ID |
 | `refund.processed` | Razorpay webhook | refund ID |
 | `timer.fired` (follow-up, reminder, expiry, hold release) | Job queue | timer ID |
-| `staff.action` (approve, reject, mark done, take over, hand back, move stage, reassign, cancel) | Dashboard / WhatsApp | request ID; for take over and hand back (step 2.9c) `staff.action:<action>:<conversation ID>:<take over time in microseconds>` (action `take_over` or `hand_back`), unique for each take over and the hand back that ends it, as a client can choose its own request ID |
+| `staff.action` (approve, reject, mark done, take over, hand back, move stage, reassign, cancel) | Dashboard / WhatsApp | request ID; for take over and hand back (step 2.9c) `staff.action:<action>:<conversation ID>:<take over time in microseconds>` (action `take_over` or `hand_back`), unique for each take over and the hand back that ends it, as a client can choose its own request ID; for a member's stage move (step 3.3) `staff.action:move_stage:<lead ID>:<the lead's version after the move>`, unique for each move |
 | `calendar.changed` | Google Calendar sync | event ID + updated time |
 | `sheet.edited` (opted-in fields only) | Sheets poll | row ID + version |
 | `integration.disconnected` | Any connector | provider + tenant + time |
@@ -508,7 +529,7 @@ Published as version 3 of a workflow, the stored document also carries `"workflo
 | Filter rule | `id`✱: in stage-key form; unique. `if`✱: a condition. `then`✱: `junk`, which must be a declared stage. `reason`✱: 1–200 characters, not blank. Filter rules need a stage whose step is `score`; there is no `rules` parameter |
 | Step condition | `step`✱: a step type some stage uses, or `payment.<kind>` for a payment stage of that kind. Exactly one of `enabled_if` and `skip_if`: a condition |
 
-**Stages.** Every config has `new`, where every lead starts (step 2.4b), and `needs_human`, where the engine can send any lead (a take over, an AI escalation, a failed action, section 16's unmappable stages). Six keys are reserved, with fixed meanings and default names used when `name` is omitted; a business may rename them: `needs_human` (Needs Human), `negotiating` (Negotiating), `junk` (Junk), `lost` (Lost), `cancelled` (Cancelled) and `completed` (Completed). `junk`, `lost` and `completed` close a lead (section 3; whether Cancelled does is step 3.3's). The list order is the stage order. A stage may have no exits.
+**Stages.** Every config has `new`, where every lead starts (step 2.4b), and `needs_human`, where the engine can send any lead (a take over, an AI escalation, a failed action, section 16's unmappable stages). Six keys are reserved, with fixed meanings and default names used when `name` is omitted; a business may rename them: `needs_human` (Needs Human), `negotiating` (Negotiating), `junk` (Junk), `lost` (Lost), `cancelled` (Cancelled) and `completed` (Completed). `junk`, `lost`, `completed` and `cancelled` close a lead (section 3; Cancelled since step 3.3). The list order is the stage order. A stage may have no exits.
 
 **Reachability.** Every stage must be reachable from `new`, through exits' `to`, filter rules' `then` (from the stage whose step is `score`) and the engine's own moves from any open stage to `needs_human`, `lost` and `cancelled` (section 3). Needs Human's way back to the previous stage is the engine's and is not written as an exit.
 

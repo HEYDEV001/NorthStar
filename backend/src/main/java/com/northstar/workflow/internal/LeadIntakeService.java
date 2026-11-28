@@ -14,7 +14,7 @@ import org.springframework.transaction.annotation.Propagation;
 import org.springframework.transaction.annotation.Transactional;
 
 /**
- * {@link LeadIntake} (step 2.4b). Native SQL for the insert on the open-lead index and the guarded link (D7), with bind
+ * {@link LeadIntake} (step 2.4b; a new lead's first timeline row since step 3.3). Native SQL for the insert on the open-lead index and the guarded link (D7), with bind
  * parameters and an explicit tenant filter on top of RLS. MANDATORY: each call joins the inbound job's transaction, so
  * a lead is created together with its message or not at all (P3).
  */
@@ -51,10 +51,15 @@ class LeadIntakeService implements LeadIntake {
             on conflict (tenant_id, contact_id) where closed_at is null and deleted_at is null do nothing
             returning id""";
 
-    private final JdbcClient jdbc;
+    // The trigger of an inbound lead's creation (workflow-spec.md section 6).
+    private static final String MESSAGE_RECEIVED = "message.received";
 
-    LeadIntakeService(JdbcClient jdbc) {
+    private final JdbcClient jdbc;
+    private final StageChanges changes;
+
+    LeadIntakeService(JdbcClient jdbc, StageChanges changes) {
         this.jdbc = jdbc;
+        this.changes = changes;
     }
 
     @Override
@@ -109,6 +114,15 @@ class LeadIntakeService implements LeadIntake {
                 .query(UUID.class)
                 .optional();
         if (created.isPresent()) {
+            // Its first timeline row (step 3.3): the client's message opened it.
+            changes.recordCreated(
+                    tenant,
+                    created.get(),
+                    lead.contactId(),
+                    lead.workflowVersionId(),
+                    FIRST_STAGE,
+                    StageChanges.Actor.of("contact"),
+                    new StageChanges.Cause(MESSAGE_RECEIVED, "messages", lead.messageId()));
             return new OpenLead(created.get(), lead.conversationId(), lead.assignedMembershipId(), true);
         }
         OpenLead existing = findOpenLead(lead.contactId())

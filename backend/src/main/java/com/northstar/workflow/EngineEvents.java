@@ -10,7 +10,8 @@ import java.util.regex.Pattern;
  * The engine's input log ({@code events}, data-model.md section 6, workflow-spec.md section 6). Each event is recorded
  * once per dedupe key, so recording it again has no effect (P1); the engine (Phase 3) reads them and sets
  * processed_at. Every method runs only inside the caller's transaction, in the current tenant, and as the system actor,
- * except {@link #recordStaffAction}, which only an admin or a staff member records (step 2.9c).
+ * except {@link #recordStaffAction} and {@link #recordStageMove}, which only an admin or a staff member records (steps
+ * 2.9c and 3.3).
  *
  * <p>Payloads hold IDs, fixed codes and timestamps only, never message text, names or phone numbers: each event type
  * is a record of exactly those, so free text has nowhere to go.
@@ -46,6 +47,43 @@ public interface EngineEvents {
      * hand back that ends it. Returns false if nothing was recorded (no lead, or recorded before).
      */
     boolean recordStaffAction(StaffAction event);
+
+    /**
+     * Records {@code staff.action} for a member's stage move (step 3.3, workflow-spec.md section 6), forced ones included,
+     * on the lead, under the dedupe key {@code staff.action:move_stage:<lead>:<the lead's version after the move>},
+     * unique for each move. Only an admin or a staff member records one, for a lead they can see. Returns the event's ID.
+     * The engine (step 3.4) reads it for what follows the move, never to move the lead again.
+     */
+    UUID recordStageMove(StageMove event);
+
+    /**
+     * A member's stage move (step 3.3): the lead, its stage before and after (stage keys), the kind of move and its
+     * reason (fixed codes), whether it was forced, the member, the lead's version after the move, and its time.
+     */
+    record StageMove(
+            UUID leadId,
+            String from,
+            String to,
+            String move,
+            String reason,
+            boolean forced,
+            UUID membershipId,
+            int leadVersion,
+            Instant at) {
+
+        private static final Pattern CODE = Pattern.compile("[a-z][a-z0-9_]{0,63}");
+
+        public StageMove {
+            Objects.requireNonNull(leadId, "leadId");
+            Objects.requireNonNull(membershipId, "membershipId");
+            Objects.requireNonNull(at, "at");
+            for (String code : new String[] {from, to, move, reason}) {
+                if (code == null || !CODE.matcher(code).matches()) {
+                    throw new IllegalArgumentException("Stages, the move and the reason are fixed codes");
+                }
+            }
+        }
+    }
 
     /** What a member did to a conversation's automation (step 2.9c). */
     enum StaffActionKind {

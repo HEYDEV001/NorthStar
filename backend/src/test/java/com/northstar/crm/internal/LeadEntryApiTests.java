@@ -205,6 +205,36 @@ class LeadEntryApiTests {
         assertThat(audit(team.tenant()))
                 .as("the admin who entered it is the actor")
                 .contains("lead.created|leads|" + id(toStaff) + "|" + team.adminUser());
+        assertThat(firstTimelineRow(id(toStaff)))
+                .as("its first timeline row (step 3.3) names the admin who entered it, not the assignee")
+                .isEqualTo(
+                        "stage_changed|staff|" + team.adminMembership() + "|||created|new||" + team.version() + "|0");
+    }
+
+    @Test
+    void aStaffMembersManualLeadStartsItsTimelineInTheirName() {
+        Team team = team();
+
+        JsonNode lead = json(enter(team.staffUser(), request(phone())), 201);
+
+        assertThat(firstTimelineRow(id(lead)))
+                .as("— → New, by the member, with no event behind it (step 3.3)")
+                .isEqualTo(
+                        "stage_changed|staff|" + team.staffMembership() + "|||created|new||" + team.version() + "|0");
+        assertThat(staffSee(team, "select count(*) from northstar.timeline_events where lead_id = :id", id(lead)))
+                .as("their own lead's timeline")
+                .isOne();
+    }
+
+    /** type|actor|membership|ref table|ref|summary|to|from and trigger (both null)|version|lead version, the only row. */
+    private String firstTimelineRow(UUID lead) {
+        return admin.sql("""
+                        select type || '|' || actor_type || '|' || coalesce(actor_membership_id::text, '') || '|'
+                               || coalesce(ref_table, '') || '|' || coalesce(ref_id::text, '') || '|' || summary
+                               || '|' || (data->>'to') || '|' || coalesce(data->>'from', '')
+                               || coalesce(data->>'trigger', '') || '|' || (data->>'workflow_version_id') || '|'
+                               || (data->>'lead_version')
+                        from northstar.timeline_events where lead_id = :lead""").param("lead", lead).query(String.class).single();
     }
 
     @Test
@@ -426,7 +456,7 @@ class LeadEntryApiTests {
     @Test
     void W2_aReturningCustomerGetsANewLeadAndKeepsTheirDetails() {
         Team team = team();
-        for (String closing : List.of("lost", "junk", "completed")) {
+        for (String closing : List.of("lost", "junk", "completed", "cancelled")) {
             String phone = phone();
             UUID contact = data.contact(team.tenant(), phone, "Ravi Kumar");
             UUID closed = data.lead(team.tenant(), team.version(), contact, null, team.colleagueMembership());

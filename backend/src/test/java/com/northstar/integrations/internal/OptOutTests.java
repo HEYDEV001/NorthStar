@@ -173,7 +173,8 @@ class OptOutTests {
     void W32_theStageDoesNotChangeAndTheMessageIsStoredInTheConversation() {
         Business business = business();
         Customer customer = customer(business, CUSTOMER_WA_ID);
-        admin.sql("update northstar.leads set previous_stage = stage, stage = 'quoted' where id = :id")
+        // In Needs Human from Quoted, so both the stage and the stage it was entered from are set (step 3.3's check).
+        admin.sql("update northstar.leads set previous_stage = 'quoted', stage = 'needs_human' where id = :id")
                 .param("id", customer.lead())
                 .update();
         String leadBefore = leadState(customer.lead());

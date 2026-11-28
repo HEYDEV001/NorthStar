@@ -42,7 +42,7 @@ Every case below has a defined behaviour and an automated test before launch; th
 | # | Situation | Expected behaviour | Phase |
 | --- | --- | --- | --- |
 | W1 | Existing contact messages again while a lead is open | Message joins the open lead's conversation; no new lead | 2 |
-| W2 | Contact from a Lost or Junk lead messages again | New lead linked to the same contact; history visible | 3 |
+| W2 | Contact from a Lost or Junk lead messages again | New lead linked to the same contact; history visible. Completed and Cancelled close a lead the same way (steps 2.4b and 3.3) | 3 |
 | W3 | Chat-link reference code missing or edited by the client | Lead tagged Direct; if the click happened within 30 min from the same link, best-effort match flagged as "probable" | 7 |
 | W4 | Client sends voice note, image or location instead of text | Stored; AI asks for text where needed; location pin used as location field | 4 |
 | W5 | Client writes in Hindi or Hinglish | AI replies in the client's language if enabled for the tenant; extraction still structured | 4 |

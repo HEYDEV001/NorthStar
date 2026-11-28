@@ -198,7 +198,8 @@ class WhatsAppInboundProcessor {
                         conversation.id(),
                         version.get(),
                         LeadOrigin.DIRECT,
-                        conversation.assignedMembershipId()));
+                        conversation.assignedMembershipId(),
+                        messageId));
                 leadId = opened.id();
                 lead = opened.created() ? LeadOutcome.OPENED : LeadOutcome.JOINED;
             } else {

@@ -17,7 +17,7 @@ import tools.jackson.databind.json.JsonMapper;
 import tools.jackson.databind.node.ObjectNode;
 
 /**
- * {@link EngineEvents} (steps 2.4b, 2.5 and 2.7): {@code insert ... on conflict (tenant_id, dedupe_key) do nothing} (P1),
+ * {@link EngineEvents} (steps 2.4b, 2.5, 2.7, 2.9c and 3.3): {@code insert ... on conflict (tenant_id, dedupe_key) do nothing} (P1),
  * native SQL with bind parameters and the tenant bound explicitly, inside the caller's transaction.
  */
 @Service
@@ -28,6 +28,7 @@ class EngineEventsService implements EngineEvents {
     static final String OPTOUT_RECEIVED = "optout.received";
     static final String MESSAGE_STATUS = "message.status";
     static final String STAFF_ACTION = "staff.action";
+    static final String MOVE_STAGE = "move_stage";
 
     /** The events check allows 1 to 300 characters. */
     static final int MAX_DEDUPE_KEY_LENGTH = 300;
@@ -35,6 +36,11 @@ class EngineEventsService implements EngineEvents {
     private static final String INSERT_EVENT = """
             insert into northstar.events (tenant_id, lead_id, type, dedupe_key, payload)
             values (?, ?, ?, ?, cast(? as jsonb))
+            on conflict on constraint events_dedupe_key do nothing""";
+
+    private static final String INSERT_EVENT_WITH_ID = """
+            insert into northstar.events (id, tenant_id, lead_id, type, dedupe_key, payload)
+            values (?, ?, ?, ?, ?, cast(? as jsonb))
             on conflict on constraint events_dedupe_key do nothing""";
 
     // The contact's open lead as the caller sees it: leads_staff_assigned shows a staff member only their own.
@@ -134,6 +140,41 @@ class EngineEventsService implements EngineEvents {
         payload.put("at", event.at().toString());
 
         return insert(tenant, lead.get(), STAFF_ACTION, dedupeKey, payload);
+    }
+
+    @Override
+    public UUID recordStageMove(StageMove event) {
+        Objects.requireNonNull(event, "event");
+        TenantContext context = TenantScope.require();
+        if (context.role() != Role.ADMIN && context.role() != Role.STAFF) {
+            throw new IllegalStateException("Stage moves are recorded for admins and staff only");
+        }
+        String dedupeKey = STAFF_ACTION + ":" + MOVE_STAGE + ":" + event.leadId() + ":" + event.leadVersion();
+
+        // IDs, stage keys, fixed codes, a number and a time only.
+        ObjectNode payload = json.createObjectNode();
+        payload.put("action", MOVE_STAGE);
+        payload.put("from", event.from());
+        payload.put("to", event.to());
+        payload.put("move", event.move());
+        payload.put("reason", event.reason());
+        payload.put("forced", event.forced());
+        payload.put("membership_id", event.membershipId().toString());
+        payload.put("lead_version", event.leadVersion());
+        payload.put("at", event.at().toString());
+
+        UUID id = UUID.randomUUID();
+        int inserted = jdbc.sql(INSERT_EVENT_WITH_ID)
+                .param(id)
+                .param(context.tenantId())
+                .param(event.leadId())
+                .param(STAFF_ACTION)
+                .param(dedupeKey)
+                .param(json.writeValueAsString(payload))
+                .update();
+        // The key names the lead's version after the move, which only this move made.
+        if (inserted != 1) throw new IllegalStateException("A stage move was recorded twice");
+        return id;
     }
 
     private boolean insert(UUID leadId, String type, String dedupeKey, ObjectNode payload) {

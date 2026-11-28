@@ -33,9 +33,10 @@ public interface LeadIntake {
     OpenLead linkConversation(OpenLead lead, UUID conversationId);
 
     /**
-     * Opens a lead for the contact in stage {@value #FIRST_STAGE}. If the contact already has an open lead (a writer
-     * that does not hold the contact's lock), that lead is returned instead, with {@code created} false, and linked to
-     * the conversation if it has none.
+     * Opens a lead for the contact in stage {@value #FIRST_STAGE}, with its first timeline row (— → New, step 3.3: actor
+     * the contact, referencing the message that opened it). If the contact already has an open lead (a writer that does
+     * not hold the contact's lock), that lead is returned instead, with {@code created} false, and linked to the
+     * conversation if it has none.
      */
     OpenLead open(NewLead lead);
 
@@ -47,15 +48,21 @@ public interface LeadIntake {
         }
     }
 
-    /** A lead to open; the assignee is the conversation's (null: unassigned). */
+    /** A lead to open, and the message that opens it; the assignee is the conversation's (null: unassigned). */
     record NewLead(
-            UUID contactId, UUID conversationId, UUID workflowVersionId, LeadOrigin origin, UUID assignedMembershipId) {
+            UUID contactId,
+            UUID conversationId,
+            UUID workflowVersionId,
+            LeadOrigin origin,
+            UUID assignedMembershipId,
+            UUID messageId) {
 
         public NewLead {
             Objects.requireNonNull(contactId, "contactId");
             Objects.requireNonNull(conversationId, "conversationId");
             Objects.requireNonNull(workflowVersionId, "workflowVersionId");
             Objects.requireNonNull(origin, "origin");
+            Objects.requireNonNull(messageId, "messageId");
         }
     }
 }
