@@ -1,5 +1,6 @@
 package com.northstar.workflow.internal;
 
+import java.util.Map;
 import java.util.Optional;
 import java.util.Set;
 import java.util.UUID;
@@ -30,6 +31,16 @@ class WorkflowGraphs {
 
     WorkflowGraphs(JdbcClient jdbc) {
         this.jdbc = jdbc;
+    }
+
+    /**
+     * The names of the lead's version's stages, key to name in order (step 3.3b), for showing a lead and its timeline;
+     * empty for a version the engine cannot run (logged as {@link #forLead} logs it).
+     */
+    Map<String, String> stageNames(UUID tenant, UUID workflowVersionId, UUID leadId) {
+        return forLead(tenant, workflowVersionId, leadId)
+                .map(WorkflowGraph::names)
+                .orElse(Map.of());
     }
 
     /** The lead's version as a graph, or empty when the engine cannot run it. */

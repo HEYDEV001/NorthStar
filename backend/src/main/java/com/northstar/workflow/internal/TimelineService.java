@@ -6,6 +6,7 @@ import java.time.OffsetDateTime;
 import java.time.ZoneOffset;
 import java.time.temporal.ChronoUnit;
 import java.util.List;
+import java.util.Map;
 import java.util.Objects;
 import java.util.Optional;
 import java.util.UUID;
@@ -26,8 +27,7 @@ import org.springframework.transaction.annotation.Transactional;
 class TimelineService implements Timeline {
 
     private static final String VISIBLE_LEAD = """
-            select exists (
-              select 1 from northstar.leads where tenant_id = ? and id = ? and deleted_at is null)""";
+            select workflow_version_id from northstar.leads where tenant_id = ? and id = ? and deleted_at is null""";
 
     private static final String COLUMNS = """
             select id, type, actor_type, actor_membership_id, ref_table, ref_id, summary, data::text as data,
@@ -41,9 +41,11 @@ class TimelineService implements Timeline {
             COLUMNS + " and (occurred_at, id) < (?, ?) order by occurred_at desc, id desc limit ?";
 
     private final JdbcClient jdbc;
+    private final WorkflowGraphs graphs;
 
-    TimelineService(JdbcClient jdbc) {
+    TimelineService(JdbcClient jdbc, WorkflowGraphs graphs) {
         this.jdbc = jdbc;
+        this.graphs = graphs;
     }
 
     @Override
@@ -51,12 +53,13 @@ class TimelineService implements Timeline {
         Objects.requireNonNull(leadId, "leadId");
         if (limit < 1 || limit > MAX_PAGE) throw new IllegalArgumentException("limit must be 1 to " + MAX_PAGE);
         UUID tenant = TenantScope.require().tenantId();
-        boolean visible = Boolean.TRUE.equals(jdbc.sql(VISIBLE_LEAD)
+        Optional<UUID> version = jdbc.sql(VISIBLE_LEAD)
                 .param(tenant)
                 .param(leadId)
-                .query(Boolean.class)
-                .single());
-        if (!visible) return Optional.empty();
+                .query(UUID.class)
+                .optional();
+        if (version.isEmpty()) return Optional.empty();
+        Map<String, String> names = graphs.stageNames(tenant, version.get(), leadId);
 
         List<Entry> rows = after == null
                 ? jdbc.sql(FIRST_PAGE)
@@ -74,10 +77,10 @@ class TimelineService implements Timeline {
                         .param(limit + 1)
                         .query(ENTRY)
                         .list();
-        if (rows.size() <= limit) return Optional.of(new Page(rows, null));
+        if (rows.size() <= limit) return Optional.of(new Page(rows, null, names));
         List<Entry> page = rows.subList(0, limit);
         Entry last = page.getLast();
-        return Optional.of(new Page(page, new Position(last.occurredAt(), last.id())));
+        return Optional.of(new Page(page, new Position(last.occurredAt(), last.id()), names));
     }
 
     private static final RowMapper<Entry> ENTRY = (row, n) -> new Entry(

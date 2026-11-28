@@ -30,10 +30,17 @@ public interface LeadMoves {
     String STAGE_FORCED = "lead.stage_forced";
 
     /**
-     * Moves the lead to {@code toStage}. With {@code force} (admins only) a move outside the allowed ones is made too, and
-     * audited; a move that is allowed anyway is made as that move, not as a forced one.
+     * Moves the lead to {@code toStage}, writing its timeline row with this ID (a request's key names the row before it
+     * exists, step 3.3b). With {@code force} (admins only) a move outside the allowed ones is made too, and audited; a
+     * move that is allowed anyway is made as that move, not as a forced one.
      */
-    Moved move(UUID leadId, String toStage, int expectedVersion, MoveReason reason, boolean force);
+    Moved move(
+            UUID leadId, String toStage, int expectedVersion, MoveReason reason, boolean force, UUID timelineEventId);
+
+    /** {@link #move(UUID, String, int, MoveReason, boolean, UUID)} with a new timeline row ID. */
+    default Moved move(UUID leadId, String toStage, int expectedVersion, MoveReason reason, boolean force) {
+        return move(leadId, toStage, expectedVersion, reason, force, UUID.randomUUID());
+    }
 
     /** The lead's stage as the caller sees it: empty for a lead they cannot see, a deleted one or none. */
     Optional<LeadStage> stage(UUID leadId);

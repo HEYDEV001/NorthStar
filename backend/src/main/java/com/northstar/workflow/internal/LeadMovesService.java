@@ -65,8 +65,10 @@ class LeadMovesService implements LeadMoves {
     }
 
     @Override
-    public Moved move(UUID leadId, String toStage, int expectedVersion, MoveReason reason, boolean force) {
+    public Moved move(
+            UUID leadId, String toStage, int expectedVersion, MoveReason reason, boolean force, UUID timelineEventId) {
         Objects.requireNonNull(leadId, "leadId");
+        Objects.requireNonNull(timelineEventId, "timelineEventId");
         Objects.requireNonNull(toStage, "toStage");
         Objects.requireNonNull(reason, "reason");
         TenantContext context = member();
@@ -134,7 +136,14 @@ class LeadMovesService implements LeadMoves {
                 change.after().version(),
                 change.after().stageEnteredAt()));
         UUID rowId = changes.recordChange(
-                tenant, change, kind, Actor.staff(me), new Cause(STAFF_ACTION, "events", eventId), reason.code(), null);
+                timelineEventId,
+                tenant,
+                change,
+                kind,
+                Actor.staff(me),
+                new Cause(STAFF_ACTION, "events", eventId),
+                reason.code(),
+                null);
         if (kind == MoveKind.FORCED) audit.recordChange(STAGE_FORCED, "leads", leadId, lead.stage(), toStage);
 
         log.info(

@@ -1,6 +1,7 @@
 package com.northstar.workflow.internal;
 
 import java.util.ArrayList;
+import java.util.Collections;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
@@ -12,7 +13,7 @@ import tools.jackson.databind.node.ObjectNode;
 
 /**
  * What the state machine reads of a published version's config (step 3.3, workflow-spec.md sections 3 and 15): its
- * stages in order, each stage's step and exits, and its filter rules' IDs. A version is run only when its
+ * stages in order, each stage's name, step and exits, and its filter rules' IDs. A version is run only when its
  * {@code schema_version} is one the engine knows ({@value ConfigFormatV1#SCHEMA_VERSION}); one with none (the 2.11 dev
  * seed's version 1, from before step 3.1) or another one is unsupported, and so is one whose shape cannot be read
  * (versions from before step 3.1 were never validated).
@@ -22,7 +23,7 @@ final class WorkflowGraph {
     /** An exit of a stage: where it leads, the event it waits for, and whether it has a condition ({@code if}). */
     record Exit(String to, String on, boolean conditional) {}
 
-    private record Stage(String step, List<Exit> exits) {}
+    private record Stage(String name, String step, List<Exit> exits) {}
 
     /** A stored config: its graph, or why it cannot be run (exactly one of the two). */
     record Parsed(WorkflowGraph graph, String unsupported) {
@@ -67,6 +68,9 @@ final class WorkflowGraph {
             if (key == null || stages.containsKey(key)) return unsupported(CONFIG_UNREADABLE);
             JsonNode stepNode = stage.get("step");
             if (stepNode != null && !stepNode.isString()) return unsupported(CONFIG_UNREADABLE);
+            // A reserved stage may leave its name out (its default then); format v1 names every other stage.
+            String name = text(stage, "name");
+            if (name == null) name = ConfigFormatV1.RESERVED_STAGES.getOrDefault(key, key);
             List<Exit> exits = new ArrayList<>();
             JsonNode exitList = stage.get("exits");
             if (exitList != null) {
@@ -78,7 +82,7 @@ final class WorkflowGraph {
                     exits.add(new Exit(to, on, exit.get("if") != null));
                 }
             }
-            stages.put(key, new Stage(stepNode == null ? null : stepNode.stringValue(), List.copyOf(exits)));
+            stages.put(key, new Stage(name, stepNode == null ? null : stepNode.stringValue(), List.copyOf(exits)));
         }
         Set<String> junkRules = new TreeSet<>();
         JsonNode rules = config.get("filter_rules");
@@ -91,6 +95,22 @@ final class WorkflowGraph {
             }
         }
         return new Parsed(new WorkflowGraph(stages, Set.copyOf(junkRules)), null);
+    }
+
+    /**
+     * Every stage's name, key to name in the version's order (step 3.3b): a reserved stage without a {@code name} has
+     * its default (workflow-spec.md section 15).
+     */
+    Map<String, String> names() {
+        Map<String, String> names = new LinkedHashMap<>();
+        stages.forEach((key, stage) -> names.put(key, stage.name()));
+        return Collections.unmodifiableMap(names);
+    }
+
+    /** A declared stage's name, or null for a stage the version does not declare. */
+    String name(String stage) {
+        Stage found = stage == null ? null : stages.get(stage);
+        return found == null ? null : found.name();
     }
 
     /** Whether the version declares this stage. */

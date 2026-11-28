@@ -30,16 +30,27 @@ public interface LeadEntry {
     /** The contact's open lead, if the caller can see it: an admin any, a staff member only their own. */
     Optional<UUID> visibleOpenLead(UUID contactId);
 
-    /** The lead, if the caller can see it. */
+    /** The lead, if the caller can see it: not a deleted one (step 3.3b). */
     Optional<LeadView> lead(UUID leadId);
 
-    /** A lead as manual entry answers with it. conversationId and assignedMembershipId may be null. */
+    /**
+     * A lead as the leads API answers with it (steps 2.10 and 3.3b). conversationId, assignedMembershipId, previousStage
+     * (set only in Needs Human) and closedAt (set only in a closing stage) may be null. The stage names come from the
+     * lead's own version, a reserved stage's default when it has none; they are null for a version the engine cannot
+     * run.
+     */
     record LeadView(
             UUID id,
             UUID contactId,
             UUID conversationId,
             UUID workflowVersionId,
             String stage,
+            String stageName,
+            String previousStage,
+            String previousStageName,
+            Instant stageEnteredAt,
+            Instant closedAt,
+            int version,
             String origin,
             UUID assignedMembershipId,
             Instant createdAt) {

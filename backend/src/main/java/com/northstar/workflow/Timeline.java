@@ -1,7 +1,10 @@
 package com.northstar.workflow;
 
 import java.time.Instant;
+import java.util.Collections;
+import java.util.LinkedHashMap;
 import java.util.List;
+import java.util.Map;
 import java.util.Objects;
 import java.util.Optional;
 import java.util.UUID;
@@ -33,11 +36,16 @@ public interface Timeline {
         }
     }
 
-    /** A page of rows, and where the next one starts (null when this is the last). */
-    record Page(List<Entry> entries, Position next) {
+    /**
+     * A page of rows, where the next one starts (null when this is the last), and the names of the stages of the lead's
+     * own version, key to name in the version's order (step 3.3b), for showing the rows' stage keys; empty for a version
+     * the engine cannot run.
+     */
+    record Page(List<Entry> entries, Position next, Map<String, String> stageNames) {
 
         public Page {
             entries = List.copyOf(entries);
+            stageNames = Collections.unmodifiableMap(new LinkedHashMap<>(stageNames));
         }
     }
 

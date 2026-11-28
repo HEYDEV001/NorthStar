@@ -37,6 +37,9 @@ public interface RequestKeys {
     /** Publishing a workflow's draft (step 3.1b): the record is the version it made. */
     String WORKFLOW_PUBLISH = "workflow.publish";
 
+    /** Moving a lead to another stage (step 3.3b): the record is the move's timeline row. */
+    String LEAD_MOVE_STAGE = "lead.move_stage";
+
     /**
      * Claims the caller's key for this operation, with the request's hash (SHA-256, lowercase hex, of the request as
      * the caller normalises it) and the ID the record will have. Returns {@link Claimed} with that ID when the key is

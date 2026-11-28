@@ -14,10 +14,6 @@ import com.northstar.tenancy.TenantContext;
 import com.northstar.tenancy.TenantDirectory;
 import com.northstar.tenancy.TenantScope;
 import com.northstar.workflow.LeadEntry;
-import java.nio.charset.StandardCharsets;
-import java.security.MessageDigest;
-import java.security.NoSuchAlgorithmException;
-import java.util.HexFormat;
 import java.util.Map;
 import java.util.Optional;
 import java.util.UUID;
@@ -68,6 +64,7 @@ class ManualLeadEntry {
     private final LeadEntry leads;
     private final TenantDirectory tenants;
     private final AuditTrail audit;
+    private final LeadViews views;
     private final TransactionTemplate transactions;
 
     ManualLeadEntry(
@@ -76,12 +73,14 @@ class ManualLeadEntry {
             LeadEntry leads,
             TenantDirectory tenants,
             AuditTrail audit,
+            LeadViews views,
             PlatformTransactionManager transactionManager) {
         this.requestKeys = requestKeys;
         this.contacts = contacts;
         this.leads = leads;
         this.tenants = tenants;
         this.audit = audit;
+        this.views = views;
         this.transactions = new TransactionTemplate(transactionManager);
     }
 
@@ -179,8 +178,7 @@ class ManualLeadEntry {
 
     /** The lead and its contact, as the caller may see them. */
     private Optional<LeadResponse> view(UUID leadId) {
-        return leads.lead(leadId)
-                .flatMap(lead -> contacts.contact(lead.contactId()).map(contact -> LeadResponse.of(lead, contact)));
+        return views.lead(leadId);
     }
 
     /**
@@ -228,21 +226,6 @@ class ManualLeadEntry {
      * each field length-prefixed so no two requests share an encoding. Stored with the key, never logged.
      */
     static String requestHash(String phone, String name, String email, UUID assignee) {
-        StringBuilder canonical = new StringBuilder(RequestKeys.LEAD_CREATE).append(":v1");
-        for (String field : new String[] {phone, name, email, assignee.toString()}) {
-            canonical.append('|');
-            if (field == null) {
-                canonical.append('-');
-            } else {
-                canonical.append(field.length()).append(':').append(field);
-            }
-        }
-        try {
-            byte[] digest = MessageDigest.getInstance("SHA-256")
-                    .digest(canonical.toString().getBytes(StandardCharsets.UTF_8));
-            return HexFormat.of().formatHex(digest);
-        } catch (NoSuchAlgorithmException impossible) {
-            throw new IllegalStateException("SHA-256 is always available", impossible);
-        }
+        return RequestHash.of(RequestKeys.LEAD_CREATE, phone, name, email, assignee.toString());
     }
 }
