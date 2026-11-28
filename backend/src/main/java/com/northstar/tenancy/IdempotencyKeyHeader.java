@@ -4,7 +4,8 @@ import com.northstar.api.BadRequestException;
 
 /**
  * The {@value #NAME} request header (P21): required on the writes that take it (the staff reply, step 2.9b; manual lead
- * entry, step 2.10; the workflow editor's writes, step 3.1b), 1 to {@value RequestKeys#MAX_KEY_LENGTH} of
+ * entry, step 2.10; the workflow editor's writes, step 3.1b; a lead's stage move, step 3.3b), 1 to
+ * {@value RequestKeys#MAX_KEY_LENGTH} of
  * {@code [A-Za-z0-9_.:-]}, e.g. a UUID. Never logged. Here, beside {@link RequestKeys}, since step 3.1b, so every module
  * with such a write reads it the same way.
  */

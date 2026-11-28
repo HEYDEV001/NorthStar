@@ -149,6 +149,21 @@ class RequestKeysSchemaTests {
     }
 
     @Test
+    void aStageMovesOperationIsKnown() {
+        Team team = team();
+        assertThat(admin.sql("""
+                                insert into northstar.request_keys
+                                  (tenant_id, membership_id, operation, idempotency_key, request_hash, target_id)
+                                values (:t, :m, 'lead.move_stage', 'key-1', :h, gen_random_uuid())""")
+                        .param("t", team.tenant())
+                        .param("m", team.adminMembership())
+                        .param("h", HASH)
+                        .update())
+                .as("step 3.3b: a lead's stage move, its own operation")
+                .isOne();
+    }
+
+    @Test
     void theWorkflowEditorsOperationsAreKnown() {
         Team team = team();
         for (String operation : List.of("workflow.create", "workflow.draft_save", "workflow.publish")) {

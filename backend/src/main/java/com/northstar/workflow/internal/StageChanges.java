@@ -164,9 +164,16 @@ class StageChanges {
                 .optional();
     }
 
-    /** The change's timeline row (data-model.md section 10). Returns its ID. */
+    /** The change's timeline row (data-model.md section 10), with this ID. Returns it. */
     UUID recordChange(
-            UUID tenant, Applied change, MoveKind kind, Actor actor, Cause cause, String reason, String ruleId) {
+            UUID id,
+            UUID tenant,
+            Applied change,
+            MoveKind kind,
+            Actor actor,
+            Cause cause,
+            String reason,
+            String ruleId) {
         ObjectNode data = json.createObjectNode();
         data.put("from", change.before().stage());
         data.put("to", change.after().stage());
@@ -177,6 +184,7 @@ class StageChanges {
         data.put("workflow_version_id", change.after().workflowVersionId().toString());
         data.put("lead_version", change.after().version());
         return insert(
+                id,
                 tenant,
                 change.after().id(),
                 change.after().contactId(),
@@ -201,10 +209,11 @@ class StageChanges {
         data.put("forced", false);
         data.put("workflow_version_id", workflowVersionId.toString());
         data.put("lead_version", 0);
-        return insert(tenant, leadId, contactId, actor, cause, MoveKind.CREATED, data, null);
+        return insert(UUID.randomUUID(), tenant, leadId, contactId, actor, cause, MoveKind.CREATED, data, null);
     }
 
     private UUID insert(
+            UUID id,
             UUID tenant,
             UUID leadId,
             UUID contactId,
@@ -213,7 +222,7 @@ class StageChanges {
             MoveKind kind,
             ObjectNode data,
             Instant occurredAt) {
-        UUID id = UUID.randomUUID();
+        Objects.requireNonNull(id, "id");
         jdbc.sql(INSERT_ROW)
                 .param(id)
                 .param(tenant)

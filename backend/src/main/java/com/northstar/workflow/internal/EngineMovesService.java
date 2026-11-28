@@ -162,6 +162,7 @@ class EngineMovesService implements EngineMoves {
                     ? new Cause(trigger.eventType(), null, null)
                     : new Cause(trigger.eventType(), "events", trigger.eventId());
             changes.recordChange(
+                    UUID.randomUUID(),
                     tenant,
                     moved.get(),
                     change.kind(),

@@ -45,7 +45,8 @@ class EndpointIsolationTests {
     private static final Map<String, String> SAMPLE_BODIES = Map.of(
             "ChangeRoleRequest", "{\"role\": \"staff\"}",
             "StaffReplyRequest", "{\"type\": \"text\", \"text\": \"Hello\"}",
-            "PublishWorkflowRequest", "{\"draftHash\": \"" + "0".repeat(64) + "\"}");
+            "PublishWorkflowRequest", "{\"draftHash\": \"" + "0".repeat(64) + "\"}",
+            "MoveStageRequest", "{\"to\": \"qualifying\", \"expectedVersion\": 0, \"reason\": \"client_request\"}");
 
     /**
      * A value for each path variable that is not an ID (step 3.1b: a workflow's version number), so the lookup is what
