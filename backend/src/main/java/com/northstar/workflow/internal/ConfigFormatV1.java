@@ -29,6 +29,15 @@ final class ConfigFormatV1 {
 
     static final String NEEDS_HUMAN = "needs_human";
     static final String JUNK = "junk";
+    static final String LOST = "lost";
+    static final String CANCELLED = "cancelled";
+    static final String COMPLETED = "completed";
+
+    /**
+     * The stages that close a lead (workflow-spec.md section 3; Cancelled since step 3.3): entering one sets closed_at,
+     * so the contact may start a new lead (W2). The database holds the same list (leads_closed_in_closing_stage).
+     */
+    static final Set<String> CLOSING_STAGES = Set.of(JUNK, LOST, COMPLETED, CANCELLED);
 
     /** The reserved stages, with the names used when a config gives none (a business may rename them). */
     static final Map<String, String> RESERVED_STAGES = Map.of(

@@ -243,12 +243,73 @@ public final class TestData {
                 .single();
     }
 
-    /** Moves the lead to a closing stage (lost, junk or completed), which sets closed_at (W2). */
+    /**
+     * Moves the lead to a closing stage (lost, junk, completed or cancelled), which sets closed_at (W2), as the table
+     * owner: a fixture, not a move (step 3.3 tests moves on their own). previous_stage is set only in Needs Human.
+     */
     public void closeLead(UUID lead, String stage) {
-        admin.sql("update northstar.leads set previous_stage = stage, stage = :stage, closed_at = now() where id = :id")
+        admin.sql("update northstar.leads set previous_stage = null, stage = :stage, closed_at = now() where id = :id")
                 .param("stage", stage)
                 .param("id", lead)
                 .update();
+    }
+
+    /** A workflow and one of its published versions. */
+    public record Published(UUID workflowId, UUID versionId) {}
+
+    /**
+     * A workflow whose version 1 is this config (a document without workflow_id and version, which are written in as
+     * publishing does), made current. Written directly as the table owner, as a fixture: a config the format refuses
+     * (none, or another schema_version) can be stored this way, as versions from before step 3.1 were.
+     */
+    public Published workflow(UUID tenant, String config) {
+        UUID workflow = admin.sql("""
+                        insert into northstar.workflows (tenant_id, name, template)
+                        values (:tenant, 'Shoot production', 'shoot_production') returning id""").param("tenant", tenant).query(UUID.class).single();
+        return new Published(workflow, publish(tenant, workflow, 1, config));
+    }
+
+    /** Publishes this config as the workflow's version n and makes it current, returning the version's ID. */
+    public UUID publish(UUID tenant, UUID workflow, int version, String config) {
+        UUID id = admin.sql("""
+                        insert into northstar.workflow_versions (tenant_id, workflow_id, version, config)
+                        values (:tenant, :workflow, :version,
+                                cast(:config as jsonb) || jsonb_build_object('workflow_id', cast(:workflow as text),
+                                                                             'version', :version))
+                        returning id""")
+                .param("tenant", tenant)
+                .param("workflow", workflow)
+                .param("version", version)
+                .param("config", config)
+                .query(UUID.class)
+                .single();
+        admin.sql("update northstar.workflows set current_version_id = :version where id = :workflow")
+                .param("version", id)
+                .param("workflow", workflow)
+                .update();
+        return id;
+    }
+
+    /**
+     * A lead for a new contact in this stage of the version, assigned to the membership (null: unassigned), as the
+     * stage implies: closed in a closing stage, and in Needs Human entered from {@code previousStage}.
+     */
+    public UUID leadInStage(UUID tenant, UUID version, UUID assignedMembership, String stage, String previousStage) {
+        return admin.sql("""
+                        insert into northstar.leads
+                          (tenant_id, contact_id, workflow_version_id, stage, previous_stage, origin,
+                           assigned_membership_id, closed_at)
+                        values (:tenant, :contact, :version, :stage, :previous, 'direct', :assigned,
+                                case when :stage in ('junk', 'lost', 'completed', 'cancelled') then now() end)
+                        returning id""")
+                .param("tenant", tenant)
+                .param("contact", contact(tenant))
+                .param("version", version)
+                .param("stage", stage)
+                .param("previous", previousStage)
+                .param("assigned", assignedMembership)
+                .query(UUID.class)
+                .single();
     }
 
     /** An open lead for a new contact on the given version, assigned to the membership (null: unassigned). */

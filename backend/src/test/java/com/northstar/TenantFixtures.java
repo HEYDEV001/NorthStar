@@ -11,9 +11,9 @@ import org.springframework.jdbc.core.simple.JdbcClient;
  * every table with tenant_id from the catalogue and fails, naming the table, when one has no fixture or a fixture names
  * a table that no longer exists: a new tenant table is never silently left out.
  *
- * <p>Rows a staff member could be restricted from (leads and their events, conversations and their messages, contacts
- * and their sources, which staff see through an assigned conversation, and request keys) are assigned to the tenant's
- * staff member, so every role has a row of its own tenant to see.
+ * <p>Rows a staff member could be restricted from (leads and their events and timeline rows, conversations and their
+ * messages, contacts and their sources, which staff see through an assigned conversation, and request keys) are
+ * assigned to the tenant's staff member, so every role has a row of its own tenant to see.
  */
 final class TenantFixtures {
 
@@ -124,6 +124,23 @@ final class TenantFixtures {
                                                             seed.data().workflowVersion(side.tenantId()),
                                                             side.staffMembership()),
                                     "key", "fixture:" + UUID.randomUUID()))),
+            // Step 3.3: a row on the staff member's lead, which is how staff see one, recorded by the system.
+            Map.entry(
+                    "northstar.timeline_events",
+                    (side, seed) -> seed.returningId(
+                            """
+                    insert into northstar.timeline_events
+                      (tenant_id, lead_id, contact_id, type, actor_type, summary, data)
+                    select tenant_id, id, contact_id, 'stage_changed', 'system', 'exit', '{}'
+                    from northstar.leads where id = :lead
+                    returning id""",
+                            Map.of(
+                                    "lead",
+                                    seed.data()
+                                            .lead(
+                                                    side.tenantId(),
+                                                    seed.data().workflowVersion(side.tenantId()),
+                                                    side.staffMembership())))),
             // Step 2.10: the staff member's own key, which is how staff see one.
             Map.entry(
                     "northstar.request_keys",
