@@ -19,10 +19,12 @@ import java.util.UUID;
 public interface Workflows {
 
     /**
-     * Creates the business's workflow, with no draft and no version yet, and records {@code workflow.created}. The
-     * template is an industry template key (workflow-spec.md section 14), else 422 {@code template_unknown}; the name,
-     * stored without surrounding spaces, is 1–100 characters, else 422 {@code workflow_name_invalid}. 409
-     * {@code workflow_exists} if the business already has a workflow.
+     * Creates the business's workflow, with no version yet, and records {@code workflow.created}. Its draft is the
+     * template's default config, its current revision, when the template has one ({@code shoot_production}, step 3.2):
+     * the business's own copy, which later revisions never change. Otherwise it has no draft. The template is an
+     * industry template key (workflow-spec.md section 14), else 422 {@code template_unknown}; the name, stored without
+     * surrounding spaces, is 1–100 characters, else 422 {@code workflow_name_invalid}. 409 {@code workflow_exists} if the
+     * business already has a workflow.
      */
     WorkflowView create(String name, String template);
 
