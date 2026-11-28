@@ -66,8 +66,10 @@ class WorkflowsService implements Workflows {
     private static final String ANY_WORKFLOW = """
             select exists (select 1 from northstar.workflows where tenant_id = ?)""";
 
+    // The draft is the template's default config as text (step 3.2), or null for a template with none.
     private static final String INSERT_WORKFLOW = """
-            insert into northstar.workflows (id, tenant_id, name, template) values (?, ?, ?, ?)""";
+            insert into northstar.workflows (id, tenant_id, name, template, draft_config)
+            values (?, ?, ?, ?, cast(? as jsonb))""";
 
     private static final String TEMPLATE = """
             select template from northstar.workflows where tenant_id = ? and id = ?""";
@@ -114,11 +116,13 @@ class WorkflowsService implements Workflows {
     private final JdbcClient jdbc;
     private final AuditTrail audit;
     private final TenantDirectory tenants;
+    private final DefaultTemplates templates;
 
-    WorkflowsService(JdbcClient jdbc, AuditTrail audit, TenantDirectory tenants) {
+    WorkflowsService(JdbcClient jdbc, AuditTrail audit, TenantDirectory tenants, DefaultTemplates templates) {
         this.jdbc = jdbc;
         this.audit = audit;
         this.tenants = tenants;
+        this.templates = templates;
     }
 
     @Override
@@ -142,11 +146,13 @@ class WorkflowsService implements Workflows {
                 jdbc.sql(ANY_WORKFLOW).param(tenant).query(Boolean.class).single())) {
             throw new ConflictException("workflow_exists", "This business already has a workflow");
         }
+        // The business's own copy of the template's current revision, if it has one (workflow-spec.md section 14).
         jdbc.sql(INSERT_WORKFLOW)
                 .param(id)
                 .param(tenant)
                 .param(cleaned)
                 .param(template)
+                .param(templates.current(template).orElse(null))
                 .update();
         audit.record(CREATED, "workflows", id);
         return view(tenant, id);

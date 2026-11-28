@@ -518,6 +518,6 @@ These need an answer before or during Phase 0–1; none blocks starting the foun
 - [ ] Lead score thresholds for Hot / Warm / Cold defaults
 - [ ] Subscription end behaviour: grace period length and read-only rules
 - [ ] Data retention periods for messages, files and audit logs
-- [ ] Default cancellation and refund policy offered in templates
+- [x] Default cancellation and refund policy offered in templates: `commercial-rules.md` section 7's bands, the default for every new business and editable per business (decided 28 Nov 2026; built in step 5.9)
 - [ ] Chartered accountant review of GST, invoice numbering and credit-note rules
 - [ ] Whether line-item partial quote approval is needed for pilot clients

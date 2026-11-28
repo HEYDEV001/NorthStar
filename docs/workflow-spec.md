@@ -398,6 +398,40 @@ Four templates plus Blank ship in the MVP; each is the same step types in a diff
 
 The advance percentages and durations above are starting defaults, not recommendations for any specific business.
 
+**Default shoot production template** (step 3.2, decided 28 Nov 2026 by the product owner). Northstar's fixed default for `shoot_production`, built only from the defaults this spec and `commercial-rules.md` state: no question wording, catalogue, price, service zone, minimum budget, crew skill or message text. Reelrr starts on a copy of it like any business; its answers to section 18 are onboarding edits to its own copy through the admin API (section 16), with no code change.
+
+- **How a business gets it.** Creating a workflow with template `shoot_production` (`POST /workflows`, section 16) stores the template's current revision as the new workflow's draft; the admin reviews it, edits it and publishes it like any draft. Nothing is created or published when a business is created: a business has no industry then, and with one workflow per business a workflow it did not want could not be replaced. The other templates start with no draft until each is written.
+- **Revisions.** The template is a numbered file in the backend (`workflow-templates/shoot_production/<n>.json`, the highest number current). Every revision is checked against format v1 (section 15) by a test and when the app starts, so none can be handed out unpublishable. A merged revision is never edited; a change is a new revision. A workflow copies the current revision once, when it is created, and later revisions never change a business's draft or versions; adopting one is the admin's own edit. A later step may add a read of the latest revision and a replacement of the draft allowed only while the draft is still exactly an earlier revision, so an edited draft is never overwritten.
+- **Revision 1 holds what format v1 can express without inventing a trigger.** Every stage must be reachable from `new` (section 15), and Scored → Quoted waits for "quote sent" (`action.succeeded`, step 3.5), so the stages after Scored join in later revisions (below).
+
+| Stage | Step and parameters | Timers | Exits | Approval |
+| --- | --- | --- | --- | --- |
+| `new` New | — | — | → `qualifying` on `message.received`: the first inbound message creates a lead (section 3's "lead created"; step 3.4 decides manual leads and the "AI enabled" guard) | No |
+| `qualifying` Qualifying | `qualify`: `required_fields` service, date, time, location, budget (section 4) | `follow_up` after 4 h and 24 h, counted from the timer's start, 2 attempts (section 8) | → `scored` on `ai.fields_extracted` with `all_required_fields` (section 3) | No |
+| `scored` Scored | `score`: hot 75, warm 50 (section 18's assumed thresholds); `meta_lead_event` on (section 4) | — | None yet | No |
+| `needs_human`, `lost` | — | — | The engine's own moves (section 3) | — |
+
+The document sets `approval_mode` true (section 9: new businesses start in approval mode) and quiet hours 21:00–09:00 (section 8); each stage's approval is section 4's column.
+
+Left out, as no value is stated: the qualifying questions' wording (this section names topics only: event type, date, location, car, deliverables, budget), `max_turns`, `language` and `tone` (the business's settings), requirement fields for car and deliverables (not required by section 4), filter rules and with them the Junk stage (minimum budget and service zone, section 18), the catalogue, crew skills and every message text. `meta_conversion_stage` waits for its stage, Payment pending; Cancelled waits for Booked, the only stages it is entered from. The cancellation policy is not part of the workflow: a new business gets `commercial-rules.md` section 7's bands as its default policy, editable (step 5.9).
+
+**How the template grows.** Each step below adds its stages to a new revision; the values are ready now.
+
+| Stage | Values (source) | Joins when |
+| --- | --- | --- |
+| `quoted` Quoted | `quote`: `validity_days` 7, `discount_limit_pct` 10 (`commercial-rules.md` section 3); `follow_up` after 24 h and 72 h, 2 attempts (section 8); approval yes | Scored → Quoted on the quote's send (`action.succeeded`, step 3.5), and Accept told apart from Request Changes (step 3.4) |
+| `negotiating` Negotiating | — | → Quoted on a revised quote's send (step 3.5) |
+| `payment_pending` Payment pending | `payment`: advance, `advance_pct` 50, `link_expiry_hours` 24 (sections 8 and 14); approval yes; `meta_conversion_stage` (section 4); → `booked` on `payment.captured`, → `quoted` on `payment.link_expired` (section 3) | With Quoted; its reminder, expiry and slot-hold timers in step 3.6 |
+| `booked` Booked | `invoice` on `payment_captured` (section 4); approval yes | → Scheduled once staff are assigned and calendar events created (step 3.5) |
+| `cancelled` Cancelled | — | With Booked |
+| `scheduled` Scheduled | `schedule`; no approval | → In progress on the job's start or staff marking it started (steps 3.4 and 3.6); job reminders (step 3.6) |
+| `in_progress` In progress | `job`: `overdue_after_hours` 4 (section 8); no approval | Staff marking it done told apart, and an amount-due condition (step 3.4); `job.tasks` (step 3.5) |
+| `balance_pending` Balance pending | `payment`: balance; approval yes; → `completed` on `payment.captured` (section 3) | The amount-due guard (step 3.4); balance reminders (step 3.6) |
+| `completed` Completed | `close`: `send_purchase_event` on (section 4); no approval | With In progress |
+| `junk` Junk | — | With the business's first filter rule (onboarding) |
+
+Format v1 gives a stage one step, but section 4 runs several on some stages: the availability check and the quote on Quoted, the invoice and assignment on Booked, the final invoice, review request (24 h after completion, section 8) and close on Completed; and delivery (after the job, before the balance) has no stage of its own. Step 3.4's plan proposes how a stage runs more than one step, and step 3.5 builds it.
+
 ## 15. Workflow configuration
 
 The whole workflow is one validated JSON document per version; this abbreviated example shows the shape the engine and the editor share, and passes format v1 (below).
@@ -459,7 +493,7 @@ The whole workflow is one validated JSON document per version; this abbreviated 
 }
 ```
 
-The example is abbreviated and its triggers are illustrative. How New moves to Qualifying is step 3.4's. Scored moves on a staff action only because v1 has no way yet to say "when the quote is sent": step 3.5 restores `{"to": "quoted", "on": "action.succeeded", "action": "send_quote"}` properly, adding `action.succeeded` to section 6 and naming each step's actions. Until then v1 refuses both (`event_unknown`, `action_unknown`). The values in it are not Reelrr's settings (section 18; step 3.2).
+The example is abbreviated and its triggers are illustrative. How New moves to Qualifying is step 3.4's. Scored moves on a staff action only because v1 has no way yet to say "when the quote is sent": step 3.5 restores `{"to": "quoted", "on": "action.succeeded", "action": "send_quote"}` properly, adding `action.succeeded` to section 6 and naming each step's actions. Until then v1 refuses both (`event_unknown`, `action_unknown`). Its values are illustrative: Northstar's default `shoot_production` template is section 14's (step 3.2).
 
 Published as version 3 of a workflow, the stored document also carries `"workflow_id"` (the workflow's UUID) and `"version": 3`, which publishing writes (section 16); a draft never contains them.
 
@@ -544,7 +578,7 @@ Publishing creates a new immutable version; existing leads stay on their version
 
 How step 3.1 builds publishing (decided 27 Nov 2026; the format is section 15):
 
-- **One workflow per business** for MVP (`data-model.md` section 15). Creating a second is refused (409 `workflow_exists`), and so is publishing while another workflow of the business is published (409 `another_workflow_published`, for rows made outside the service). The workflow service enforces both under a per-business transaction advisory lock; there is no database constraint, so allowing several later is a service change. A new workflow names its industry template (section 14), and its name is 1–100 characters.
+- **One workflow per business** for MVP (`data-model.md` section 15). Creating a second is refused (409 `workflow_exists`), and so is publishing while another workflow of the business is published (409 `another_workflow_published`, for rows made outside the service). The workflow service enforces both under a per-business transaction advisory lock; there is no database constraint, so allowing several later is a service change. A new workflow names its industry template (section 14), and its name is 1–100 characters. One created from `shoot_production` starts with that template's current revision as its draft (step 3.2, section 14); the others start with none.
 - **Only admins and the system actor** create, edit and publish workflows (staff: 403 `admin_only`); the database's restrictive policies back it (`data-model.md` section 12). Another business's workflow is a 404.
 - **Drafts** live in `workflows.draft_config`. Saving one stores it as sent and returns its problems as warnings, with the draft's hash (SHA-256 of the stored JSON text).
 - **Publish** takes the hash of the draft the admin reviewed: a different one is 409 `draft_changed`, no draft 409 `draft_missing`. It validates the stored draft, and any problem is 422 `workflow_config_invalid` with every problem (`details.problems`). Then, in one transaction: version n+1 is inserted with `workflow_id` and `version` written into its document, published by the admin's own membership (none for the system actor); the workflow's current version moves to it; and the audit entry `workflow.published` is written. Leads are not touched: new leads take the new current version, existing ones keep theirs (W36). The draft stays as the starting point for the next edit, and publishing an unchanged draft again makes another version.
@@ -555,7 +589,7 @@ The admin API (step 3.1b, decided 27 Nov 2026), under `/api/v1`, for admins only
 | Method and path | Idempotency-Key | Body | Answer |
 | --- | --- | --- | --- |
 | `GET /workflows` | — | — | 200 `{"items": [...]}`: the business's workflows (at most one in MVP), each without its draft |
-| `POST /workflows` | Required | `{"name", "template"}` | 201 the workflow, with `Location`; 409 `workflow_exists`; 422 `workflow_name_invalid`, `template_unknown` |
+| `POST /workflows` | Required | `{"name", "template"}` | 201 the workflow, with `Location` (for `shoot_production` its draft is the template's current revision, step 3.2; for the others there is none); 409 `workflow_exists`; 422 `workflow_name_invalid`, `template_unknown` |
 | `GET /workflows/{workflowId}` | — | — | 200 the workflow with its draft |
 | `PUT /workflows/{workflowId}/draft` | Required | The config itself | 200 `{"draftHash", "warnings"}`; 422 `workflow_config_invalid` for a draft that cannot be stored |
 | `POST /workflows/{workflowId}/validate` | — | The config itself | 200 `{"problems"}`, even for text that is not JSON; nothing is stored |
@@ -595,7 +629,7 @@ Each scenario becomes an automated end-to-end test on staging with a test WhatsA
 
 ## 18. Open questions
 
-These defaults need Reelrr's confirmation before Phase 3 starts.
+Decided 28 Nov 2026 (product owner): Phase 3 does not wait for these. Step 3.2 builds Northstar's default `shoot_production` template from the defaults this spec states (section 14), and Reelrr starts on a copy of it like any business. Reelrr's answers become onboarding edits to its own copy through the admin API (section 16), with no code change, so the questions stay open as onboarding inputs, not Phase 3 blockers.
 
 - [ ] Reelrr's exact qualifying questions and which fields are required
 - [ ] Advance percentage (50% assumed) and payment link expiry (24 h assumed)

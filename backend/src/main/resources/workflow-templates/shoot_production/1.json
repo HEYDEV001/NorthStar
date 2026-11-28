@@ -1,0 +1,32 @@
+{
+  "schema_version": 1,
+  "template": "shoot_production",
+  "approval_mode": true,
+  "quiet_hours": {"start": "21:00", "end": "09:00"},
+  "stages": [
+    {
+      "key": "new",
+      "name": "New",
+      "approval": false,
+      "exits": [{"to": "qualifying", "on": "message.received"}]
+    },
+    {
+      "key": "qualifying",
+      "name": "Qualifying",
+      "step": "qualify",
+      "params": {"required_fields": ["service", "date", "time", "location", "budget"]},
+      "timers": [{"type": "follow_up", "after_hours": [4, 24], "max_attempts": 2}],
+      "approval": false,
+      "exits": [{"to": "scored", "on": "ai.fields_extracted", "if": {"all_required_fields": true}}]
+    },
+    {
+      "key": "scored",
+      "name": "Scored",
+      "step": "score",
+      "params": {"band_thresholds": {"hot": 75, "warm": 50}, "meta_lead_event": true},
+      "approval": false
+    },
+    {"key": "needs_human"},
+    {"key": "lost"}
+  ]
+}

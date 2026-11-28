@@ -154,7 +154,7 @@ Once issued, an invoice changes only its payment status; any correction to its c
 
 Each business sets a cancellation policy as time bands; the system calculates the refund from the band and the owner approves before any money moves.
 
-**Policy format (example default, editable per business)**
+**Policy format and default** (every new business starts with these bands and edits them; decided 28 Nov 2026, built in step 5.9)
 
 | Cancelled before start | Refund of amount paid |
 | --- | --- |

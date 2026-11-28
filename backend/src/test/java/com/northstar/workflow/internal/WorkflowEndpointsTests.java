@@ -27,6 +27,7 @@ import org.springframework.test.web.servlet.assertj.MockMvcTester;
 import org.springframework.test.web.servlet.assertj.MvcTestResult;
 import tools.jackson.databind.JsonNode;
 import tools.jackson.databind.json.JsonMapper;
+import tools.jackson.databind.node.ObjectNode;
 
 /**
  * The workflow editor's API (step 3.1b; workflow-spec.md section 16) through the real login path, against Postgres with
@@ -144,6 +145,31 @@ class WorkflowEndpointsTests {
         assertThat(output.getOut())
                 .contains("workflow.created workflow_id=" + id, "workflow.published workflow_id=" + id)
                 .doesNotContain("Studio flow", createKey, draftHash, "needs_human");
+    }
+
+    @Test
+    void aShootProductionWorkflowComesWithTheTemplateAsItsDraftAndPublishesIt() {
+        Business shop = business();
+        String template = DefaultTemplates.read("shoot_production", 1);
+
+        MvcTestResult created = create(shop.owner().userId(), "Shoots", "shoot_production", key());
+
+        assertThat(created).hasStatus(201);
+        JsonNode workflow = json(created);
+        UUID id = UUID.fromString(workflow.get("id").stringValue());
+        assertThat(workflow.get("draft")).as("the template's current revision").isEqualTo(JSON.readTree(template));
+        String draftHash = workflow.get("draftHash").stringValue();
+        assertThat(draftHash).matches("[0-9a-f]{64}");
+
+        MvcTestResult published = publish(shop.owner().userId(), id, draftHash, key());
+
+        assertThat(published).hasStatus(201);
+        JsonNode version = json(published);
+        assertThat(version.get("version").intValue()).isOne();
+        ObjectNode expected = (ObjectNode) JSON.readTree(template);
+        expected.put("workflow_id", id.toString());
+        expected.put("version", 1);
+        assertThat(version.get("config")).as("the template as published").isEqualTo(expected);
     }
 
     @Test
